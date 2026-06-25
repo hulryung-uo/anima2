@@ -59,11 +59,12 @@ real "work" loop).
   on a mechanic, file discrepancy reports when reality differs.
 
 ### B2 — new skills (need A actions)
-- 🚧 **Mine/Gather** — `skills/harvest.py::Mine` built + unit-tested (find tool → open
-  pack if needed → `Use(pickaxe)` → answer cursor with `TargetGround(facing tile)` →
-  score from journal). **Live run pending scenario setup** (a pickaxe in the pack + a
-  mineable tile in reach → Control plane / manual, Phase 4). All perception it needs is
-  live-verified (target cursor ✅, skills ✅, container/tool-finding ✅).
+- ✅ **Mine/Gather** — `skills/harvest.py::Mine`: find tool (open pack if needed) →
+  `Use(pickaxe)` → answer cursor with a probed neighbour tile (round-robin 8 dirs) →
+  **reward on Mining skill-base gain** (dig results are cliloc 0xC1, unparsed; skill gain
+  is the real signal & v1's fitness backbone). **LIVE-VERIFIED**: staged at the Minoc
+  ridge via the Control plane, the brain mined Mining 35.0 → 35.2 (reward in episodic
+  memory). Run: `python -m anima2.live_mine`.
 - ⏳ Smelt · Craft (gump MAKE loop) · Eat/Heal (bandage→self, or Heal spell) · Bank ·
   Loot (open corpse → PickUp).
 
@@ -78,9 +79,10 @@ real "work" loop).
 2. ✅ **0x3A skills parse + `Observation.skills[]`** — reward signal. (Body requests
    stats/skills on login via `build_status_request` 0x34; gains then push via 0xDF.
    Live-verified: 58 skills populate.)
-3. 🚧 **Mining loop** — `Mine` skill built + unit-tested (decision logic for tool/cursor/
-   journal). Live "You dig…" needs a pickaxe + mineable tile (scenario setup → Phase 4 /
-   manual). The whole perception+action chain it rides on is live-verified.
+3. ✅ **Mining loop end-to-end (LIVE)** — `Mine` skill + `control.py::GmControl` (the
+   Control plane, GM `[` commands via the bridge). GM stages pickaxe + Mining 35 +
+   teleport to the Minoc ridge; the brain then mines, gaining Mining 35.0 → 35.2.
+   First "production" loop: **a character works and a skill rises, autonomously.**
 4. ⏳ **Gump support** (crafting, banking).
 5. ⏳ **Memory + wiki + reflection** (workstream B core).
 

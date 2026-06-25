@@ -2,17 +2,17 @@
 
 from anima2.contract import (
     ItemView,
-    JournalEntry,
     Observation,
     PlayerView,
     Position,
-    TargetGround,
+    SkillView,
     TargetCursor,
+    TargetGround,
     Use,
 )
 from anima2.persona import Persona
 from anima2.skills import Mine
-from anima2.skills.base import SkillContext, Status
+from anima2.skills.base import SkillContext
 
 PICKAXE = 0x0E86
 BACKPACK = 0x40001453
@@ -23,14 +23,16 @@ def _item(serial, graphic, *, layer=0, container=None):
                     container=container, layer=layer, distance=0)
 
 
-def _ctx(items=(), pending=None, journal=(), direction=2):
+def _ctx(items=(), pending=None, mining=None, direction=2, memory=None):
+    skills = [SkillView(id=45, value=mining, base=mining, cap=100.0, lock=0)] if mining else []
     obs = Observation(
         player=PlayerView(serial=1, pos=Position(100, 100, 0), direction=direction),
         items=list(items),
-        new_journal=list(journal),
+        skills=skills,
         pending_target=pending,
     )
-    return SkillContext(obs=obs, persona=Persona(name="Grimm"), memory={})
+    return SkillContext(obs=obs, persona=Persona(name="Grimm"),
+                        memory=memory if memory is not None else {})
 
 
 def test_swings_pickaxe_when_tool_visible():
@@ -45,8 +47,8 @@ def test_opens_backpack_when_no_tool_visible():
     assert isinstance(res.action, Use) and res.action.serial == BACKPACK
 
 
-def test_answers_cursor_with_facing_tile():
-    # Facing East (dir 2 → +1 x): target should be (101, 100).
+def test_answers_cursor_with_probed_tile():
+    # Facing East (dir 2 → +1 x), probe 0 → target (101, 100).
     ctx = _ctx(
         items=[_item(0x222, PICKAXE)],
         pending=TargetCursor(target_type=1, cursor_id=7, cursor_flag=0),
@@ -57,21 +59,21 @@ def test_answers_cursor_with_facing_tile():
     assert (res.action.x, res.action.y) == (101, 100)
 
 
-def test_success_journal_rewards_and_continues():
-    ctx = _ctx(
-        items=[_item(0x222, PICKAXE)],
-        journal=[JournalEntry(0, "System", "You dig some ore and put it in your backpack.", 0, 0)],
-    )
-    res = Mine().step(ctx)
-    assert res.status is Status.RUNNING and res.reward > 0
+def test_skill_gain_rewards():
+    skill = Mine()
+    mem = {}
+    skill.step(_ctx(items=[_item(0x222, PICKAXE)], mining=35.0, memory=mem))  # seed baseline
+    res = skill.step(_ctx(items=[_item(0x222, PICKAXE)], mining=35.2, memory=mem))
+    assert abs(res.reward - 0.2) < 1e-3  # rewarded the skill gain
 
 
-def test_barren_tile_fails():
-    ctx = _ctx(
-        items=[_item(0x222, PICKAXE)],
-        journal=[JournalEntry(0, "System", "There is no metal here to mine.", 0, 0)],
-    )
-    assert Mine().step(ctx).status is Status.FAILURE
+def test_probe_rotates_each_swing():
+    skill = Mine()
+    mem = {}
+    skill.step(_ctx(items=[_item(0x222, PICKAXE)], memory=mem))
+    assert mem["mine_probe"] == 1
+    skill.step(_ctx(items=[_item(0x222, PICKAXE)], memory=mem))
+    assert mem["mine_probe"] == 2
 
 
 def test_not_runnable_without_tool_or_pack():
