@@ -30,18 +30,25 @@ is the *car*.
 
 ## Status
 
-**Phase 1 scaffold running.** The Python brain loop drives a persona against a
-`MockBody` (no server/Rust needed): perceive → reflexes → planner → skill → act.
-Contract mirrored from anima-core; 7 tests green.
+**Phase 1 functional end-to-end.** The Python brain drives a **live ServUO
+character** through the `anima-agent` IPC bridge: perceive → reflexes → planner →
+skill → act. Skills: Wander, GoTo, Combat, Greet, SpeakPending. The slow LLM
+cognition loop is wired (provider-abstracted, non-blocking) with an offline
+heuristic default. 20 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-python -m anima2     # demo: a miner walks to the worksite, then wanders
-pytest -q            # 7 passing
+pytest -q                       # 20 passing (offline; uses MockBody + a fake bridge)
+python -m anima2                # offline demo: a miner walks to work, then wanders
+
+# Live (needs a running UO server + the built bridge):
+( cd ../anima-client && cargo build -p anima-net )
+python -m anima2.live 127.0.0.1 2594 animatest animatest --goto 3720 2216
+#   add --llm to use Claude cognition (needs ANTHROPIC_API_KEY + pip install -e ".[llm]")
 ```
 
-Next: an IPC bridge to `anima-net` (drive a live ServUO character) and the LLM
-cognition loop. See [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the full roadmap.
+Next: more skills (gather/heal/bank), A\* navigation via anima-core, episodic
+memory + the wiki. See [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
 
 ## Family
 

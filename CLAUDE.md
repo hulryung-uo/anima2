@@ -12,15 +12,21 @@ A new, from-scratch **autonomous AI agent** that plays Ultima Online — the
 Clean redesign of `../anima` (v1, Python); mines v1 for assets and lessons.
 
 ## Current phase
-**Phase 1 in progress.** Python package (`anima2/`) implements the two-rate brain
-loop driving a persona against `MockBody` — `contract` (mirrors anima-core
-`agent.rs`) · `body`+`MockBody` · `persona` · `skills` (`Wander`/`GoTo`) ·
-`planner` · `reflexes` · `agent`. `python -m anima2` runs a demo; `pytest` = 7
-green; ruff clean. **Next:** IPC bridge to `anima-net` (real body on live ServUO)
-+ more skills, then the LLM cognition loop. See DESIGN.md §10.
+**Phase 1 functional end-to-end.** The Python brain drives a **live ServUO
+character** via the `anima-agent` NDJSON bridge (in `../anima-client/crates/anima-net`).
+Package: `contract` (mirrors anima-core `agent.rs`) · `body`+`MockBody` · `ipc_body`
+(spawns/drives the bridge) · `persona` · `skills` (`Wander`/`GoTo`/`Combat`/`Greet`/
+`SpeakPending`) · `planner` · `reflexes` · `agent` (two-rate loop) · `llm`+`cognition`
+(Heuristic default · LLMCognition · ThreadedCognition; **LLM never in the fast loop**).
+20 tests green, ruff clean. **Next:** more skills (gather/heal/bank — need new contract
+Actions in anima-core), A* nav via anima-core, episodic memory + wiki. See DESIGN.md §10.
 
 ## Dev
-`uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
+- Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
+- Live: build the bridge in the sibling repo (`cd ../anima-client && cargo build -p anima-net`),
+  then `python -m anima2.live <host> <port> <user> <pass> [--goto X Y] [--llm]`.
+- The bridge bin + JSON shapes live in `../anima-client/crates/anima-net` (`src/bin/agent.rs`,
+  `src/json.rs`) — keep them in lockstep with `contract.py`.
 
 ## Non-negotiable principles (DESIGN.md §2)
 - **Brain ⊥ Body.** anima2 reads Observations and emits Actions — it **never**

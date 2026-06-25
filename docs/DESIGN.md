@@ -5,10 +5,12 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-06-25 · Status: **Phase 1 scaffold running.** Python package builds;
-the two-rate brain loop drives a persona against `MockBody` (perceive→reflexes→
-planner→skill→act); contract mirrored from anima-core; 7 tests green, ruff clean.
-Real-body IPC bridge to `anima-net` and the LLM cognition loop are next.
+Last updated: 2026-06-25 · Status: **Phase 1 functional end-to-end.** The Python
+brain drives a **live ServUO character** via the `anima-agent` IPC bridge
+(perceive→reflexes→planner→skill→act). Skills: Wander, GoTo, Combat, Greet,
+SpeakPending. Slow LLM cognition loop is wired (provider-abstracted, non-blocking)
+with an offline heuristic default. 20 tests green, ruff clean; navigation +
+full-planner runs validated against ServUO on :2594.
 
 ---
 
@@ -237,25 +239,39 @@ anti-gaming (produce-credit deltas, held-out re-eval).
 
 - **Phase 0 — ✅ Documentation + Observation/Action contract.** Contract defined in
   anima-core (`src/agent.rs`) and mirrored in anima2 (`contract.py`, JSON round-trip tested).
-- **Phase 1 — Minimal autonomous loop.** *In progress.*
-  - ✅ Brain skeleton: `contract` · `body` (Protocol) + `MockBody` · `persona` (loads v1 YAML) ·
-    `skills` (`base` ABC, `Wander`, `GoTo`) · `planner` (priority rules) · `reflexes` (stub) ·
-    `agent` (two-rate loop; LLM cognition stubbed by `NullCognition`). Demo: `python -m anima2`.
-  - ⏭ Next: IPC bridge to `anima-net` (real body) so the loop drives a live ServUO character;
-    more deterministic skills (gather, eat/heal, bank); then validate against a local shard.
-- **Phase 2 — Cognition + memory:** slow LLM loop sets goals; episodic memory + reflection; in-character speech (sociability). Wire the wiki as semantic memory.
+- **Phase 1 — ✅ Minimal autonomous loop (functional end-to-end).**
+  - ✅ Brain: `contract` · `body` (Protocol) + `MockBody` · `persona` (loads v1 YAML) ·
+    `skills` (`Wander`, `GoTo`, `Combat`, `Greet`, `SpeakPending`) · `planner` (priority rules) ·
+    `reflexes` (stub) · `agent` (two-rate loop).
+  - ✅ **IPC bridge** to a live body: `anima-net` ships the `anima-agent` NDJSON bridge
+    (`src/bin/agent.rs` + `json.rs`); anima2 `IpcBody` spawns and drives it. **Validated live:**
+    the brain navigated a ServUO character to a target and ran the full planner on :2594.
+  - ✅ **Slow LLM cognition** wired: `llm.py` (LLMClient + Anthropic/Stub) + `cognition.py`
+    (Heuristic default · LLMCognition · ThreadedCognition non-blocking). Speech via `SpeakPending`.
+  - ⏭ Next: more skills (gather/mine, eat/heal, bank — need new contract Actions like UseSkill/
+    target in anima-core); delegate `GoTo` to anima-core A* `navigate_to`; episodic memory.
+- **Phase 2 — Cognition + memory:** episodic memory + reflection; wire the wiki as semantic
+  memory; richer in-character speech. (LLM cognition seam already in place from Phase 1.)
 - **Phase 3 — Skill library + automatic curriculum:** Voyager-style growth; tutorial stage 0; difficulty ratchet.
 - **Phase 4 — Control plane + eval harness:** reuse Foundry GM kernel for repeatable episodes + independent fitness.
 - **Phase 5 — Evolution & society:** MAP-Elites over variants; multi-agent social world (Generative Agents).
 
 ---
 
-## 11. Open decisions
-- **Brain language** (Python over IPC — recommended — vs Rust in-process). §9.
-- **IPC mechanism / contract serialization** (JSON-RPC vs gRPC vs shared memory).
+## 11. Decisions resolved / still open
+Resolved during Phase 1:
+- **Brain language = Python over IPC.** ✅ (anima2 Python; `anima-agent` Rust bridge.)
+- **IPC = NDJSON over stdio.** ✅ Request/response (`observe`/`act`/`pump`/`quit`), one JSON
+  object per line; bridge logs in and owns the socket. (`anima-net/src/bin/agent.rs`.)
+- **Where the contract lives = anima-core** (`src/agent.rs`), JSON shapes in `anima-net/json.rs`,
+  mirrored by anima2 `contract.py` (round-trip tested both sides). ✅
+
+Still open:
 - **How much v1 code to port vs reimplement** (per-module, §8).
-- **Where the contract lives** (defined in anima-core; mirror generated for the brain?).
-- **Single-agent first vs multi-agent from the start** (recommend single first).
+- **`GoTo` greedy vs delegate to anima-core A\* `navigate_to`** (bridge needs a `navigate` cmd +
+  UO data path). Greedy works in open terrain today.
+- **Cognition cadence / cost controls** (model tier per call, caching, how often to reconsider).
+- **Single-agent first vs multi-agent** (recommend single first).
 
 ---
 
