@@ -39,20 +39,27 @@ class GoTo(Skill):
     def can_run(self, ctx: SkillContext) -> bool:
         return ctx.goal is not None and ctx.goal.kind == "goto"
 
+    #: Consecutive no-progress ticks before we declare ourselves wedged. The
+    #: first step in a new direction is a UO *turn* (no move), so this must be >1.
+    stall_limit: int = 4
+
     def step(self, ctx: SkillContext) -> SkillResult:
         assert ctx.goal is not None
         target: Position = ctx.goal.params["target"]
         here = ctx.obs.player.pos
         if chebyshev(here, target) == 0:
+            ctx.memory.pop("goto_stall", None)
             return SkillResult(Status.SUCCESS, None, reward=1.0)
 
-        d = direction_toward(here, target)
-        # If a real step (already facing) didn't move us, we're wedged → fail so a
-        # higher layer can re-plan (the greedy mover can't route around walls).
-        last = ctx.memory.get("goto_last_pos")
         cur = (here.x, here.y)
-        if last == cur and ctx.memory.get("goto_last_dir") == d:
-            return SkillResult(Status.FAILURE, None)
+        stall = ctx.memory.get("goto_stall", 0) + 1 if ctx.memory.get("goto_last_pos") == cur else 0
+        ctx.memory["goto_stall"] = stall
         ctx.memory["goto_last_pos"] = cur
-        ctx.memory["goto_last_dir"] = d
-        return SkillResult(Status.RUNNING, Walk(dir=d, run=False))
+
+        # Sustained no progress in open-greedy mode → wedged (a wall we can't route
+        # around); fail so a higher layer re-plans. The greedy mover has no A*.
+        if stall >= self.stall_limit:
+            ctx.memory.pop("goto_stall", None)
+            return SkillResult(Status.FAILURE, None)
+
+        return SkillResult(Status.RUNNING, Walk(dir=direction_toward(here, target), run=False))
