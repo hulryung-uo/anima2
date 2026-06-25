@@ -250,11 +250,13 @@ anti-gaming (produce-credit deltas, held-out re-eval).
     (Heuristic default · LLMCognition · ThreadedCognition non-blocking). Speech via `SpeakPending`.
   - ⏭ Next: more skills (gather/mine, eat/heal, bank — need new contract Actions like UseSkill/
     target in anima-core); delegate `GoTo` to anima-core A* `navigate_to`; episodic memory.
-- **Phase 2 — Cognition + memory.** *In progress — see [`PHASE2.md`](PHASE2.md) for the full
-  work breakdown.* Two workstreams: **A) contract expansion** in anima-core (the gate —
-  target cursor ✅, then skills/gump/container/UseSkill/cast) and **B) cognition + memory**
-  (episodic memory + reflection, wiki as semantic memory, richer speech). Critical path:
-  target ✅ → skills parse → mining loop → gumps → memory.
+- **Phase 2 — Cognition + memory.** *In progress — see [`PHASE2.md`](PHASE2.md).* Critical
+  path **1–3 DONE & LIVE**: target cursor ✅ · skills 0x3A ✅ · container contents ✅ ·
+  **mining loop end-to-end ✅** (the Control plane `control.py::GmControl` stages the
+  scenario via GM `[` commands; the brain mined Mining 35.0 → 35.2 autonomously) ·
+  episodic memory ✅. Next: gump parsing (craft/bank), 0xC1 cliloc messages, wiki semantic
+  memory + reflection. This is the first complete "work → skill rises" loop — the Phase 3
+  curriculum/Director foundation.
 - **Phase 3 — Skill library + automatic curriculum:** Voyager-style growth; tutorial stage 0; difficulty ratchet.
 - **Phase 4 — Control plane + eval harness:** reuse Foundry GM kernel for repeatable episodes + independent fitness.
 - **Phase 5 — Evolution & society:** MAP-Elites over variants; multi-agent social world (Generative Agents).
