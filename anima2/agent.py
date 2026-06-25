@@ -14,6 +14,7 @@ from typing import Protocol
 
 from .body import Body
 from .contract import Action
+from .memory import Episode, EpisodicMemory
 from .persona import Persona
 from .planner import Planner
 from .reflexes import Reflexes
@@ -55,12 +56,19 @@ class Agent:
         self.goal = goal
         self.cognition_interval = cognition_interval
         self.memory: dict = {}
+        self.episodes = EpisodicMemory()
         self.ticks = 0
 
     def tick(self) -> Action | None:
         """Run one fast-loop iteration. Returns the action taken (or `None`)."""
         obs = self.body.observe()
-        ctx = SkillContext(obs=obs, persona=self.persona, goal=self.goal, memory=self.memory)
+        ctx = SkillContext(
+            obs=obs,
+            persona=self.persona,
+            goal=self.goal,
+            memory=self.memory,
+            episodes=self.episodes.recent(8),
+        )
 
         # Slow loop, sampled: let cognition re-set the goal occasionally.
         if self.ticks % self.cognition_interval == 0:
@@ -78,6 +86,20 @@ class Agent:
         # 2) Planner picks a skill; the skill produces an action.
         skill = self.planner.select(ctx)
         result = skill.step(ctx)
+
+        # Record terminal/rewarded outcomes to episodic memory (the learning signal
+        # + cognition context). RUNNING-with-no-reward steps are too noisy to log.
+        if result.reward or result.status is not Status.RUNNING:
+            self.episodes.record(
+                Episode(
+                    tick=self.ticks,
+                    kind="skill",
+                    summary=f"{skill.name} → {result.status.name.lower()}",
+                    reward=result.reward,
+                    pos=(obs.player.pos.x, obs.player.pos.y),
+                )
+            )
+
         if result.status is Status.SUCCESS and self.goal is not None:
             self.goal = None  # goal achieved; cognition will set the next one
         if result.action is not None:

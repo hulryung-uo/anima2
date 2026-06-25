@@ -50,7 +50,9 @@ Proceed once A has enough surface (A1 TargetObject + A2 skills unblock the first
 real "work" loop).
 
 ### B1 — memory
-- ⏳ **Episodic memory** — store events + outcomes + rewards (mine v1 `memory/`).
+- ✅ **Episodic memory** — `memory.py::EpisodicMemory` (bounded log of `Episode`s with
+  rewards); the agent loop records terminal/rewarded skill outcomes; recent episodes flow
+  into `SkillContext.episodes` and the `LLMCognition` situation prompt.
 - ⏳ **Reflection loop** — periodic LLM summary of episodes → updates goals/strategy
   (Generative Agents). Runs in the slow loop (already non-blocking via `ThreadedCognition`).
 - ⏳ **Semantic memory = uowiki** — `wiki_search`/`wiki_read_page`; consult before betting

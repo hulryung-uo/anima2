@@ -18,7 +18,7 @@ import re
 import threading
 from typing import Any
 
-from .contract import Observation, Position
+from .contract import Position
 from .llm import LLMClient
 from .persona import Persona
 from .skills.base import Goal, SkillContext
@@ -46,7 +46,7 @@ class LLMCognition:
         self.client = client
 
     def reconsider(self, ctx: SkillContext) -> Goal | None:
-        raw = self.client.complete(self._system(ctx.persona), self._situation(ctx.obs))
+        raw = self.client.complete(self._system(ctx.persona), self._situation(ctx))
         decision = _parse_json(raw)
         if not decision:
             return ctx.goal  # unparseable → don't disturb the current goal
@@ -75,14 +75,17 @@ class LLMCognition:
         )
 
     @staticmethod
-    def _situation(obs: Observation) -> str:
+    def _situation(ctx: SkillContext) -> str:
+        obs = ctx.obs
         p = obs.player
         people = ", ".join(f"{m.name or '?'}@{m.distance}" for m in obs.mobiles[:5]) or "none"
         recent = " | ".join(j.text for j in obs.new_journal[-5:]) or "(quiet)"
+        memory = " | ".join(str(e) for e in ctx.episodes[-6:]) or "(nothing yet)"
         return (
             f"You are at ({p.pos.x},{p.pos.y}) with {p.hits}/{p.hits_max} health.\n"
             f"Nearby: {people}.\n"
             f"Recent chatter: {recent}\n"
+            f"Recently you: {memory}\n"
             "What is your next goal?"
         )
 

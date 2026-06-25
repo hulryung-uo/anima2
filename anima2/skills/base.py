@@ -42,6 +42,8 @@ class SkillContext:
     goal: Goal | None = None
     # Per-agent scratch memory skills may read/write across ticks.
     memory: dict[str, Any] = field(default_factory=dict)
+    # Recent episodes (read-only view), for cognition context. See memory.Episode.
+    episodes: list[Any] = field(default_factory=list)
 
 
 @dataclass
