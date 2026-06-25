@@ -21,6 +21,18 @@ def test_action_json_roundtrip():
         assert again == action
 
 
+def test_observation_skills_parsed():
+    obs = Observation.from_dict(
+        {
+            "player": {"serial": 1},
+            "skills": [{"id": 45, "value": 50.0, "base": 48.2, "cap": 100.0, "lock": 0}],
+        }
+    )
+    assert len(obs.skills) == 1
+    assert obs.skills[0].id == 45
+    assert obs.skills[0].base == 48.2
+
+
 def test_observation_pending_target_roundtrip():
     obs = Observation.from_dict(
         {

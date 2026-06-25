@@ -30,7 +30,7 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 | Packet | New state | Why | Status |
 |--------|-----------|-----|--------|
 | **0x6C target cursor** | `World.pending_target` → `Observation.pending_target` | brain must know the server is asking for a target | ✅ |
-| 0x3A UpdateSkills | `skills[]` (value + lock) | skill levels + **skill-gain reward signal** | ⏳ |
+| **0x3A UpdateSkills** | `World.skills` → `Observation.skills[]` (value/base/cap/lock) | skill levels + **skill-gain reward signal** | ✅ |
 | 0xB0 OpenGump | `pending_gump` (serial, buttons) | crafting/banking UI | ⏳ |
 | 0x3C / 0x24 / 0x25 container | items keyed by container | "do I have ore/ingots/gold?"; looting | ⏳ |
 | corpse (0x2E + container) | loot view | hunt loop | ⏳ |
@@ -70,7 +70,9 @@ real "work" loop).
 
 ## Critical path (recommended order)
 1. ✅ **TargetObject/Ground + 0x6C cursor** — unblocks targeted actions.
-2. ⏳ **0x3A skills parse + `Observation.skills[]`** — reward signal.
+2. ✅ **0x3A skills parse + `Observation.skills[]`** — reward signal. (Body requests
+   stats/skills on login via `build_status_request` 0x34; gains then push via 0xDF.
+   Live-verified: 58 skills populate.)
 3. ⏳ **Mining loop end-to-end** (Use pickaxe → TargetGround → journal "You dig…") —
    first "production"; needs a pickaxe + a mineable tile (scenario setup, ideally GM /
    Control plane, or stand the test char near rock manually).

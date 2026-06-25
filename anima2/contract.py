@@ -117,6 +117,27 @@ class JournalEntry:
 
 
 @dataclass
+class SkillView:
+    """One skill's standing, in human units (50.0 == half of GM). Mirrors anima-core."""
+
+    id: int
+    value: float  # base + transient bonuses
+    base: float  # trainable value — skill *gain* registers here
+    cap: float
+    lock: int  # 0 up, 1 down, 2 locked
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> SkillView:
+        return cls(
+            id=d.get("id", 0),
+            value=d.get("value", 0.0),
+            base=d.get("base", 0.0),
+            cap=d.get("cap", 0.0),
+            lock=d.get("lock", 0),
+        )
+
+
+@dataclass
 class TargetCursor:
     """An outstanding target the server is waiting on (mirrors anima-core)."""
 
@@ -143,6 +164,7 @@ class Observation:
     new_journal: list[JournalEntry] = field(default_factory=list)
     # Set when the server wants us to pick a target (answer with TargetObject/Ground).
     pending_target: TargetCursor | None = None
+    skills: list[SkillView] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Observation:
@@ -153,6 +175,7 @@ class Observation:
             items=[ItemView.from_dict(i) for i in d.get("items", [])],
             new_journal=[JournalEntry.from_dict(j) for j in d.get("new_journal", [])],
             pending_target=TargetCursor.from_dict(pt) if pt else None,
+            skills=[SkillView.from_dict(s) for s in d.get("skills", [])],
         )
 
 
