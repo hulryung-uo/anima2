@@ -12,6 +12,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.8",
 ]
+llm = [
+    "anthropic>=0.40",
+]
 
 [build-system]
 requires = ["hatchling"]

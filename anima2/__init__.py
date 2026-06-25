@@ -7,6 +7,7 @@ packets.
 
 from .agent import Agent, Cognition, NullCognition
 from .body import Body
+from .cognition import HeuristicCognition, LLMCognition, ThreadedCognition
 from .contract import Action, Observation
 from .persona import Persona
 from .planner import Planner
@@ -16,6 +17,9 @@ __all__ = [
     "Agent",
     "Cognition",
     "NullCognition",
+    "HeuristicCognition",
+    "LLMCognition",
+    "ThreadedCognition",
     "Body",
     "Action",
     "Observation",

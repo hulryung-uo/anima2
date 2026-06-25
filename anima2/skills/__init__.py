@@ -3,7 +3,7 @@
 from .base import Goal, Skill, SkillContext, SkillResult, Status
 from .combat import Combat
 from .movement import GoTo, Wander
-from .social import Greet
+from .social import Greet, SpeakPending
 
 __all__ = [
     "Goal",
@@ -14,5 +14,6 @@ __all__ = [
     "Combat",
     "GoTo",
     "Greet",
+    "SpeakPending",
     "Wander",
 ]

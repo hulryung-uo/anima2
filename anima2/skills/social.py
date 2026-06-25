@@ -47,3 +47,23 @@ class Greet(Skill):
     def _hello(ctx: SkillContext) -> str:
         name = ctx.persona.name
         return f"Hail, friend. {name} greets you."
+
+
+class SpeakPending(Skill):
+    """Voice a line the cognition loop queued in ``memory['pending_say']``.
+
+    This is the seam by which the slow LLM loop talks: cognition stashes a line,
+    this high-priority skill drains it as a `Say`. One utterance per tick.
+    """
+
+    name = "speak_pending"
+    description = "Say a line queued by the cognition loop."
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        return bool(ctx.memory.get("pending_say"))
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        text = ctx.memory.pop("pending_say", None)
+        if not text:
+            return SkillResult(Status.SUCCESS, None)
+        return SkillResult(Status.SUCCESS, Say(text=text))
