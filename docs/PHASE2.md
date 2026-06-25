@@ -31,6 +31,7 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 |--------|-----------|-----|--------|
 | **0x6C target cursor** | `World.pending_target` → `Observation.pending_target` | brain must know the server is asking for a target | ✅ |
 | **0x3A UpdateSkills** | `World.skills` → `Observation.skills[]` (value/base/cap/lock) | skill levels + **skill-gain reward signal** | ✅ |
+| **0xC1 / 0xCC cliloc** | `JournalEntry.cliloc` + args; resolved brain-side via `anima2/cliloc.py` (Cliloc.enu) | the brain reads localized messages (mining/combat/loot/system) | ✅ |
 | 0xB0 OpenGump | `pending_gump` (serial, buttons) | crafting/banking UI | ⏳ |
 | **0x3C / 0x25 container** | items keyed by `container` + `ItemView.layer` | "do I have ore/ingots/gold?"; find pickaxe; looting; banking | ✅ |
 | corpse (0x2E + container) | loot view | hunt loop | ⏳ |
@@ -61,8 +62,9 @@ real "work" loop).
 ### B2 — new skills (need A actions)
 - ✅ **Mine/Gather** — `skills/harvest.py::Mine`: find tool (open pack if needed) →
   `Use(pickaxe)` → answer cursor with a probed neighbour tile (round-robin 8 dirs) →
-  **reward on Mining skill-base gain** (dig results are cliloc 0xC1, unparsed; skill gain
-  is the real signal & v1's fitness backbone). **LIVE-VERIFIED**: staged at the Minoc
+  **reward on Mining skill-base gain** (the real signal & v1's fitness backbone; dig
+  result clilocs like #1007072 "You dig some iron ore" now also reach the journal via the
+  0xC1 parser — available for richer logic). **LIVE-VERIFIED**: staged at the Minoc
   ridge via the Control plane, the brain mined Mining 35.0 → 35.2 (reward in episodic
   memory). Run: `python -m anima2.live_mine`.
 - ⏳ Smelt · Craft (gump MAKE loop) · Eat/Heal (bandage→self, or Heal spell) · Bank ·

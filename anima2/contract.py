@@ -106,6 +106,9 @@ class JournalEntry:
     text: str
     msg_type: int
     hue: int
+    # Cliloc id for localized messages (0xC1/0xCC); 0 for plain speech. When set,
+    # `text` holds the raw tab-separated args — resolve via anima2.cliloc.
+    cliloc: int = 0
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> JournalEntry:
@@ -115,6 +118,7 @@ class JournalEntry:
             text=d.get("text", ""),
             msg_type=d.get("msg_type", 0),
             hue=d.get("hue", 0),
+            cliloc=d.get("cliloc", 0),
         )
 
 
