@@ -57,8 +57,11 @@ real "work" loop).
   on a mechanic, file discrepancy reports when reality differs.
 
 ### B2 — new skills (need A actions)
-- ⏳ **Mine/Gather** — `Use(pickaxe)` → target cursor → `TargetGround(mountain)` → read
-  journal result. (TargetGround is ✅, so this is the first loop to build.)
+- 🚧 **Mine/Gather** — `skills/harvest.py::Mine` built + unit-tested (find tool → open
+  pack if needed → `Use(pickaxe)` → answer cursor with `TargetGround(facing tile)` →
+  score from journal). **Live run pending scenario setup** (a pickaxe in the pack + a
+  mineable tile in reach → Control plane / manual, Phase 4). All perception it needs is
+  live-verified (target cursor ✅, skills ✅, container/tool-finding ✅).
 - ⏳ Smelt · Craft (gump MAKE loop) · Eat/Heal (bandage→self, or Heal spell) · Bank ·
   Loot (open corpse → PickUp).
 
@@ -73,9 +76,9 @@ real "work" loop).
 2. ✅ **0x3A skills parse + `Observation.skills[]`** — reward signal. (Body requests
    stats/skills on login via `build_status_request` 0x34; gains then push via 0xDF.
    Live-verified: 58 skills populate.)
-3. ⏳ **Mining loop end-to-end** (Use pickaxe → TargetGround → journal "You dig…") —
-   first "production"; needs a pickaxe + a mineable tile (scenario setup, ideally GM /
-   Control plane, or stand the test char near rock manually).
+3. 🚧 **Mining loop** — `Mine` skill built + unit-tested (decision logic for tool/cursor/
+   journal). Live "You dig…" needs a pickaxe + mineable tile (scenario setup → Phase 4 /
+   manual). The whole perception+action chain it rides on is live-verified.
 4. ⏳ **Gump support** (crafting, banking).
 5. ⏳ **Memory + wiki + reflection** (workstream B core).
 
