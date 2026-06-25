@@ -250,8 +250,11 @@ anti-gaming (produce-credit deltas, held-out re-eval).
     (Heuristic default · LLMCognition · ThreadedCognition non-blocking). Speech via `SpeakPending`.
   - ⏭ Next: more skills (gather/mine, eat/heal, bank — need new contract Actions like UseSkill/
     target in anima-core); delegate `GoTo` to anima-core A* `navigate_to`; episodic memory.
-- **Phase 2 — Cognition + memory:** episodic memory + reflection; wire the wiki as semantic
-  memory; richer in-character speech. (LLM cognition seam already in place from Phase 1.)
+- **Phase 2 — Cognition + memory.** *In progress — see [`PHASE2.md`](PHASE2.md) for the full
+  work breakdown.* Two workstreams: **A) contract expansion** in anima-core (the gate —
+  target cursor ✅, then skills/gump/container/UseSkill/cast) and **B) cognition + memory**
+  (episodic memory + reflection, wiki as semantic memory, richer speech). Critical path:
+  target ✅ → skills parse → mining loop → gumps → memory.
 - **Phase 3 — Skill library + automatic curriculum:** Voyager-style growth; tutorial stage 0; difficulty ratchet.
 - **Phase 4 — Control plane + eval harness:** reuse Foundry GM kernel for repeatable episodes + independent fitness.
 - **Phase 5 — Evolution & society:** MAP-Elites over variants; multi-agent social world (Generative Agents).

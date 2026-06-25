@@ -3,6 +3,8 @@
 from anima2.contract import (
     Observation,
     PickUp,
+    TargetGround,
+    TargetObject,
     Walk,
     action_from_dict,
 )
@@ -12,9 +14,25 @@ def test_action_json_roundtrip():
     for action in [
         Walk(dir=3, run=True),
         PickUp(serial=0x4000_0001, amount=5),
+        TargetObject(serial=0xAABBCCDD),
+        TargetGround(x=1000, y=2000, z=-5, graphic=0x01A4),
     ]:
         again = action_from_dict(action.to_dict())
         assert again == action
+
+
+def test_observation_pending_target_roundtrip():
+    obs = Observation.from_dict(
+        {
+            "player": {"serial": 1},
+            "pending_target": {"target_type": 1, "cursor_id": 43981, "cursor_flag": 0},
+        }
+    )
+    assert obs.pending_target is not None
+    assert obs.pending_target.cursor_id == 43981
+    assert obs.pending_target.target_type == 1
+    # Absent / null → None.
+    assert Observation.from_dict({"player": {}}).pending_target is None
 
 
 def test_walk_json_shape():

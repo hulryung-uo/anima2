@@ -117,6 +117,23 @@ class JournalEntry:
 
 
 @dataclass
+class TargetCursor:
+    """An outstanding target the server is waiting on (mirrors anima-core)."""
+
+    target_type: int  # 0 = object/serial, 1 = ground/location
+    cursor_id: int
+    cursor_flag: int  # 0 neutral, 1 harmful, 2 helpful
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> TargetCursor:
+        return cls(
+            target_type=d.get("target_type", 0),
+            cursor_id=d.get("cursor_id", 0),
+            cursor_flag=d.get("cursor_flag", 0),
+        )
+
+
+@dataclass
 class Observation:
     """A perception snapshot. ``mobiles`` and ``items`` are sorted by distance."""
 
@@ -124,14 +141,18 @@ class Observation:
     mobiles: list[MobileView] = field(default_factory=list)
     items: list[ItemView] = field(default_factory=list)
     new_journal: list[JournalEntry] = field(default_factory=list)
+    # Set when the server wants us to pick a target (answer with TargetObject/Ground).
+    pending_target: TargetCursor | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Observation:
+        pt = d.get("pending_target")
         return cls(
             player=PlayerView.from_dict(d.get("player", {})),
             mobiles=[MobileView.from_dict(m) for m in d.get("mobiles", [])],
             items=[ItemView.from_dict(i) for i in d.get("items", [])],
             new_journal=[JournalEntry.from_dict(j) for j in d.get("new_journal", [])],
+            pending_target=TargetCursor.from_dict(pt) if pt else None,
         )
 
 
@@ -218,6 +239,31 @@ class WarMode(Action):
         return {"type": "WarMode", "on": self.on}
 
 
+@dataclass
+class TargetObject(Action):
+    """Answer a pending target cursor by selecting an object/mobile."""
+
+    serial: int
+    type: str = field(default="TargetObject", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "TargetObject", "serial": self.serial}
+
+
+@dataclass
+class TargetGround(Action):
+    """Answer a pending target cursor by selecting a ground location."""
+
+    x: int
+    y: int
+    z: int = 0
+    graphic: int = 0
+    type: str = field(default="TargetGround", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "TargetGround", "x": self.x, "y": self.y, "z": self.z, "graphic": self.graphic}
+
+
 def action_from_dict(d: dict[str, Any]) -> Action:
     """Parse an Action from its JSON form (round-trips ``Action.to_dict``)."""
     t = d["type"]
@@ -236,5 +282,9 @@ def action_from_dict(d: dict[str, Any]) -> Action:
             return PickUp(serial=d["serial"], amount=d.get("amount", 1))
         case "WarMode":
             return WarMode(on=d["on"])
+        case "TargetObject":
+            return TargetObject(serial=d["serial"])
+        case "TargetGround":
+            return TargetGround(x=d["x"], y=d["y"], z=d.get("z", 0), graphic=d.get("graphic", 0))
         case _:
             raise ValueError(f"unknown action type: {t!r}")
