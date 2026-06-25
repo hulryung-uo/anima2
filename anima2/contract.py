@@ -83,6 +83,7 @@ class ItemView:
     amount: int
     pos: Position
     container: int | None
+    layer: int  # worn layer (0 if not equipped); 0x15 == backpack
     distance: int
 
     @classmethod
@@ -93,6 +94,7 @@ class ItemView:
             amount=d.get("amount", 0),
             pos=Position.from_dict(d.get("pos", {})),
             container=d.get("container"),
+            layer=d.get("layer", 0),
             distance=d.get("distance", 0),
         )
 

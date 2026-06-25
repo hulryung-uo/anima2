@@ -32,7 +32,7 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 | **0x6C target cursor** | `World.pending_target` → `Observation.pending_target` | brain must know the server is asking for a target | ✅ |
 | **0x3A UpdateSkills** | `World.skills` → `Observation.skills[]` (value/base/cap/lock) | skill levels + **skill-gain reward signal** | ✅ |
 | 0xB0 OpenGump | `pending_gump` (serial, buttons) | crafting/banking UI | ⏳ |
-| 0x3C / 0x24 / 0x25 container | items keyed by container | "do I have ore/ingots/gold?"; looting | ⏳ |
+| **0x3C / 0x25 container** | items keyed by `container` + `ItemView.layer` | "do I have ore/ingots/gold?"; find pickaxe; looting; banking | ✅ |
 | corpse (0x2E + container) | loot view | hunt loop | ⏳ |
 
 ### A3 — bridge (anima-net) additions
