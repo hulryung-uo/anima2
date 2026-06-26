@@ -75,6 +75,46 @@ class GmControl:
         self.body.observe()
         return True
 
+    def command_area(self, command: str, x1: int, y1: int, x2: int, y2: int, z: int) -> bool:
+        """Run an area `[` command (e.g. `[WipeNPCs`) — two ground corners."""
+        self.body.act(Say(text=command))
+        if not self._await_cursor():
+            return False
+        self.body.act(TargetGround(x=x1, y=y1, z=z))
+        if not self._await_cursor():
+            return False
+        self.body.act(TargetGround(x=x2, y=y2, z=z))
+        self.body.observe()
+        return True
+
+    def find_item_near(self, x: int, y: int, graphic: int | None = None):
+        """Find a spawned item at a tile (optionally by graphic). Returns ItemView | None."""
+        for it in self.body.observe().items:
+            if it.pos.x == x and it.pos.y == y and (graphic is None or it.graphic == graphic):
+                return it
+        return None
+
+    def find_mobile_near(self, x: int, y: int, max_dist: int = 1):
+        """Find a spawned mobile near a tile. Returns MobileView | None (nearest)."""
+        cands = [m for m in self.body.observe().mobiles
+                 if abs(m.pos.x - x) <= max_dist and abs(m.pos.y - y) <= max_dist]
+        return min(cands, key=lambda m: m.distance) if cands else None
+
+    def create_world(self, pumps: int = 60) -> list[str]:
+        """Generate the full standard world via ServUO's built-in `[CreateWorld`.
+
+        `nogump` runs every generator (Decorate, SignGen, DoorGen, TelGen,
+        spawners…) with no gump or target. Generation takes a while; we pump to let
+        it run and return any journal lines (progress / completion). Requires the GM
+        account to have Administrator access.
+        """
+        self.body.act(Say(text="[CreateWorld nogump"))
+        lines: list[str] = []
+        for _ in range(pumps):
+            for j in self.body.observe().new_journal:
+                lines.append(j.text)
+        return lines
+
     def go(self, x: int, y: int) -> tuple[int, int, int]:
         """`[Go` self to (x, y); returns the server-settled (x, y, z)."""
         self.body.act(Say(text=f"[Go {x} {y}"))
