@@ -14,13 +14,18 @@ class Wander(Skill):
     description = "Walk around aimlessly, changing direction when movement stalls."
 
     def step(self, ctx: SkillContext) -> SkillResult:
-        # Rotate through directions; persist the current one in scratch memory.
         d = ctx.memory.get("wander_dir", 2)  # default East
         last = ctx.memory.get("wander_last_pos")
         cur = (ctx.obs.player.pos.x, ctx.obs.player.pos.y)
-        if last == cur:  # didn't move last tick → we're blocked, turn
+        # In UO the first walk in a NEW direction only turns you (no move), so a
+        # single no-move tick isn't "blocked". Give each direction a real step
+        # (turn + move) before rotating — otherwise we'd spin in place forever.
+        stuck = ctx.memory.get("wander_stuck", 0) + 1 if last == cur else 0
+        if stuck >= 2:
             d = (d + 1) % 8
+            stuck = 0
         ctx.memory["wander_dir"] = d
+        ctx.memory["wander_stuck"] = stuck
         ctx.memory["wander_last_pos"] = cur
         return SkillResult(Status.RUNNING, Walk(dir=d, run=False))
 

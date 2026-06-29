@@ -59,6 +59,26 @@ def test_wander_turns_when_blocked():
     assert moved  # eventually found an open direction
 
 
+def test_wander_retries_direction_before_rotating():
+    """A direction change in UO costs a turn (no move), so Wander must give each
+    direction a real step (2 ticks) before rotating — else it spins in place."""
+    from anima2.contract import Observation, PlayerView, Position
+    from anima2.skills.base import SkillContext
+
+    skill = Wander()
+    mem: dict = {}
+
+    def at(pos):  # stay at the same tile → "didn't move"
+        obs = Observation(player=PlayerView(serial=1, pos=Position(*pos)))
+        return SkillContext(obs=obs, persona=Persona(name="T"), memory=mem)
+
+    a = skill.step(at((10, 10)))  # first tick: pick dir
+    b = skill.step(at((10, 10)))  # still here (turn) — same dir, don't rotate yet
+    assert a.action.dir == b.action.dir
+    c = skill.step(at((10, 10)))  # still stuck after a real step attempt → rotate
+    assert c.action.dir != b.action.dir
+
+
 def test_say_is_recorded():
     body = MockBody()
     from anima2.contract import Say
