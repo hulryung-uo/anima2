@@ -20,7 +20,13 @@ from .contract import Say, Walk
 from .control import GmControl
 from .ipc_body import IpcBody
 from .persona import Persona
-from .profession import FISHING_SPOTS, MINING_SPOTS, PROFESSIONS, Profession
+from .profession import (
+    BLACKSMITH_SPOTS,
+    FISHING_SPOTS,
+    MINING_SPOTS,
+    PROFESSIONS,
+    Profession,
+)
 from .uomap import find_tree_clusters
 
 # Minoc-area woods (map 1), near the mining camp — keeps the village compact.
@@ -73,6 +79,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     #    lets a worker move tree-to-tree as each one depletes).
     spots = iter(MINING_SPOTS)
     fish_spots = iter(FISHING_SPOTS)
+    smith_spots = iter(BLACKSMITH_SPOTS)
     groves = iter(find_tree_clusters(LUMBER_MAP, *FOREST_BASE))
     plan: list[dict] = []
     for body, prof, persona in online:
@@ -88,6 +95,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 (sx, sy), (wx, wy, wz) = spot
                 workplace = (sx, sy)
                 nodes = [(wx, wy, wz, 0)]  # cast at the exact water tile (land target)
+        elif prof.key == "blacksmith":
+            workplace = next(smith_spots, None)
         elif prof.needs_workplace:
             workplace = prof.workplace or next(spots)
         plan.append({"body": body, "prof": prof, "persona": persona,
@@ -99,7 +108,10 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         for p in plan:
             serial = p["body"].ready["player"]["serial"]
             if p["workplace"] is not None:
-                gm.stage(serial, *p["workplace"], skills=p["prof"].skills, items=p["prof"].items)
+                gx, gy, gz = gm.stage(serial, *p["workplace"],
+                                      skills=p["prof"].skills, items=p["prof"].items)
+                for stype, dx, dy in p["prof"].structures:
+                    gm.command_at(f"[Add {stype}", gx + dx, gy + dy, gz)
             gm.command_on(f'[Set Name "{p["persona"].name}"', serial)
     print("staged & named. work begins.\n")
 
@@ -130,14 +142,16 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--miners", type=int, default=2)
     ap.add_argument("--lumberjacks", type=int, default=1)
-    ap.add_argument("--fishers", type=int, default=2)
+    ap.add_argument("--fishers", type=int, default=1)
+    ap.add_argument("--blacksmiths", type=int, default=1)
     ap.add_argument("--townsfolk", type=int, default=1)
     ap.add_argument("--ticks", type=int, default=60)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2594)
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
-              + ["fisher"] * args.fishers + ["townsfolk"] * args.townsfolk)
+              + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
+              + ["townsfolk"] * args.townsfolk)
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks)
 
 

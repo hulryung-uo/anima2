@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import Chop, Fish, Greet, Mine, Skill, SpeakPending, Wander
+from .skills import Blacksmith, Chop, Fish, Greet, Mine, Skill, SpeakPending, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -40,6 +40,13 @@ FISHING_SPOTS: list[tuple[tuple[int, int], tuple[int, int, int]]] = [
     ((2909, 650), (2913, 646, -5)),
 ]
 
+# Smithy spots on the FLAT Britain plains — each gets its own forge + anvil. Flat
+# ground matters: ServUO's forge/anvil proximity check fails if they settle at a
+# different Z than the smith (a steep Minoc slope put forge z=20, anvil z=38).
+BLACKSMITH_SPOTS: list[tuple[int, int]] = [
+    (1500, 1600), (1508, 1600), (1500, 1608), (1508, 1608),
+]
+
 
 @dataclass
 class Profession:
@@ -55,6 +62,9 @@ class Profession:
     work_skill: Callable[[], Skill] | None = None
     #: Set when a calibrated single workplace exists (else assigned from a pool).
     workplace: tuple[int, int] | None = None
+    #: World objects to `[Add` near the workplace: (type, dx, dy). E.g. a smith's
+    #: forge + anvil. Placed by the Control plane when staging.
+    structures: list[tuple[str, int, int]] = field(default_factory=list)
 
     def planner(self) -> Planner:
         """Work first, then be sociable, then wander."""
@@ -81,6 +91,15 @@ PROFESSIONS: dict[str, Profession] = {
         items=["FishingPole"],
         needs_workplace=True,  # assigned a distinct FISHING_SPOTS shore
         work_skill=Fish,
+    ),
+    "blacksmith": Profession(
+        key="blacksmith",
+        persona_name="Tormund",
+        skills={"Blacksmith": 35},
+        items=["SmithHammer", "IronIngot 300"],
+        needs_workplace=True,  # assigned a BLACKSMITH_SPOTS spot
+        work_skill=Blacksmith,
+        structures=[("Forge", -1, 0), ("Anvil", 1, 0)],  # a smithy at the workplace
     ),
     "townsfolk": Profession(
         key="townsfolk",

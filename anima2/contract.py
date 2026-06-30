@@ -161,6 +161,19 @@ class TargetCursor:
 
 
 @dataclass
+class GumpView:
+    """An open server gump/dialog (e.g. a craft menu). Answer with GumpResponse."""
+
+    serial: int
+    gump_id: int
+    layout: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> GumpView:
+        return cls(serial=d.get("serial", 0), gump_id=d.get("gump_id", 0), layout=d.get("layout", ""))
+
+
+@dataclass
 class Observation:
     """A perception snapshot. ``mobiles`` and ``items`` are sorted by distance."""
 
@@ -171,6 +184,7 @@ class Observation:
     # Set when the server wants us to pick a target (answer with TargetObject/Ground).
     pending_target: TargetCursor | None = None
     skills: list[SkillView] = field(default_factory=list)
+    gumps: list[GumpView] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Observation:
@@ -182,6 +196,7 @@ class Observation:
             new_journal=[JournalEntry.from_dict(j) for j in d.get("new_journal", [])],
             pending_target=TargetCursor.from_dict(pt) if pt else None,
             skills=[SkillView.from_dict(s) for s in d.get("skills", [])],
+            gumps=[GumpView.from_dict(g) for g in d.get("gumps", [])],
         )
 
 
@@ -304,6 +319,28 @@ class CastSpell(Action):
 
 
 @dataclass
+class GumpResponse(Action):
+    """Answer an open gump (0xB0/0xDD) — e.g. press a craft-menu button."""
+
+    serial: int
+    gump_id: int
+    button: int = 0
+    switches: list[int] = field(default_factory=list)
+    entries: list[tuple[int, str]] = field(default_factory=list)
+    type: str = field(default="GumpResponse", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "GumpResponse",
+            "serial": self.serial,
+            "gump_id": self.gump_id,
+            "button": self.button,
+            "switches": list(self.switches),
+            "entries": [list(e) for e in self.entries],
+        }
+
+
+@dataclass
 class TargetObject(Action):
     """Answer a pending target cursor by selecting an object/mobile."""
 
@@ -353,6 +390,12 @@ def action_from_dict(d: dict[str, Any]) -> Action:
                         z=d.get("z", 0), container=d.get("container", 0xFFFFFFFF))
         case "CastSpell":
             return CastSpell(spell=d["spell"])
+        case "GumpResponse":
+            return GumpResponse(
+                serial=d["serial"], gump_id=d["gump_id"], button=d.get("button", 0),
+                switches=list(d.get("switches", [])),
+                entries=[tuple(e) for e in d.get("entries", [])],
+            )
         case "TargetObject":
             return TargetObject(serial=d["serial"])
         case "TargetGround":
