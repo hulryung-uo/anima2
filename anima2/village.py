@@ -20,7 +20,7 @@ from .contract import Say, Walk
 from .control import GmControl
 from .ipc_body import IpcBody
 from .persona import Persona
-from .profession import MINING_SPOTS, PROFESSIONS, Profession
+from .profession import FISHING_SPOTS, MINING_SPOTS, PROFESSIONS, Profession
 from .uomap import find_tree_clusters
 
 # Minoc-area woods (map 1), near the mining camp — keeps the village compact.
@@ -45,7 +45,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
         p = agent.body.observe().player.pos
         with lock:
             status[idx] = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) "
-                           f"skill+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
+                           f"out+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
 
 
 def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
@@ -72,6 +72,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     #    found from the static map — trees can't be probed blindly, and a cluster
     #    lets a worker move tree-to-tree as each one depletes).
     spots = iter(MINING_SPOTS)
+    fish_spots = iter(FISHING_SPOTS)
     groves = iter(find_tree_clusters(LUMBER_MAP, *FOREST_BASE))
     plan: list[dict] = []
     for body, prof, persona in online:
@@ -81,6 +82,12 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             if grove is not None:
                 workplace, trees = grove
                 nodes = [(t.x, t.y, t.z, t.graphic) for t in trees]
+        elif prof.key == "fisher":
+            spot = next(fish_spots, None)
+            if spot is not None:
+                (sx, sy), (wx, wy, wz) = spot
+                workplace = (sx, sy)
+                nodes = [(wx, wy, wz, 0)]  # cast at the exact water tile (land target)
         elif prof.needs_workplace:
             workplace = prof.workplace or next(spots)
         plan.append({"body": body, "prof": prof, "persona": persona,
@@ -122,14 +129,15 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--miners", type=int, default=2)
-    ap.add_argument("--lumberjacks", type=int, default=2)
+    ap.add_argument("--lumberjacks", type=int, default=1)
+    ap.add_argument("--fishers", type=int, default=2)
     ap.add_argument("--townsfolk", type=int, default=1)
     ap.add_argument("--ticks", type=int, default=60)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2594)
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
-              + ["townsfolk"] * args.townsfolk)
+              + ["fisher"] * args.fishers + ["townsfolk"] * args.townsfolk)
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks)
 
 

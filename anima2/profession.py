@@ -16,13 +16,28 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import Chop, Greet, Mine, Skill, SpeakPending, Wander
+from .skills import Chop, Fish, Greet, Mine, Skill, SpeakPending, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
 MINING_SPOTS: list[tuple[int, int]] = [
     (2567, 493), (2611, 474), (2584, 411), (2551, 420), (2524, 532),
     (2608, 538), (2485, 550), (2698, 538), (2659, 538), (2500, 382),
+]
+
+# Vesper-bay fishing spots from the `find-water` tool (anima-net):
+# `find-water 2899 676 40` → ((stand_x, stand_y), (water_x, water_y, water_z)).
+# The fisher stands on shore and casts at the exact water tile (probing reach-4
+# wastes ticks reaching far water, so we target the known tile directly).
+FISHING_SPOTS: list[tuple[tuple[int, int], tuple[int, int, int]]] = [
+    ((2866, 647), (2865, 646, -5)),
+    ((2869, 639), (2868, 638, -5)),
+    ((2876, 636), (2873, 633, -5)),
+    ((2894, 636), (2898, 632, -5)),
+    ((2901, 636), (2902, 635, -5)),
+    ((2908, 636), (2912, 632, -5)),
+    ((2908, 643), (2912, 639, -5)),
+    ((2909, 650), (2913, 646, -5)),
 ]
 
 
@@ -58,6 +73,14 @@ PROFESSIONS: dict[str, Profession] = {
         items=["Pickaxe", "Pickaxe"],
         needs_workplace=True,  # assigned a distinct MINING_SPOTS entry
         work_skill=Mine,
+    ),
+    "fisher": Profession(
+        key="fisher",
+        persona_name="Marina",
+        skills={"Fishing": 35},
+        items=["FishingPole"],
+        needs_workplace=True,  # assigned a distinct FISHING_SPOTS shore
+        work_skill=Fish,
     ),
     "townsfolk": Profession(
         key="townsfolk",

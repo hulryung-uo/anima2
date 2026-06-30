@@ -15,27 +15,37 @@ from .base import Skill, SkillContext, SkillResult, Status
 
 BACKPACK_LAYER = 0x15
 
-# Tiles within harvesting reach (Chebyshev ≤ 2), nearest ring first. We probe
-# these round-robin to find the resource node (rock/tree) near where we stand —
-# reach-2 because a gatherer is often staged a tile or two off the exact node.
-PROBE_OFFSETS = [
-    (dx, dy)
-    for r in (1, 2)
-    for dx in range(-r, r + 1)
-    for dy in range(-r, r + 1)
-    if max(abs(dx), abs(dy)) == r
-]
+def _ring(max_r: int) -> list[tuple[int, int]]:
+    """All tiles within Chebyshev `max_r` of the player, nearest ring first."""
+    return [
+        (dx, dy)
+        for r in range(1, max_r + 1)
+        for dx in range(-r, r + 1)
+        for dy in range(-r, r + 1)
+        if max(abs(dx), abs(dy)) == r
+    ]
+
+
+# Probed round-robin to find a resource near where we stand. Mining/lumberjacking
+# reach 2; fishing casts up to 4 tiles.
+PROBE_OFFSETS = _ring(2)
+FISH_OFFSETS = _ring(4)
 
 # Tool item graphics (ServUO art ids).
 PICKAXE_GRAPHICS = frozenset({0x0E85, 0x0E86, 0x0F39, 0x0F3A})  # pickaxe / shovel
 AXE_GRAPHICS = frozenset({0x0F43, 0x0F44, 0x0F47, 0x0F49, 0x0F4B, 0x13B0, 0x13FB, 0x1443})
+POLE_GRAPHICS = frozenset({0x0DBF, 0x0DC0})  # fishing pole
 
 # UO skill ids.
 SKILL_LUMBERJACKING = 44
 SKILL_MINING = 45
+SKILL_FISHING = 18
 
 # Cliloc 500493 "There's not enough wood here to harvest." — the node is tapped out.
 NODE_DEPLETED_CLILOC = 500493
+# Cliloc 1008124 "You pull out an item :" — a successful catch (fishing's output is
+# fish, not skill, which gains very slowly — so reward catches directly).
+CATCH_CLILOC = 1008124
 
 
 class Harvest(Skill):
@@ -50,6 +60,10 @@ class Harvest(Skill):
     requires_equipped: bool = False
     #: Worn layer for the tool (2 = two-handed, e.g. an axe).
     equip_layer: int = 2
+    #: Tiles to probe round-robin when there's no exact node (reach of the harvest).
+    probe_offsets: list[tuple[int, int]] = PROBE_OFFSETS
+    #: Cliloc that signals a successful catch (fishing) — rewarded per occurrence.
+    catch_cliloc: int | None = None
 
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None or self._backpack(ctx) is not None
@@ -66,6 +80,10 @@ class Harvest(Skill):
                 reward = base - prev
             ctx.memory["harvest_base"] = base
 
+        # Direct output (fishing): reward each catch, since the skill barely moves.
+        if self.catch_cliloc is not None:
+            reward += sum(1.0 for j in obs.new_journal if j.cliloc == self.catch_cliloc)
+
         # A node that ran out of resource → move on to the next one in the cluster.
         if any(j.cliloc == NODE_DEPLETED_CLILOC for j in obs.new_journal):
             ctx.memory["harvest_idx"] = ctx.memory.get("harvest_idx", 0) + 1
@@ -79,7 +97,8 @@ class Harvest(Skill):
                 x, y, z, graphic = node
                 return SkillResult(Status.RUNNING, TargetGround(x=x, y=y, z=z, graphic=graphic), reward)
             p = obs.player.pos
-            dx, dy = PROBE_OFFSETS[ctx.memory.get("harvest_probe", 0) % len(PROBE_OFFSETS)]
+            offs = self.probe_offsets
+            dx, dy = offs[ctx.memory.get("harvest_probe", 0) % len(offs)]
             return SkillResult(Status.RUNNING, TargetGround(x=p.x + dx, y=p.y + dy, z=p.z), reward)
 
         tool = self._tool(ctx)
@@ -155,3 +174,19 @@ class Chop(Harvest):
     skill_id = SKILL_LUMBERJACKING
     requires_equipped = True
     equip_layer = 2  # two-handed
+
+
+class Fish(Harvest):
+    """Fish from water with a fishing pole (no equip needed; casts up to 4 tiles).
+
+    Water is contiguous *terrain*, so — unlike trees — a fisher just probes the
+    tiles in casting range (graphic 0 land target). Stage it on a shore tile from
+    `find-water` (anima-net) and it casts at the nearby water.
+    """
+
+    name = "fish"
+    description = "Fish from the nearby water with a fishing pole."
+    tool_graphics = POLE_GRAPHICS
+    skill_id = SKILL_FISHING
+    probe_offsets = FISH_OFFSETS  # reach 4
+    catch_cliloc = CATCH_CLILOC  # reward = fish caught

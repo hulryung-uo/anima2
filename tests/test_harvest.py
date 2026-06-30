@@ -114,3 +114,20 @@ def test_chop_cycles_grove_on_depletion():
     depleted = JournalEntry(0, "System", "", 0, 0, cliloc=NODE_DEPLETED_CLILOC)
     r2 = Chop().step(ctx([depleted]))
     assert (r2.action.x, r2.action.y) == (20, 20)
+
+
+def test_fish_rewards_each_catch():
+    from anima2.contract import ItemView, JournalEntry, Observation, PlayerView
+    from anima2.skills import Fish
+    from anima2.skills.harvest import CATCH_CLILOC, FISH_OFFSETS
+
+    pole = ItemView(serial=1, graphic=0x0DC0, amount=1, pos=Position(),
+                    container=None, layer=0, distance=0)
+    obs = Observation(
+        player=PlayerView(serial=9, pos=Position(0, 0, 0)),
+        items=[pole],
+        new_journal=[JournalEntry(0, "", ": fish", 0, 0, cliloc=CATCH_CLILOC)],
+    )
+    res = Fish().step(SkillContext(obs=obs, persona=Persona(name="M"), memory={}))
+    assert res.reward >= 1.0  # the catch was rewarded
+    assert len(FISH_OFFSETS) == 80  # casts up to 4 tiles (reach-4 ring)
