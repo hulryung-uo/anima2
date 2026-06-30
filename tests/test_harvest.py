@@ -48,15 +48,19 @@ def test_opens_backpack_when_no_tool_visible():
 
 
 def test_answers_cursor_with_probed_tile():
-    # Facing East (dir 2 → +1 x), probe 0 → target (101, 100).
+    # With a cursor open, target the current probe offset (PROBE_OFFSETS[0] = (-1,-1)).
+    from anima2.skills.harvest import PROBE_OFFSETS
+
     ctx = _ctx(
         items=[_item(0x222, PICKAXE)],
         pending=TargetCursor(target_type=1, cursor_id=7, cursor_flag=0),
-        direction=2,
     )
     res = Mine().step(ctx)
     assert isinstance(res.action, TargetGround)
-    assert (res.action.x, res.action.y) == (101, 100)
+    odx, ody = PROBE_OFFSETS[0]
+    assert (res.action.x, res.action.y) == (100 + odx, 100 + ody)
+    # The probe ring covers reach 2 (24 tiles around the player).
+    assert len(PROBE_OFFSETS) == 24
 
 
 def test_skill_gain_rewards():

@@ -269,6 +269,41 @@ class WarMode(Action):
 
 
 @dataclass
+class Equip(Action):
+    """Equip an item from the pack to a worn layer (1 = one-handed weapon)."""
+
+    serial: int
+    layer: int
+    type: str = field(default="Equip", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "Equip", "serial": self.serial, "layer": self.layer}
+
+
+@dataclass
+class Drop(Action):
+    serial: int
+    x: int = 0
+    y: int = 0
+    z: int = 0
+    container: int = 0xFFFFFFFF
+    type: str = field(default="Drop", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "Drop", "serial": self.serial, "x": self.x, "y": self.y,
+                "z": self.z, "container": self.container}
+
+
+@dataclass
+class CastSpell(Action):
+    spell: int
+    type: str = field(default="CastSpell", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "CastSpell", "spell": self.spell}
+
+
+@dataclass
 class TargetObject(Action):
     """Answer a pending target cursor by selecting an object/mobile."""
 
@@ -311,6 +346,13 @@ def action_from_dict(d: dict[str, Any]) -> Action:
             return PickUp(serial=d["serial"], amount=d.get("amount", 1))
         case "WarMode":
             return WarMode(on=d["on"])
+        case "Equip":
+            return Equip(serial=d["serial"], layer=d["layer"])
+        case "Drop":
+            return Drop(serial=d["serial"], x=d.get("x", 0), y=d.get("y", 0),
+                        z=d.get("z", 0), container=d.get("container", 0xFFFFFFFF))
+        case "CastSpell":
+            return CastSpell(spell=d["spell"])
         case "TargetObject":
             return TargetObject(serial=d["serial"])
         case "TargetGround":

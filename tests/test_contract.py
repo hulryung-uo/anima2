@@ -1,6 +1,9 @@
 """The Python contract must round-trip JSON faithfully (it mirrors anima-core)."""
 
 from anima2.contract import (
+    CastSpell,
+    Drop,
+    Equip,
     Observation,
     PickUp,
     TargetGround,
@@ -16,6 +19,9 @@ def test_action_json_roundtrip():
         PickUp(serial=0x4000_0001, amount=5),
         TargetObject(serial=0xAABBCCDD),
         TargetGround(x=1000, y=2000, z=-5, graphic=0x01A4),
+        Equip(serial=0x4000_0002, layer=2),
+        Drop(serial=0x4000_0003, x=10, y=20, z=0, container=0xFFFFFFFF),
+        CastSpell(spell=5),
     ]:
         again = action_from_dict(action.to_dict())
         assert again == action
