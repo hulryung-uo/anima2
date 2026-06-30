@@ -71,9 +71,9 @@ def test_probe_rotates_each_swing():
     skill = Mine()
     mem = {}
     skill.step(_ctx(items=[_item(0x222, PICKAXE)], memory=mem))
-    assert mem["mine_probe"] == 1
+    assert mem["harvest_probe"] == 1
     skill.step(_ctx(items=[_item(0x222, PICKAXE)], memory=mem))
-    assert mem["mine_probe"] == 2
+    assert mem["harvest_probe"] == 2
 
 
 def test_not_runnable_without_tool_or_pack():

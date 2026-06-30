@@ -2,7 +2,7 @@
 
 from .base import Goal, Skill, SkillContext, SkillResult, Status
 from .combat import Combat
-from .harvest import Mine
+from .harvest import Chop, Harvest, Mine
 from .movement import GoTo, Wander
 from .social import Greet, SpeakPending
 
@@ -12,9 +12,11 @@ __all__ = [
     "SkillContext",
     "SkillResult",
     "Status",
+    "Chop",
     "Combat",
     "GoTo",
     "Greet",
+    "Harvest",
     "Mine",
     "SpeakPending",
     "Wander",

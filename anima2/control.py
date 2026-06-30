@@ -127,12 +127,28 @@ class GmControl:
 
     # --- scenarios -------------------------------------------------------------
 
-    def setup_miner(self, char_serial: int, x: int = 2567, y: int = 493) -> tuple[int, int, int]:
-        """Stage a character to mine: pickaxe in pack, Mining 35, teleported to the
-        calibrated Minoc ridge spot (anima v1's proven LANE_SPOTS[0])."""
+    def stage(
+        self,
+        char_serial: int,
+        x: int,
+        y: int,
+        *,
+        skills: dict[str, float] | None = None,
+        items: list[str] | None = None,
+    ) -> tuple[int, int, int]:
+        """Stage a character for work: set skills, add tools to the pack, and
+        teleport it to the (server-settled) workplace at (x, y). The Control plane
+        in one call — generalizes `setup_miner` to any profession."""
         self.hide()
         gx, gy, gz = self.go(x, y)
-        self.command_on("[AddToPack Pickaxe", char_serial)
-        self.command_on("[Set Skills.Mining.Base 35", char_serial)
+        for skill, base in (skills or {}).items():
+            self.command_on(f"[Set Skills.{skill}.Base {base}", char_serial)
+        for item in items or []:
+            self.command_on(f"[AddToPack {item}", char_serial)
         self.command_on(f"[Set X {gx} Y {gy} Z {gz}", char_serial)
         return (gx, gy, gz)
+
+    def setup_miner(self, char_serial: int, x: int = 2567, y: int = 493) -> tuple[int, int, int]:
+        """Stage a miner at the calibrated Minoc ridge (anima v1's LANE_SPOTS[0])."""
+        return self.stage(char_serial, x, y,
+                          skills={"Mining": 35}, items=["Pickaxe", "Pickaxe"])
