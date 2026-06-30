@@ -27,6 +27,25 @@ def test_llm_cognition_parses_goto_and_queues_speech():
     assert "Grimm" in client.calls[0][0]
 
 
+def test_llm_cognition_chatter_queues_say_with_job_context():
+    # The village chatter path: a job-flavoured prompt, an in-character line, no goto.
+    client = StubLLMClient('{"say": "These veins run thin today.", "goal": "idle"}')
+    ctx = _ctx(goal=None)
+    goal = LLMCognition(client, job="blacksmith").reconsider(ctx)
+    assert goal is None  # idle → planner's work/Wander keeps running
+    assert ctx.memory["pending_say"] == "These veins run thin today."
+    assert "blacksmith" in client.calls[0][0]  # the job reached the system prompt
+
+
+def test_llm_cognition_speaks_bare_prose():
+    # qwen routinely ignores the JSON ask and just emits a line — speak it anyway.
+    client = StubLLMClient('"Hope we hit a good vein today!"')
+    ctx = _ctx(goal=None)
+    goal = LLMCognition(client, job="miner").reconsider(ctx)
+    assert goal is None
+    assert ctx.memory["pending_say"] == "Hope we hit a good vein today!"
+
+
 def test_llm_cognition_idle_clears_goal():
     ctx = _ctx(goal=Goal(kind="goto", params={}))
     goal = LLMCognition(StubLLMClient('{"goal": "idle"}')).reconsider(ctx)

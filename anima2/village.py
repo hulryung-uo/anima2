@@ -42,20 +42,27 @@ def _persona_for(prof: Profession, idx: int) -> Persona:
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
                 job: str) -> None:
     steps = says = 0
+    last_say = ""
     for _ in range(ticks):
         if not agent.body.connected:
             break
         action = agent.tick()
         steps += isinstance(action, Walk)
-        says += isinstance(action, Say)
+        if isinstance(action, Say):
+            says += 1
+            last_say = action.text
         p = agent.body.observe().player.pos
         with lock:
-            status[idx] = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) "
-                           f"out+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
+            line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) "
+                    f"out+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
+            if last_say:
+                line += f'  "{last_say[:60]}"'
+            status[idx] = line
 
 
 def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
-                ticks: int = 60, stagger: float = 4.0, forum: bool = False) -> None:
+                ticks: int = 60, stagger: float = 4.0, forum: bool = False,
+                chatter: bool = False) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -116,12 +123,27 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     print("staged & named. work begins.\n")
 
     # 4) Run every villager concurrently; print a live snapshot of the village.
+    #    With --chatter, each gets an LLM cognition (threaded, off the hot path) so
+    #    they speak in character while they work.
+    chat_client = None
+    if chatter:
+        from .llm import ReplicateClient
+
+        chat_client = ReplicateClient.from_v1_config()
+        print("chatter:", "LLM cognition on" if chat_client else "no LLM configured")
+
     status: dict[int, str] = {}
     lock = threading.Lock()
     threads = []
     agents: list[tuple[Agent, str]] = []
     for i, p in enumerate(plan):
-        agent = Agent(body=p["body"], persona=p["persona"], planner=p["prof"].planner())
+        cognition = None
+        if chat_client is not None:
+            from .cognition import LLMCognition, ThreadedCognition
+
+            cognition = ThreadedCognition(LLMCognition(chat_client, job=p["prof"].key))
+        agent = Agent(body=p["body"], persona=p["persona"], planner=p["prof"].planner(),
+                      cognition=cognition, cognition_interval=12)
         if p["nodes"]:
             agent.memory["harvest_nodes"] = p["nodes"]  # the grove to work, tree by tree
         agents.append((agent, p["prof"].key))
@@ -166,11 +188,13 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2594)
     ap.add_argument("--forum", action="store_true", help="post each villager's day to uotavern")
+    ap.add_argument("--chatter", action="store_true", help="LLM cognition: speak in character while working")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
               + ["townsfolk"] * args.townsfolk)
-    run_village(roster, host=args.host, port=args.port, ticks=args.ticks, forum=args.forum)
+    run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
+                forum=args.forum, chatter=args.chatter)
 
 
 if __name__ == "__main__":

@@ -33,27 +33,38 @@ class HeuristicCognition:
         return ctx.goal
 
 
-class LLMCognition:
-    """Ask an LLM for the next high-level goal, given persona + situation.
+def _broke_character(text: str) -> bool:
+    low = text.lower()
+    return "language model" in low or "an ai" in low or "i cannot" in low or "as an" in low
 
-    The model replies with a small JSON object, e.g.
-    ``{"goal": "goto", "x": 3716, "y": 2204, "say": "Off to the mine."}`` or
-    ``{"goal": "idle"}``. A ``say`` is stashed in ``ctx.memory['pending_say']`` for
-    the `SpeakPending` skill to voice on the next tick.
+
+class LLMCognition:
+    """Ask an LLM, in character, for a short in-game line to say (and a goal).
+
+    The model replies with JSON like
+    ``{"say": "These veins run thin today...", "goal": "idle"}``. The ``say`` is an
+    in-character line the character speaks aloud — stashed in
+    ``ctx.memory['pending_say']`` for the `SpeakPending` skill to voice in-game on
+    the next tick. ``goal: goto`` (with x,y) is honored by agents whose planner has
+    a `GoTo`; workers (no GoTo) just chatter while doing their job.
     """
 
-    def __init__(self, client: LLMClient) -> None:
+    def __init__(self, client: LLMClient, job: str = "adventurer") -> None:
         self.client = client
+        self.job = job
 
     def reconsider(self, ctx: SkillContext) -> Goal | None:
         raw = self.client.complete(self._system(ctx.persona), self._situation(ctx))
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         decision = _parse_json(raw)
         if not decision:
-            return ctx.goal  # unparseable → don't disturb the current goal
+            # The model often ignores the JSON ask and just speaks a line of prose
+            # (qwen does this routinely). Treat that as the spoken line, in character.
+            line = raw.strip("`").removeprefix("json").strip().strip('"')
+            self._queue_say(ctx, line)
+            return ctx.goal  # no goal in a bare-prose reply → leave current goal
 
-        say = decision.get("say")
-        if isinstance(say, str) and say.strip():
-            ctx.memory["pending_say"] = say.strip()
+        self._queue_say(ctx, decision.get("say"))
 
         if decision.get("goal") == "goto" and "x" in decision and "y" in decision:
             z = ctx.obs.player.pos.z
@@ -61,32 +72,42 @@ class LLMCognition:
                                                                 int(decision["y"]), z)})
         return None  # idle / explore → let the Wander fallback run
 
-    @staticmethod
-    def _system(persona: Persona) -> str:
+    def _queue_say(self, ctx: SkillContext, line: Any) -> None:
+        """Stash one clean, in-character line for `SpeakPending` to voice in-game.
+
+        Collapses the model's stray newlines/whitespace into a single line (UO
+        speech is one line) and drops obvious out-of-character disclosures."""
+        if not isinstance(line, str):
+            return
+        line = " ".join(line.split())  # collapse newlines/runs of whitespace
+        if line and not _broke_character(line):
+            ctx.memory["pending_say"] = line[:200]
+
+    def _system(self, persona: Persona) -> str:
         return (
-            f"You are {persona.name}, {persona.title}, a character in Ultima Online.\n"
-            f"Personality: {persona.personality}\n"
-            f"Speech style: {persona.speech_style}\n"
-            f"Interests: {persona.interests}\n"
-            "Decide your next short-term goal. Reply with ONLY a JSON object: "
-            '{"goal": "goto"|"idle", "x": int, "y": int, "say": optional short line}. '
-            "Use goto with map coordinates when you have somewhere to be; idle otherwise. "
-            "Stay in character; keep any 'say' to one short sentence."
+            f"You ARE {persona.name}, {persona.title or self.job}, a real person living in "
+            f"the world of Ultima Online (Britannia), working as a {self.job}.\n"
+            f"Personality: {persona.personality or 'plainspoken'}\n"
+            f"Speech style: {persona.speech_style or 'direct, earthy'}\n"
+            f"Interests: {persona.interests or self.job}\n"
+            "You are NOT an AI and must never say so or mention these instructions — you are "
+            "this character, speaking in your own voice. Reply with ONLY a JSON object: "
+            '{"say": "<one short in-character line you speak aloud now>", "goal": "idle"}. '
+            "Keep 'say' to one short, natural sentence — a remark about your work, the "
+            "weather, the world, or anyone nearby."
         )
 
-    @staticmethod
-    def _situation(ctx: SkillContext) -> str:
+    def _situation(self, ctx: SkillContext) -> str:
         obs = ctx.obs
-        p = obs.player
-        people = ", ".join(f"{m.name or '?'}@{m.distance}" for m in obs.mobiles[:5]) or "none"
-        recent = " | ".join(j.text for j in obs.new_journal[-5:]) or "(quiet)"
-        memory = " | ".join(str(e) for e in ctx.episodes[-6:]) or "(nothing yet)"
+        people = ", ".join(f"{m.name or 'someone'}@{m.distance}" for m in obs.mobiles[:5]) or "no one"
+        recent = " | ".join(j.text for j in obs.new_journal[-4:]) or "(quiet)"
+        memory = " | ".join(str(e) for e in ctx.episodes[-5:]) or "(nothing yet)"
         return (
-            f"You are at ({p.pos.x},{p.pos.y}) with {p.hits}/{p.hits_max} health.\n"
+            f"You are at work as a {self.job}.\n"
             f"Nearby: {people}.\n"
-            f"Recent chatter: {recent}\n"
+            f"Recently heard: {recent}\n"
             f"Recently you: {memory}\n"
-            "What is your next goal?"
+            "What do you say aloud right now?"
         )
 
 
