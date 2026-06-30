@@ -82,3 +82,35 @@ def test_probe_rotates_each_swing():
 
 def test_not_runnable_without_tool_or_pack():
     assert not Mine().can_run(_ctx(items=[]))
+
+
+def test_chop_cycles_grove_on_depletion():
+    from anima2.contract import (
+        JournalEntry,
+        Observation,
+        PlayerView,
+        Position,
+        TargetCursor,
+        TargetGround,
+    )
+    from anima2.skills import Chop
+    from anima2.skills.harvest import NODE_DEPLETED_CLILOC
+
+    nodes = [(10, 10, 0, 0x0CCA), (20, 20, 0, 0x0CCB)]
+    mem: dict = {"harvest_nodes": nodes}
+
+    def ctx(journal=()):
+        obs = Observation(
+            player=PlayerView(serial=9, pos=Position(11, 11, 0)),
+            pending_target=TargetCursor(target_type=1, cursor_id=7, cursor_flag=0),
+            new_journal=list(journal),
+        )
+        return SkillContext(obs=obs, persona=Persona(name="B"), memory=mem)
+
+    # Targets the first tree in the grove.
+    r = Chop().step(ctx())
+    assert isinstance(r.action, TargetGround) and (r.action.x, r.action.y) == (10, 10)
+    # A "not enough wood" message advances to the next tree (no walking).
+    depleted = JournalEntry(0, "System", "", 0, 0, cliloc=NODE_DEPLETED_CLILOC)
+    r2 = Chop().step(ctx([depleted]))
+    assert (r2.action.x, r2.action.y) == (20, 20)

@@ -21,23 +21,12 @@ from .control import GmControl
 from .ipc_body import IpcBody
 from .persona import Persona
 from .profession import MINING_SPOTS, PROFESSIONS, Profession
-from .uomap import Static, find_trees
+from .uomap import find_tree_clusters
 
 # Minoc-area woods (map 1), near the mining camp — keeps the village compact.
-# Lumberjacks are each assigned a distinct tree scanned from the static map.
+# Each lumberjack gets a distinct grove (a stand spot + the trees in reach).
 FOREST_BASE = (2520, 450)
 LUMBER_MAP = 1
-
-
-def _distinct_trees(map_index: int, cx: int, cy: int, radius: int = 60) -> list[Static]:
-    """One tree per tile (a tree stacks several graphics at the same (x, y))."""
-    seen: set[tuple[int, int]] = set()
-    out: list[Static] = []
-    for t in find_trees(map_index, cx, cy, radius):
-        if (t.x, t.y) not in seen:
-            seen.add((t.x, t.y))
-            out.append(t)
-    return out
 
 
 def _persona_for(prof: Profession, idx: int) -> Persona:
@@ -78,20 +67,24 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         print("no villagers came online")
         return
 
-    # 2) Assign each worker a distinct workplace (and, for lumberjacks, an exact
-    #    tree node found from the static map — trees can't be probed blindly).
+    # 2) Assign each worker a distinct workplace. Miners get an ore bank; each
+    #    lumberjack gets a grove (a stand spot + the exact tree statics in reach,
+    #    found from the static map — trees can't be probed blindly, and a cluster
+    #    lets a worker move tree-to-tree as each one depletes).
     spots = iter(MINING_SPOTS)
-    trees = _distinct_trees(LUMBER_MAP, *FOREST_BASE)
+    groves = iter(find_tree_clusters(LUMBER_MAP, *FOREST_BASE))
     plan: list[dict] = []
     for body, prof, persona in online:
-        workplace, node = None, None
-        if prof.key == "lumberjack" and trees:
-            t = trees.pop(0)
-            workplace, node = (t.x, t.y + 1), (t.x, t.y, t.z, t.graphic)
+        workplace, nodes = None, None
+        if prof.key == "lumberjack":
+            grove = next(groves, None)
+            if grove is not None:
+                workplace, trees = grove
+                nodes = [(t.x, t.y, t.z, t.graphic) for t in trees]
         elif prof.needs_workplace:
             workplace = prof.workplace or next(spots)
         plan.append({"body": body, "prof": prof, "persona": persona,
-                     "workplace": workplace, "node": node})
+                     "workplace": workplace, "nodes": nodes})
 
     # 3) Control plane: stage workers and name everyone.
     with GmControl.spawn(host, port) as gm:
@@ -109,8 +102,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     threads = []
     for i, p in enumerate(plan):
         agent = Agent(body=p["body"], persona=p["persona"], planner=p["prof"].planner())
-        if p["node"] is not None:
-            agent.memory["harvest_node"] = p["node"]  # the exact tree to chop
+        if p["nodes"]:
+            agent.memory["harvest_nodes"] = p["nodes"]  # the grove to work, tree by tree
         t = threading.Thread(target=_run_worker,
                              args=(agent, ticks, i, status, lock, p["prof"].key), daemon=True)
         threads.append(t)

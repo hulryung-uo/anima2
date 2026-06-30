@@ -34,6 +34,9 @@ AXE_GRAPHICS = frozenset({0x0F43, 0x0F44, 0x0F47, 0x0F49, 0x0F4B, 0x13B0, 0x13FB
 SKILL_LUMBERJACKING = 44
 SKILL_MINING = 45
 
+# Cliloc 500493 "There's not enough wood here to harvest." — the node is tapped out.
+NODE_DEPLETED_CLILOC = 500493
+
 
 class Harvest(Skill):
     """Base gathering skill: use a tool on probed neighbour tiles, reward on skill gain.
@@ -63,11 +66,15 @@ class Harvest(Skill):
                 reward = base - prev
             ctx.memory["harvest_base"] = base
 
-        # 1) Cursor open → target the resource. If the Control plane gave us an
-        #    exact node (x, y, z, graphic) — required for statics like trees —
-        #    target it; otherwise probe the surrounding tiles (works for ore).
+        # A node that ran out of resource → move on to the next one in the cluster.
+        if any(j.cliloc == NODE_DEPLETED_CLILOC for j in obs.new_journal):
+            ctx.memory["harvest_idx"] = ctx.memory.get("harvest_idx", 0) + 1
+
+        # 1) Cursor open → target the resource. If the Control plane gave us exact
+        #    node(s) (x, y, z, graphic) — required for statics like trees — target
+        #    the current one; otherwise probe the surrounding tiles (works for ore).
         if obs.pending_target is not None:
-            node = ctx.memory.get("harvest_node")
+            node = self._current_node(ctx)
             if node is not None:
                 x, y, z, graphic = node
                 return SkillResult(Status.RUNNING, TargetGround(x=x, y=y, z=z, graphic=graphic), reward)
@@ -105,6 +112,14 @@ class Harvest(Skill):
         # 4) Swing — and advance the probe so the next attempt tries the next tile.
         ctx.memory["harvest_probe"] = ctx.memory.get("harvest_probe", 0) + 1
         return SkillResult(Status.RUNNING, Use(serial=tool.serial), reward)
+
+    def _current_node(self, ctx: SkillContext):
+        """The node to harvest now: cycle a cluster (`harvest_nodes`) if given,
+        else a single `harvest_node`, else None (probe)."""
+        nodes = ctx.memory.get("harvest_nodes")
+        if nodes:
+            return nodes[ctx.memory.get("harvest_idx", 0) % len(nodes)]
+        return ctx.memory.get("harvest_node")
 
     def _skill_base(self, obs) -> float | None:
         return next((s.base for s in obs.skills if s.id == self.skill_id), None)

@@ -77,6 +77,44 @@ def find_trees(map_index: int, cx: int, cy: int, radius: int = 40) -> list[Stati
     return trees
 
 
+def distinct_trees(map_index: int, cx: int, cy: int, radius: int = 60) -> list[Static]:
+    """One tree per tile (a tree stacks several graphics at the same (x, y))."""
+    seen: set[tuple[int, int]] = set()
+    out: list[Static] = []
+    for t in find_trees(map_index, cx, cy, radius):
+        if (t.x, t.y) not in seen:
+            seen.add((t.x, t.y))
+            out.append(t)
+    return out
+
+
+def find_tree_clusters(map_index: int, cx: int, cy: int, radius: int = 60,
+                       reach: int = 2) -> list[tuple[tuple[int, int], list[Static]]]:
+    """Standing spots with several trees in harvest reach, richest first.
+
+    Returns [((stand_x, stand_y), [trees within `reach`]), …]. A lumberjack stands
+    on the spot and chops every tree in its list without moving — and as one
+    depletes it moves to the next (trees regrow), giving sustained work. Stand
+    spots are a tile *south* of a tree (likely open ground); the spots returned
+    don't overlap, so multiple lumberjacks get separate groves.
+    """
+    trees = distinct_trees(map_index, cx, cy, radius)
+    scored: list[tuple[tuple[int, int], list[Static]]] = []
+    for t in trees:
+        sx, sy = t.x, t.y + 1  # stand just south of a tree
+        grove = [u for u in trees if max(abs(u.x - sx), abs(u.y - sy)) <= reach]
+        if len(grove) >= 2:
+            scored.append(((sx, sy), grove))
+    scored.sort(key=lambda s: len(s[1]), reverse=True)
+
+    # Keep spatially-separate spots so different workers don't share a grove.
+    chosen: list[tuple[tuple[int, int], list[Static]]] = []
+    for spot, grove in scored:
+        if all(max(abs(spot[0] - s[0]), abs(spot[1] - s[1])) > 2 * reach + 1 for s, _ in chosen):
+            chosen.append((spot, grove))
+    return chosen
+
+
 if __name__ == "__main__":
     import sys
 
