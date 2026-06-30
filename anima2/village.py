@@ -55,7 +55,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
 
 
 def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
-                ticks: int = 60, stagger: float = 4.0) -> None:
+                ticks: int = 60, stagger: float = 4.0, forum: bool = False) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -119,10 +119,12 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     status: dict[int, str] = {}
     lock = threading.Lock()
     threads = []
+    agents: list[tuple[Agent, str]] = []
     for i, p in enumerate(plan):
         agent = Agent(body=p["body"], persona=p["persona"], planner=p["prof"].planner())
         if p["nodes"]:
             agent.memory["harvest_nodes"] = p["nodes"]  # the grove to work, tree by tree
+        agents.append((agent, p["prof"].key))
         t = threading.Thread(target=_run_worker,
                              args=(agent, ticks, i, status, lock, p["prof"].key), daemon=True)
         threads.append(t)
@@ -137,6 +139,19 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         t.join()
     print("\nday's work done.")
 
+    # 5) End of day: each villager writes about it on the tavern forum.
+    if forum:
+        from .forum import ForumClient, post_day
+
+        client = ForumClient()
+        if not client.configured:
+            print("forum: no API key (set ANIMA_FORUM_API_KEY or anima/config.yaml).")
+        else:
+            print("\n— the tavern board —")
+            for agent, job in agents:
+                res = post_day(agent, job=job, client=client)
+                print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -148,11 +163,12 @@ def main() -> None:
     ap.add_argument("--ticks", type=int, default=60)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2594)
+    ap.add_argument("--forum", action="store_true", help="post each villager's day to uotavern")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
               + ["townsfolk"] * args.townsfolk)
-    run_village(roster, host=args.host, port=args.port, ticks=args.ticks)
+    run_village(roster, host=args.host, port=args.port, ticks=args.ticks, forum=args.forum)
 
 
 if __name__ == "__main__":
