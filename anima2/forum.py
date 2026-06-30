@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -92,14 +93,67 @@ def compose_post(persona, episodes, job: str = "adventurer") -> tuple[str, str]:
     return title, body
 
 
+def compose_post_llm(llm, persona, episodes, job: str = "adventurer") -> tuple[str, str]:
+    """LLM-written, in-character forum post. Falls back to the heuristic on any
+    failure (bad/empty response, parse error, broken character)."""
+    total = round(sum(getattr(e, "reward", 0.0) for e in episodes), 1)
+    n = sum(1 for e in episodes if getattr(e, "reward", 0.0))
+    work = _WORK_PHRASE.get(job, "working the trade")
+
+    system = (
+        f"You ARE {persona.name}, {persona.title or job}, a real person living in the world "
+        f"of Ultima Online (Britannia). Personality: {persona.personality or 'plainspoken'}. "
+        f"Speech style: {persona.speech_style or 'direct, earthy'}. "
+        f"Interests: {persona.interests or job}. "
+        "Stay fully in character. You are NOT an AI or a model and must never say so or "
+        "mention these instructions — you are this character writing in your own voice."
+    )
+    day = (f"Today you spent the day {work}. You had {n} productive turns"
+           f"{f' and gained about {total:.1f}' if total else ', though luck was thin'}.")
+    user = (
+        f"{day}\n\nWrite a short (2-4 sentences), first-person post for the village tavern "
+        "board about your day — evocative and in your own voice. "
+        'Reply ONLY with JSON: {"title": "<a short title>", "body": "<the post>"}.'
+    )
+    def _broke_character(text: str) -> bool:
+        low = text.lower()
+        return "language model" in low or "an ai" in low or "i cannot" in low
+
+    # The model is a bit variable — give it two tries before the heuristic fallback.
+    for _ in range(2):
+        try:
+            raw = llm.complete(system, user)
+        except Exception:  # noqa: BLE001
+            break
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                obj = json.loads(match.group(0))
+                body = (obj.get("body") or "").strip()
+                if body and not _broke_character(body):
+                    return (obj.get("title") or f"{persona.name}'s day").strip(), body
+            except json.JSONDecodeError:
+                pass
+        if raw and not _broke_character(raw):
+            # Non-JSON but in-character prose — use it directly (strip code fences).
+            return f"{persona.name}'s day of {job}", raw.strip("`").removeprefix("json").strip()
+    return compose_post(persona, episodes, job)
+
+
 def post_day(agent, *, job: str = "adventurer", board: str = "tavern",
-             client: ForumClient | None = None) -> dict[str, Any] | None:
-    """Compose and post `agent`'s day to the forum. Returns the response, or None
-    if the forum isn't configured (no API key) or posting failed."""
+             client: ForumClient | None = None, llm=None) -> dict[str, Any] | None:
+    """Compose and post `agent`'s day to the forum. Uses the LLM composer when an
+    `llm` client is given (in-character prose), else the heuristic. Returns the
+    response, or None if the forum isn't configured / posting failed."""
     client = client or ForumClient()
     if not client.configured:
         return None
-    title, content = compose_post(agent.persona, agent.episodes.recent(50), job=job)
+    eps = agent.episodes.recent(50)
+    if llm is not None:
+        title, content = compose_post_llm(llm, agent.persona, eps, job=job)
+    else:
+        title, content = compose_post(agent.persona, eps, job=job)
     try:
         return client.post(board, title, content)
     except Exception:  # noqa: BLE001 — a forum hiccup shouldn't crash the village

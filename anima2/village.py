@@ -142,14 +142,16 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     # 5) End of day: each villager writes about it on the tavern forum.
     if forum:
         from .forum import ForumClient, post_day
+        from .llm import ReplicateClient
 
         client = ForumClient()
         if not client.configured:
             print("forum: no API key (set ANIMA_FORUM_API_KEY or anima/config.yaml).")
         else:
-            print("\n— the tavern board —")
+            llm = ReplicateClient.from_v1_config()  # in-character prose if available
+            print(f"\n— the tavern board —{' (LLM-written)' if llm else ' (heuristic)'}")
             for agent, job in agents:
-                res = post_day(agent, job=job, client=client)
+                res = post_day(agent, job=job, client=client, llm=llm)
                 print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
 
 

@@ -46,3 +46,23 @@ def test_post_day_noops_without_api_key():
     eps = EpisodicMemory()
     agent = SimpleNamespace(persona=Persona(name="X"), episodes=eps)
     assert post_day(agent, client=ForumClient(api_key="")) is None
+
+
+def test_llm_post_uses_model_prose():
+    from anima2.forum import compose_post_llm
+    from anima2.llm import StubLLMClient
+
+    llm = StubLLMClient('{"title": "Iron in the Bones", "body": "Swung the pickaxe all day."}')
+    title, body = compose_post_llm(llm, Persona(name="Grimm", title="a miner"), [], job="miner")
+    assert title == "Iron in the Bones" and "pickaxe" in body
+
+
+def test_llm_post_falls_back_when_character_breaks():
+    from anima2.forum import compose_post_llm
+    from anima2.llm import StubLLMClient
+
+    # A refusal / AI-disclosure must fall back to the heuristic, not be posted.
+    llm = StubLLMClient("I am an AI language model and cannot role-play.")
+    title, body = compose_post_llm(llm, Persona(name="Grimm", title="a miner"), [], job="miner")
+    assert "ai language model" not in body.lower()
+    assert "Grimm" in title
