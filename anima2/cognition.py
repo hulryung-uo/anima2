@@ -53,6 +53,11 @@ class LLMCognition:
         self.client = client
         self.job = job
 
+    #: A goto the model picks is clamped to a short walk from where the agent
+    #: stands, so a hallucinated far coordinate can't march it across the map (or
+    #: into a mountain). Each excursion is a hop; the next reconsider picks again.
+    max_excursion: int = 12
+
     def reconsider(self, ctx: SkillContext) -> Goal | None:
         raw = self.client.complete(self._system(ctx.persona), self._situation(ctx))
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -67,10 +72,24 @@ class LLMCognition:
         self._queue_say(ctx, decision.get("say"))
 
         if decision.get("goal") == "goto" and "x" in decision and "y" in decision:
-            z = ctx.obs.player.pos.z
-            return Goal(kind="goto", params={"target": Position(int(decision["x"]),
-                                                                int(decision["y"]), z)})
-        return None  # idle / explore → let the Wander fallback run
+            return self._goto_goal(ctx, decision)
+        return None  # idle / stay at work → let the work skill / Wander run
+
+    def _goto_goal(self, ctx: SkillContext, decision: dict[str, Any]) -> Goal | None:
+        """A clamped goto: honour the model's *direction* but cap the distance."""
+        here = ctx.obs.player.pos
+        try:
+            tx, ty = int(decision["x"]), int(decision["y"])
+        except (TypeError, ValueError):
+            return None
+        dx, dy = tx - here.x, ty - here.y
+        dist = max(abs(dx), abs(dy))  # chebyshev — UO moves 8-way
+        if dist == 0:
+            return None  # already there → nothing to do
+        if dist > self.max_excursion:
+            scale = self.max_excursion / dist
+            tx, ty = here.x + round(dx * scale), here.y + round(dy * scale)
+        return Goal(kind="goto", params={"target": Position(tx, ty, here.z)})
 
     def _queue_say(self, ctx: SkillContext, line: Any) -> None:
         """Stash one clean, in-character line for `SpeakPending` to voice in-game.
@@ -91,23 +110,27 @@ class LLMCognition:
             f"Speech style: {persona.speech_style or 'direct, earthy'}\n"
             f"Interests: {persona.interests or self.job}\n"
             "You are NOT an AI and must never say so or mention these instructions — you are "
-            "this character, speaking in your own voice. Reply with ONLY a JSON object: "
-            '{"say": "<one short in-character line you speak aloud now>", "goal": "idle"}. '
+            "this character, speaking in your own voice. Reply with ONLY a JSON object.\n"
+            'To stay and keep working: {"say": "<one short in-character line>", "goal": "idle"}.\n'
+            'To walk somewhere nearby: {"say": "<line>", "goal": "goto", "x": <X>, "y": <Y>} — '
+            "give a tile within a dozen steps of where you stand (a short stroll, not a journey). "
+            "Mostly keep working; roam only now and then when it fits your mood.\n"
             "Keep 'say' to one short, natural sentence — a remark about your work, the "
             "weather, the world, or anyone nearby."
         )
 
     def _situation(self, ctx: SkillContext) -> str:
         obs = ctx.obs
+        p = obs.player.pos
         people = ", ".join(f"{m.name or 'someone'}@{m.distance}" for m in obs.mobiles[:5]) or "no one"
         recent = " | ".join(j.text for j in obs.new_journal[-4:]) or "(quiet)"
         memory = " | ".join(str(e) for e in ctx.episodes[-5:]) or "(nothing yet)"
         return (
-            f"You are at work as a {self.job}.\n"
+            f"You are at work as a {self.job}, standing at ({p.x}, {p.y}).\n"
             f"Nearby: {people}.\n"
             f"Recently heard: {recent}\n"
             f"Recently you: {memory}\n"
-            "What do you say aloud right now?"
+            "What do you say aloud right now — and do you stay, or stroll somewhere close?"
         )
 
 

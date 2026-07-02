@@ -100,8 +100,14 @@ class Agent:
                 )
             )
 
-        if result.status is Status.SUCCESS and self.goal is not None:
-            self.goal = None  # goal achieved; cognition will set the next one
+        # A goal-serving skill (e.g. GoTo) that reached a terminal state — arrived
+        # (SUCCESS) or got wedged (FAILURE) — has consumed the goal: clear it so the
+        # agent resumes its default behaviour and cognition picks the next goal.
+        # (Only such skills clear it — a high-priority SpeakPending/Greet returning
+        # SUCCESS must NOT drop an active goto; and leaving a FAILED goto in place
+        # would make GoTo retry into the same wall every tick.)
+        if result.status is not Status.RUNNING and self.goal is not None and skill.consumes_goal:
+            self.goal = None
         if result.action is not None:
             self.body.act(result.action)
         return result.action

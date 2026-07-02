@@ -60,6 +60,9 @@ class Skill(ABC):
     name: str = "skill"
     #: One-line natural-language description (used later for embedding retrieval).
     description: str = ""
+    #: True for skills that exist to serve `ctx.goal` (e.g. GoTo). When such a skill
+    #: reaches a terminal state, the agent clears the goal (it's been consumed).
+    consumes_goal: bool = False
 
     def can_run(self, ctx: SkillContext) -> bool:
         """Whether this skill is applicable right now. Default: always."""

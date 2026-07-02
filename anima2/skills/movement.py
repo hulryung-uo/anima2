@@ -40,6 +40,7 @@ class GoTo(Skill):
 
     name = "goto"
     description = "Walk step-by-step toward a target tile until adjacent/arrived."
+    consumes_goal = True  # arriving (or wedging) uses up the goto goal
 
     def can_run(self, ctx: SkillContext) -> bool:
         return ctx.goal is not None and ctx.goal.kind == "goto"

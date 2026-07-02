@@ -46,6 +46,20 @@ def test_llm_cognition_speaks_bare_prose():
     assert ctx.memory["pending_say"] == "Hope we hit a good vein today!"
 
 
+def test_llm_cognition_clamps_a_far_goto_to_a_short_hop():
+    # The model asks to walk far across the map; the excursion is clamped so a
+    # hallucinated coordinate can't march the worker into the mountains.
+    client = StubLLMClient('{"say": "North, to richer veins!", "goal": "goto", "x": 5000, "y": 5000}')
+    ctx = _ctx()  # standing at (3724, 2212)
+    goal = LLMCognition(client).reconsider(ctx)
+    assert goal is not None and goal.kind == "goto"
+    t = goal.params["target"]
+    here = ctx.obs.player.pos
+    assert max(abs(t.x - here.x), abs(t.y - here.y)) == LLMCognition.max_excursion
+    # Direction is preserved (both toward +x/+y).
+    assert t.x > here.x and t.y > here.y
+
+
 def test_llm_cognition_idle_clears_goal():
     ctx = _ctx(goal=Goal(kind="goto", params={}))
     goal = LLMCognition(StubLLMClient('{"goal": "idle"}')).reconsider(ctx)

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import Blacksmith, Chop, Fish, Greet, Mine, Skill, SpeakPending, Wander
+from .skills import Blacksmith, Chop, Fish, GoTo, Greet, Mine, Skill, SpeakPending, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -67,8 +67,15 @@ class Profession:
     structures: list[tuple[str, int, int]] = field(default_factory=list)
 
     def planner(self) -> Planner:
-        """Work first, then be sociable, then wander."""
-        skills: list[Skill] = [SpeakPending()]
+        """Voice a pending line, honour an LLM 'go there' goal, else work, be
+        sociable, and wander.
+
+        `GoTo` sits above the work skill so an LLM-set goto goal steers the worker
+        off to a nearby tile; it's inert (its `can_run` is false) unless cognition
+        sets a goto goal, so offline/heuristic agents behave exactly as before. On
+        arrival the goal clears and the worker falls back to its trade.
+        """
+        skills: list[Skill] = [SpeakPending(), GoTo()]
         if self.work_skill is not None:
             skills.append(self.work_skill())
         skills += [Greet(), Wander()]

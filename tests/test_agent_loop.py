@@ -44,6 +44,39 @@ def test_goto_reaches_target_in_open_terrain():
     assert (body.player.pos.x, body.player.pos.y) == (target.x, target.y)
 
 
+def test_speaking_does_not_drop_an_active_goto_goal():
+    """A high-priority SpeakPending returns SUCCESS every time it voices a line;
+    that must NOT clear an active goto goal (only the goal-serving GoTo may)."""
+    from anima2.skills import SpeakPending
+
+    body = MockBody()
+    body.player.pos = Position(100, 100, 0)
+    goal = Goal(kind="goto", params={"target": Position(105, 100, 0)})
+    agent = Agent(body=body, persona=Persona(name="T"),
+                  planner=Planner([SpeakPending(), GoTo(), Wander()]),
+                  cognition=NullCognition(), goal=goal, cognition_interval=1)
+    agent.memory["pending_say"] = "Off to richer veins!"
+    agent.tick()  # SpeakPending wins this tick and returns SUCCESS
+    assert body.said == ["Off to richer veins!"]
+    assert agent.goal is goal  # the goto survives — GoTo can still move next tick
+
+
+def test_wedged_goto_clears_the_goal_and_resumes():
+    """GoTo boxed in on all sides fails; the agent drops the goal (no wall-retry loop)."""
+    body = MockBody()
+    body.player.pos = Position(50, 50, 0)
+    body.blocked = {(50 + dx, 50 + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)} - {(50, 50)}
+    goal = Goal(kind="goto", params={"target": Position(60, 50, 0)})
+    agent = Agent(body=body, persona=Persona(name="T"),
+                  planner=Planner([GoTo(), Wander()]),
+                  cognition=NullCognition(), goal=goal, cognition_interval=1)
+    for _ in range(10):
+        agent.tick()
+        if agent.goal is None:
+            break
+    assert agent.goal is None  # gave up the unreachable target
+
+
 def test_wander_turns_when_blocked():
     body = MockBody()
     body.player.pos = Position(10, 10, 0)
