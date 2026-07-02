@@ -3,7 +3,7 @@
 from anima2.contract import ItemView, Observation, PlayerView, Position
 from anima2.persona import Persona
 from anima2.profession import MINING_SPOTS, PROFESSIONS
-from anima2.skills import GoTo, Mine
+from anima2.skills import GoTo, Mine, MineAndSmelt
 from anima2.skills.base import Goal, SkillContext
 
 
@@ -18,14 +18,15 @@ def _ctx(goal=None) -> SkillContext:
 
 def test_miner_profession_is_calibrated():
     miner = PROFESSIONS["miner"]
-    assert miner.needs_workplace and miner.work_skill is Mine
+    assert miner.needs_workplace and miner.work_skill is MineAndSmelt
     assert miner.skills == {"Mining": 35}
     assert "Pickaxe" in miner.items
+    assert ("Forge", 1, 1) in miner.structures  # forge staged within reach — Mine never walks
 
 
 def test_miner_planner_runs_the_mine_skill():
     planner = PROFESSIONS["miner"].planner()
-    assert any(isinstance(s, Mine) for s in planner.skills)
+    assert any(isinstance(s, MineAndSmelt) for s in planner.skills)
 
 
 def test_townsfolk_has_no_work_skill():

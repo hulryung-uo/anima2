@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import Blacksmith, Chop, Fish, GoTo, Greet, Mine, Skill, SpeakPending, Wander
+from .skills import Blacksmith, Chop, Fish, GoTo, Greet, MineAndSmelt, Skill, SpeakPending, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -89,7 +89,10 @@ PROFESSIONS: dict[str, Profession] = {
         skills={"Mining": 35},
         items=["Pickaxe", "Pickaxe"],
         needs_workplace=True,  # assigned a distinct MINING_SPOTS entry
-        work_skill=Mine,
+        work_skill=MineAndSmelt,
+        # A forge within reach of the stand spot — `Mine` never walks, so once
+        # staged it's in range for the whole shift; no navigation needed.
+        structures=[("Forge", 1, 1)],
     ),
     "fisher": Profession(
         key="fisher",

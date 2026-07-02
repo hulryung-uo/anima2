@@ -5,6 +5,7 @@ from .combat import Combat
 from .craft import Blacksmith
 from .harvest import Chop, Fish, Harvest, Mine
 from .movement import GoTo, Wander
+from .smelt import MineAndSmelt
 from .social import Greet, SpeakPending
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "Greet",
     "Harvest",
     "Mine",
+    "MineAndSmelt",
     "SpeakPending",
     "Wander",
 ]

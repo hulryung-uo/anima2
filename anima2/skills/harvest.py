@@ -148,7 +148,15 @@ class Harvest(Skill):
 
     @staticmethod
     def _backpack(ctx: SkillContext):
-        return next((i for i in ctx.obs.items if i.layer == BACKPACK_LAYER), None)
+        # Filter by owner, not just layer: a nearby mobile's own backpack also has
+        # layer == BACKPACK_LAYER, and — being a *contained* item — both report the
+        # same placeholder (0,0,0) position, so they can tie on distance with ours
+        # and sort first (live-observed at a crowded mining spot). `container` is
+        # always the wearer's mobile serial for a worn item (anima-core `net/game.rs`
+        # `equip_update`/`mobile_incoming`), so it's the reliable way to pick *our*
+        # pack out of everyone else's.
+        return next((i for i in ctx.obs.items
+                    if i.layer == BACKPACK_LAYER and i.container == ctx.obs.player.serial), None)
 
 
 class Mine(Harvest):

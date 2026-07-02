@@ -67,7 +67,20 @@ real "work" loop).
   0xC1 parser — available for richer logic). **LIVE-VERIFIED**: staged at the Minoc
   ridge via the Control plane, the brain mined Mining 35.0 → 35.2 (reward in episodic
   memory). Run: `python -m anima2.live_mine`.
-- ⏳ Smelt · Craft (gump MAKE loop) · Eat/Heal (bandage→self, or Heal spell) · Bank ·
+- ✅ **Smelt** — `skills/smelt.py::MineAndSmelt` (subclasses `Mine`): mines until the
+  backpack holds `ore_threshold` total ore, then `Use(ore)` → answer the cursor with
+  `TargetObject(forge)` → repeats until the pack has no smeltable ore, then resumes
+  mining — one skill, so `profession.py` only swaps `work_skill` and adds a
+  `structures=[("Forge", dx, dy)]` staged within reach (`Mine` never walks, so the
+  forge stays reachable all shift). **Reward on ingots gained.** **LIVE-VERIFIED**:
+  at the Minoc ridge, the miner mined ore, smelted it into `IronIngot` (cliloc
+  501988), and cycled back to mining automatically; Mining 35.0 → 37.0 over 250
+  ticks, 68 ingots produced. Run: `python -m anima2.live_smelt`. Also fixed a
+  latent bug in `Harvest._backpack` (matched *any* nearby mobile's backpack by
+  layer alone — now filters by `container == player.serial`, since a mobile's own
+  contained items share the same placeholder ground position and can tie on
+  distance).
+- ⏳ Craft (gump MAKE loop) · Eat/Heal (bandage→self, or Heal spell) · Bank ·
   Loot (open corpse → PickUp).
 
 ### B3 — richer cognition

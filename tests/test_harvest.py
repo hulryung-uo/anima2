@@ -42,7 +42,8 @@ def test_swings_pickaxe_when_tool_visible():
 
 
 def test_opens_backpack_when_no_tool_visible():
-    ctx = _ctx(items=[_item(BACKPACK, 0x0E75, layer=0x15)])  # only the closed pack
+    # container=1 — a worn item's container is its wearer (here, the player, serial 1).
+    ctx = _ctx(items=[_item(BACKPACK, 0x0E75, layer=0x15, container=1)])  # only the closed pack
     res = Mine().step(ctx)
     assert isinstance(res.action, Use) and res.action.serial == BACKPACK
 
