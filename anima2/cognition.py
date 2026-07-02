@@ -43,6 +43,20 @@ def _broke_character(text: str) -> bool:
     return "language model" in low or "an ai" in low or "i cannot" in low or "as an" in low
 
 
+def _clean_model_line(text: str, limit: int = 200) -> str | None:
+    """Screen one piece of model-produced text before it re-enters a later prompt
+    or the game (speech, insights, ...): collapse stray newlines/whitespace into a
+    single line, drop it if it breaks character (`_broke_character`), and clamp its
+    length. Returns `None` if nothing usable survives. Mirrors
+    `LLMCognition._queue_say`'s treatment of `say` — the same defense applies to
+    `LLMReflection`'s insights, which are stored verbatim and replayed into every
+    later situation prompt via the "Lessons learned" line."""
+    line = " ".join(text.split())
+    if not line or _broke_character(line):
+        return None
+    return line[:limit]
+
+
 class LLMCognition:
     """Ask an LLM, in character, for a short in-game line to say (and a goal).
 
@@ -103,9 +117,9 @@ class LLMCognition:
         speech is one line) and drops obvious out-of-character disclosures."""
         if not isinstance(line, str):
             return
-        line = " ".join(line.split())  # collapse newlines/runs of whitespace
-        if line and not _broke_character(line):
-            ctx.memory["pending_say"] = line[:200]
+        cleaned = _clean_model_line(line)
+        if cleaned:
+            ctx.memory["pending_say"] = cleaned
 
     def _system(self, persona: Persona) -> str:
         return (
@@ -129,6 +143,9 @@ class LLMCognition:
         p = obs.player.pos
         people = ", ".join(f"{m.name or 'someone'}@{m.distance}" for m in obs.mobiles[:5]) or "no one"
         recent = " | ".join(j.text for j in obs.new_journal[-4:]) or "(quiet)"
+        # Only the last few, regardless of how many `ctx.episodes` carries (Agent's
+        # `episodes_window`, up to 20+ for reflection) — keeps this prompt short even
+        # as that window grows; `ctx.insights` below is the longer-range memory.
         memory = " | ".join(str(e) for e in ctx.episodes[-5:]) or "(nothing yet)"
         learned = " | ".join(str(i) for i in ctx.insights[-3:]) or "(nothing yet)"
         return (
@@ -154,6 +171,10 @@ class ThreadedCognition:
         self._lock = threading.Lock()
         self._result: Any = _UNSET
         self._busy = False
+        #: Set whenever no background `reconsider` pass is in flight — tests use
+        #: `wait_idle()` for a deterministic join point instead of a sleep/poll loop.
+        self._idle = threading.Event()
+        self._idle.set()
 
     def reconsider(self, ctx: SkillContext) -> Goal | None:
         with self._lock:
@@ -161,12 +182,25 @@ class ThreadedCognition:
             busy = self._busy
             if not busy:
                 self._busy = True
+                self._idle.clear()
                 start = True
             else:
                 start = False
         if start:
-            threading.Thread(target=self._work, args=(ctx,), daemon=True).start()
+            try:
+                threading.Thread(target=self._work, args=(ctx,), daemon=True).start()
+            except RuntimeError:  # spawn failed: _work's cleanup will never run —
+                # release the guard so a later tick can retry.
+                with self._lock:
+                    self._busy = False
+                    self._idle.set()
         return ctx.goal if result is _UNSET else result
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """Block until any in-flight background `reconsider` pass has finished.
+        Never called from `reconsider` itself (that would reintroduce blocking) —
+        it's a test-only join point. Returns whether it went idle before `timeout`."""
+        return self._idle.wait(timeout)
 
     def _work(self, ctx: SkillContext) -> None:
         try:
@@ -176,6 +210,7 @@ class ThreadedCognition:
         with self._lock:
             self._result = r
             self._busy = False
+            self._idle.set()
 
 
 class ReflectionProducer(Protocol):
@@ -237,7 +272,11 @@ class LLMReflection:
         except Exception:  # noqa: BLE001 — a flaky LLM must not break reflection
             return self._fallback.reflect(episodes, persona)
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        return _parse_insights(raw) or self._fallback.reflect(episodes, persona)
+        # Insights persist in `ReflectionMemory` and are replayed into every later
+        # situation prompt (the "Lessons learned" line) — screen/clamp each one the
+        # same way `_queue_say` treats in-game speech before it's stored.
+        insights = [c for s in _parse_insights(raw) if (c := _clean_model_line(s)) is not None]
+        return insights or self._fallback.reflect(episodes, persona)
 
     def _system(self, persona: Persona) -> str:
         return (
@@ -260,7 +299,7 @@ class ReflectingCognition:
     `Insight`s that persist and feed back into later goal/speech decisions
     (Generative Agents-style reflection, PHASE2.md B1).
 
-    Cadence lives entirely in the **slow loop**: reflection fires from inside
+    Cadence lives entirely in the **slow loop**: reflection becomes due from inside
     `reconsider()` when either `every_n_reconsiders` calls have passed, or at
     least `min_new_episodes` new episodes (tracked via `SkillContext.episode_count`,
     which — unlike `len(episodes)` — survives `EpisodicMemory`'s bounded window)
@@ -269,9 +308,23 @@ class ReflectingCognition:
     an idle agent (no new episodes) from re-reflecting over the same unchanged
     window every `every_n_reconsiders` calls, which would otherwise flood the
     bounded `ReflectionMemory` with duplicate insights and, for `LLMReflection`,
-    burn a wasted LLM call per cycle. Because it runs inside `reconsider()`, the
-    usual `ThreadedCognition(ReflectingCognition(inner))` composition keeps
-    reflection off the fast loop's hot path entirely.
+    burn a wasted LLM call per cycle.
+
+    Reflection itself is **off the goal-delivery path**: `reconsider()` calls
+    `inner.reconsider()` (the goal-setting LLM call, if any) and returns that goal
+    immediately; a due reflection is handed to its own daemon thread
+    (`_reflect_bg`) instead of running inline, so a slow (e.g. LLM-backed)
+    `ReflectionProducer` can never add latency to goal delivery — even under the
+    usual `ThreadedCognition(ReflectingCognition(inner))` composition, where
+    running it inline would keep `ThreadedCognition` "busy" (and the goal stale)
+    for both calls instead of one. A non-overlap guard (`_reflecting`, mirroring
+    `ThreadedCognition`'s busy-flag) means at most one reflection pass runs at a
+    time; if one is already in flight when reflection next becomes due, that round
+    is skipped — the next `reconsider()` call will try again (cadence counters are
+    only reset when a pass actually starts, so no due round is silently dropped).
+    A reflection failure (bad producer, flaky LLM) is caught the same way
+    `ThreadedCognition._work` guards `inner.reconsider` — it can never wedge the
+    non-overlap guard or kill cognition.
     """
 
     def __init__(
@@ -292,10 +345,17 @@ class ReflectingCognition:
         self.insights = insights if insights is not None else ReflectionMemory()
         self._reconsiders_since = 0
         self._episode_count_at_last = 0
+        # Non-overlap guard for the background reflection thread (`_reflecting`,
+        # under `_reflect_lock`) plus a test-observable idle signal — mirrors
+        # `ThreadedCognition`'s `_busy`/`_idle` pattern exactly.
+        self._reflect_lock = threading.Lock()
+        self._reflecting = False
+        self._idle = threading.Event()
+        self._idle.set()
 
     def reconsider(self, ctx: SkillContext) -> Goal | None:
         # Insights from *prior* reflection rounds inform this round's decision —
-        # not the reflection this call might itself produce below.
+        # not any reflection this call might itself trigger below.
         ctx.insights = self.insights.recent(3)
         goal = self.inner.reconsider(ctx)
 
@@ -306,21 +366,57 @@ class ReflectingCognition:
             or new_episodes >= self.min_new_episodes
         )
         if due and ctx.episodes:
-            self._reflect(ctx)
+            self._start_reflection(ctx)
         return goal
 
-    def _reflect(self, ctx: SkillContext) -> None:
+    def _start_reflection(self, ctx: SkillContext) -> None:
+        """Claim the non-overlap guard and launch `_reflect_bg`; a no-op (this
+        round is skipped, cadence counters untouched) if a pass is already running."""
+        with self._reflect_lock:
+            if self._reflecting:
+                return
+            self._reflecting = True
+            self._idle.clear()
+        # Snapshot what the background thread needs — plain data (a list slice, the
+        # persona), safe to hand off. `ctx` itself is reused/mutated by the caller
+        # on later ticks, so the thread must not touch it directly.
         window = ctx.episodes[-self.episode_window :]
-        for text in self.reflection.reflect(window, ctx.persona):
-            self.insights.record(
-                Insight(
-                    text=text,
-                    episode_ticks=(window[0].tick, window[-1].tick),
-                    episode_count=len(window),
-                )
-            )
+        reconsiders, count_at_last = self._reconsiders_since, self._episode_count_at_last
         self._reconsiders_since = 0
         self._episode_count_at_last = ctx.episode_count
+        try:
+            threading.Thread(
+                target=self._reflect_bg, args=(window, ctx.persona), daemon=True
+            ).start()
+        except RuntimeError:  # spawn failed: _reflect_bg's finally will never run —
+            # release the guard here and restore the counters so the round stays due.
+            self._reconsiders_since, self._episode_count_at_last = reconsiders, count_at_last
+            with self._reflect_lock:
+                self._reflecting = False
+                self._idle.set()
+
+    def _reflect_bg(self, window: list[Episode], persona: Persona) -> None:
+        """Runs on its own daemon thread, off the goal-delivery path entirely."""
+        try:
+            for text in self.reflection.reflect(window, persona):
+                self.insights.record(
+                    Insight(
+                        text=text,
+                        episode_ticks=(window[0].tick, window[-1].tick),
+                        episode_count=len(window),
+                    )
+                )
+        except Exception:  # noqa: BLE001 — a flaky producer must not wedge or kill cognition
+            pass
+        finally:
+            with self._reflect_lock:
+                self._reflecting = False
+                self._idle.set()
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """Block until any in-flight background reflection pass has finished. For
+        tests — a deterministic join point instead of a sleep/poll loop."""
+        return self._idle.wait(timeout)
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:

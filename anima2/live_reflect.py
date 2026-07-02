@@ -33,7 +33,7 @@ from .ipc_body import IpcBody
 from .llm import ReplicateClient
 from .persona import Persona
 from .planner import Planner
-from .skills import Mine
+from .skills import GoTo, Mine, SpeakPending
 
 
 def main() -> None:
@@ -69,9 +69,12 @@ def main() -> None:
             print(f"GM staged miner scenario at {spot}")
 
         agent_body.observe()  # let the teleport + pack grant settle
+        # SpeakPending/GoTo ahead of Mine (as `Profession.planner()` composes worker
+        # planners, profession.py): without them LLMCognition's queued speech is
+        # never voiced and an LLM-set goto goal has no skill to consume it.
         agent = Agent(
             body=agent_body, persona=Persona(name="Grimm", title="a miner"),
-            planner=Planner([Mine()]), cognition=cognition,
+            planner=Planner([SpeakPending(), GoTo(), Mine()]), cognition=cognition,
             cognition_interval=args.cognition_interval,
         )
 

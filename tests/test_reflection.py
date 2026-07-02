@@ -58,6 +58,7 @@ def test_reflecting_cognition_fires_every_n_reconsiders():
     assert reflection.calls == []  # only 2 reconsiders so far — not due yet
 
     cog.reconsider(ctx)
+    assert cog.wait_idle(timeout=2.0)  # deterministic join: let that pass finish
     assert reflection.calls == [1]  # 3rd reconsider crosses the threshold
     assert len(cog.insights) == 1
 
@@ -75,6 +76,7 @@ def test_reflecting_cognition_fires_on_new_episode_threshold():
     ctx2 = _ctx(episodes=[Episode(tick=2, kind="skill", summary="mine → success", reward=1.0)],
                 episode_count=5)
     cog.reconsider(ctx2)
+    assert cog.wait_idle(timeout=2.0)  # deterministic join: let that pass finish
     assert reflection.calls == [1]  # 5 new episodes >= 5 → fires
 
 
@@ -131,6 +133,44 @@ def test_llm_reflection_falls_back_to_heuristic_on_unparseable_response():
     assert insights and "mine" in insights[0]  # heuristic fallback kicked in
 
 
+# --- LLM insight screening (mirrors LLMCognition._queue_say / forum._broke_character) --
+
+
+def test_llm_reflection_drops_character_breaking_insights():
+    # Insights persist and are replayed into every later situation prompt, so the
+    # same "never break character" defense as in-game speech applies here too.
+    client = StubLLMClient(
+        '["I am an AI language model and cannot reflect on this.", '
+        '"The east vein paid better than the west one."]'
+    )
+    episodes = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+    insights = LLMReflection(client).reflect(episodes, Persona(name="Grimm"))
+    assert insights == ["The east vein paid better than the west one."]
+
+
+def test_llm_reflection_falls_back_when_every_insight_breaks_character():
+    client = StubLLMClient('["As an AI, I cannot form personal takeaways."]')
+    episodes = [Episode(tick=1, kind="skill", summary="mine → success", reward=2.0)]
+    insights = LLMReflection(client).reflect(episodes, Persona(name="Grimm"))
+    assert insights and "mine" in insights[0]  # nothing usable survived → heuristic fallback
+
+
+def test_llm_reflection_clamps_long_insights():
+    long_line = "x" * 300
+    client = StubLLMClient(f'["{long_line}"]')
+    episodes = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+    insights = LLMReflection(client).reflect(episodes, Persona(name="Grimm"))
+    assert insights == [long_line[:200]]
+    assert len(insights[0]) == 200
+
+
+def test_llm_reflection_collapses_whitespace_in_insights():
+    client = StubLLMClient('["Thin  veins\\n\\ttoday,   watch  the  weather."]')
+    episodes = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+    insights = LLMReflection(client).reflect(episodes, Persona(name="Grimm"))
+    assert insights == ["Thin veins today, watch the weather."]
+
+
 # --- consumption: insights reach the LLMCognition situation prompt ------------
 
 
@@ -141,8 +181,9 @@ def test_insight_reaches_next_situation_prompt():
     episodes = [Episode(tick=1, kind="skill", summary="mine → success", reward=3.0)]
     ctx = _ctx(episodes=episodes, episode_count=1)
 
-    reflecting.reconsider(ctx)  # reflects this round, but too late for this prompt
+    reflecting.reconsider(ctx)  # kicks off reflection on its own thread — too late for this prompt
     assert "Lessons learned: (nothing yet)" in client.calls[0][1]
+    assert reflecting.wait_idle(timeout=2.0)  # deterministic join: let that pass finish
 
     reflecting.reconsider(ctx)  # next round: the fresh insight is now in the prompt
     assert "mine has paid off" in client.calls[1][1]
@@ -150,21 +191,106 @@ def test_insight_reaches_next_situation_prompt():
 
 def test_reflecting_cognition_composes_with_threaded_cognition():
     """Production wraps `ThreadedCognition(ReflectingCognition(inner))` — reflection
-    must survive running on the background thread ThreadedCognition drives."""
-    import threading
-
+    must survive running on the background thread ThreadedCognition drives. Both
+    layers expose `wait_idle()` for a deterministic join instead of a sleep/poll
+    loop (reflection itself also runs off its own thread — see `_reflect_bg`)."""
     reflection = HeuristicReflection()
     reflecting = ReflectingCognition(HeuristicCognition(), reflection, every_n_reconsiders=1)
     threaded = ThreadedCognition(reflecting)
     episodes = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
     ctx = _ctx(episodes=episodes, episode_count=1)
 
-    threaded.reconsider(ctx)  # kicks off the background thread
-    for _ in range(200):
-        if len(reflecting.insights) > 0:
-            break
-        threading.Event().wait(0.005)
+    threaded.reconsider(ctx)  # kicks off ThreadedCognition's background thread
+    assert threaded.wait_idle(timeout=2.0)  # `reconsider` landed — by now the due
+    # reflection (if any) has already been kicked off on its own thread too.
+    assert reflecting.wait_idle(timeout=2.0)  # ...now wait for that reflection pass itself.
     assert len(reflecting.insights) == 1
+
+
+def test_reflecting_cognition_returns_goal_before_reflection_completes():
+    """Reflection must not sit on the goal-delivery path: `reconsider()` returns as
+    soon as `inner.reconsider()` is done, even while a due reflection pass is still
+    running on its own thread (mirrors `test_threaded_cognition_never_blocks`'s
+    gate pattern for the analogous `ThreadedCognition` guarantee)."""
+    import threading
+
+    gate = threading.Event()
+
+    class SlowReflection:
+        def reflect(self, episodes, persona):
+            gate.wait(2.0)  # block until the test releases us
+            return ["done reflecting"]
+
+    reflecting = ReflectingCognition(HeuristicCognition(), SlowReflection(), every_n_reconsiders=1)
+    episodes = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+    ctx = _ctx(episodes=episodes, episode_count=1)  # no goal set
+
+    goal = reflecting.reconsider(ctx)  # reflection is due but must not block on SlowReflection
+
+    assert goal is None  # HeuristicCognition just passed ctx.goal (None) through
+    # Structurally proves reconsider() didn't wait for SlowReflection: the gate is
+    # still closed, so if reflection had run inline this would still be empty only
+    # by chance — instead it's a hard guarantee, since SlowReflection can't have
+    # returned yet.
+    assert len(reflecting.insights) == 0
+
+    gate.set()
+    assert reflecting.wait_idle(timeout=2.0)
+    assert len(reflecting.insights) == 1
+    assert reflecting.insights.recent(1)[0].text == "done reflecting"
+
+
+def test_reflecting_cognition_skips_reflection_when_one_already_in_flight():
+    """The non-overlap guard: a due reflection round while one is still in flight is
+    skipped (not queued/stacked) — cadence counters stay put so the round isn't
+    lost, it's simply retried once the in-flight pass finishes."""
+    import threading
+
+    gate = threading.Event()
+    started = threading.Event()  # set once `reflect()` has actually begun — the
+    # deterministic join `assert started.wait(...)` needs to prove pass #1 is
+    # genuinely in flight before round 2 fires, without a sleep/poll loop.
+    calls = []
+
+    class SlowReflection:
+        def reflect(self, episodes, persona):
+            calls.append(len(episodes))
+            started.set()
+            gate.wait(2.0)  # block until the test releases us
+            return [f"pass #{len(calls)}"]
+
+    reflecting = ReflectingCognition(HeuristicCognition(), SlowReflection(),
+                                      every_n_reconsiders=1, min_new_episodes=1000)
+    ep1 = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+    ctx1 = _ctx(episodes=ep1, episode_count=1)
+
+    reflecting.reconsider(ctx1)  # starts pass #1, blocked on `gate`
+    assert started.wait(2.0)
+    assert len(calls) == 1
+
+    # A second episode lands while pass #1 is still in flight — due again (a fresh
+    # episode + every_n_reconsiders=1), but the guard must skip it rather than run
+    # `reflect()` concurrently.
+    ep2 = ep1 + [Episode(tick=2, kind="skill", summary="mine → success", reward=1.0)]
+    ctx2 = _ctx(episodes=ep2, episode_count=2)
+    reflecting.reconsider(ctx2)
+    assert len(calls) == 1  # no second (concurrent) `reflect()` call
+
+    gate.set()
+    assert reflecting.wait_idle(timeout=2.0)
+    assert len(reflecting.insights) == 1  # only pass #1 ever completed
+
+    # Cadence wasn't consumed by the skipped round — the next due round still
+    # fires, and it's the one that picks up the episode that arrived while pass #1
+    # was busy (nothing was silently dropped).
+    gate.clear()
+    started.clear()
+    reflecting.reconsider(ctx2)
+    assert started.wait(2.0)
+    assert len(calls) == 2
+    gate.set()
+    assert reflecting.wait_idle(timeout=2.0)
+    assert len(reflecting.insights) == 2
 
 
 # --- agent-loop integration ----------------------------------------------------
@@ -187,9 +313,33 @@ def test_agent_loop_reflection_fires_and_reaches_prompt():
     agent = Agent(body=MockBody(), persona=Persona(name="Grimm"),
                   planner=Planner([_RewardEachTick()]), cognition=reflecting, cognition_interval=1)
 
-    for _ in range(4):
+    for _ in range(3):
         agent.tick()
-
+    # Tick 3's reconsider kicked reflection off on its own thread (see
+    # `ReflectingCognition._reflect_bg`) — join deterministically before asserting.
+    assert reflecting.wait_idle(timeout=2.0)
     assert len(reflecting.insights) == 1  # cadence fired once (every 3rd reconsider)
-    # The insight from that reflection shows up in the very next situation prompt.
+
+    agent.tick()  # the next reconsider call — the fresh insight is now in its prompt
     assert "grind has paid off" in client.calls[-1][1]
+
+
+def test_agent_loop_episode_window_reaches_reflection_beyond_eight():
+    """Regression: `Agent`'s per-tick `SkillContext.episodes` slice must not
+    silently cap the window `ReflectingCognition.episode_window` asks for — it used
+    to be hardcoded at `recent(8)` regardless of `episode_window`. The real `Agent`
+    path must deliver more than 8 episodes to the reflection producer once that
+    many have accumulated (proves `Agent.episodes_window` actually reaches it)."""
+    reflection = _CountingReflection()
+    reflecting = ReflectingCognition(HeuristicCognition(), reflection,
+                                      every_n_reconsiders=1000, min_new_episodes=12,
+                                      episode_window=20)
+    agent = Agent(body=MockBody(), persona=Persona(name="Grimm"),
+                  planner=Planner([_RewardEachTick()]), cognition=reflecting, cognition_interval=1)
+
+    for _ in range(13):
+        agent.tick()
+    assert reflecting.wait_idle(timeout=2.0)
+
+    assert reflection.calls == [12]  # all 12 accumulated episodes reached the
+    # producer in one window — not capped at the old hardcoded 8.

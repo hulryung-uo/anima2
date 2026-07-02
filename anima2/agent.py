@@ -47,6 +47,7 @@ class Agent:
         *,
         goal: Goal | None = None,
         cognition_interval: int = 20,
+        episodes_window: int = 20,
     ) -> None:
         self.body = body
         self.persona = persona
@@ -55,6 +56,15 @@ class Agent:
         self.cognition = cognition or NullCognition()
         self.goal = goal
         self.cognition_interval = cognition_interval
+        #: How many recent episodes `SkillContext.episodes` carries each tick. This
+        #: is the ceiling every cognition layer sees — notably `ReflectingCognition`,
+        #: whose own `episode_window` can never look further back than this (it
+        #: slices `ctx.episodes`, so a bigger `episode_window` than `episodes_window`
+        #: is silently capped). Defaults to `ReflectingCognition`'s default
+        #: (`episode_window=20`) so the common `ThreadedCognition(ReflectingCognition(
+        #: inner))` composition gets its full window out of the box; bump both
+        #: together if you want reflection to see further back.
+        self.episodes_window = episodes_window
         self.memory: dict = {}
         self.episodes = EpisodicMemory()
         self.ticks = 0
@@ -67,7 +77,7 @@ class Agent:
             persona=self.persona,
             goal=self.goal,
             memory=self.memory,
-            episodes=self.episodes.recent(8),
+            episodes=self.episodes.recent(self.episodes_window),
             episode_count=self.episodes.total_recorded,
         )
 

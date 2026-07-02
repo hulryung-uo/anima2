@@ -75,7 +75,18 @@ class Insight:
 
 
 class ReflectionMemory:
-    """A bounded log of `Insight`s the slow loop has distilled from episodic memory."""
+    """A bounded log of `Insight`s the slow loop has distilled from episodic memory.
+
+    `record()` runs on `cognition.ReflectingCognition`'s background reflection
+    thread; `recent()` is read from whatever thread is running the cognition pass
+    (itself possibly `ThreadedCognition`'s background thread) — so the two can run
+    concurrently. No explicit lock here: `record()` is a single `deque.append`,
+    which CPython documents as thread-safe (including the implicit `popleft` a
+    bounded `maxlen` deque does on overflow); `recent()`'s `list(deque)` snapshot
+    is not *documented* thread-safe but is a single C call with no GIL release
+    points on today's GIL builds — worst case it raises cleanly, never returns a
+    torn deque. Revisit with a lock if free-threaded CPython becomes a target.
+    """
 
     def __init__(self, capacity: int = 20) -> None:
         self._insights: deque[Insight] = deque(maxlen=capacity)
