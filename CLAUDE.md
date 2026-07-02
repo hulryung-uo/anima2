@@ -23,10 +23,12 @@ blacksmith (gump-driven MAKE-loop crafting), townsfolk. Package adds
 `ReflectingCognition` (episodes → persistent `Insight`s feeding later goal/speech
 prompts) and `LLMCognition` in-character chatter + a clamped `goal:goto` ·
 `forum` (LLM-written in-character posts to uotavern, `village.py --forum`) ·
-`contract` now carries `GumpResponse`/`GumpView` for crafting gumps. 92 tests
-green, ruff clean. **Next:** uowiki semantic memory, richer cognition
-(respond to journal lines, wider goal vocabulary) — see PHASE2.md; then Phase 3
-(economy & interaction loop — see DESIGN.md §10).
+`contract` now carries `GumpResponse`/`GumpView` for crafting gumps · `wiki`
+(read-only semantic memory over the local `../uowiki` docs tree; optionally
+grounds `LLMCognition`/`LLMReflection` prompts with a compact excerpt). 116
+tests green, ruff clean. **Next:** richer cognition (respond to journal lines,
+wider goal vocabulary) — see PHASE2.md; then Phase 3 (economy & interaction
+loop — see DESIGN.md §10).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

@@ -12,6 +12,16 @@ Implementations:
 - `ReflectingCognition` — wraps a cognition; periodically distills recent episodes
   into `Insight`s (Generative Agents-style reflection, PHASE2.md B1) via a
   `HeuristicReflection` or `LLMReflection` producer.
+
+`LLMCognition`/`LLMReflection` optionally take a `wiki.Wiki` (PHASE2.md B1's
+semantic-memory close-out item): each derives a short, deterministic search
+query from context (`_wiki_query`/`_top_skill_name`) and splices at most one
+compact "Wiki — <title>: <excerpt>" line into their prompt. Since `Wiki.search`
+only ever runs from inside `reconsider()`/`reflect()`, and those only run on a
+`ThreadedCognition` worker thread or `ReflectingCognition`'s own reflection
+thread in production, wiki file I/O never touches the fast tick — see
+`wiki.py`'s module docstring for the "lazy, one-time index" design that makes
+this safe regardless of which thread constructs the `Wiki`.
 """
 
 from __future__ import annotations
@@ -27,6 +37,7 @@ from .llm import LLMClient
 from .memory import Episode, Insight, ReflectionMemory
 from .persona import Persona
 from .skills.base import Goal, SkillContext
+from .wiki import Wiki
 
 _UNSET = object()
 
@@ -57,6 +68,55 @@ def _clean_model_line(text: str, limit: int = 200) -> str | None:
     return line[:limit]
 
 
+def _top_skill_name(episodes: list[Episode]) -> str | None:
+    """The name of the most-rewarded recent skill episode, if any — e.g. "mine"
+    from an episode summary of "mine → success (+0.5)". The shared building
+    block behind both `LLMCognition`'s and `LLMReflection`'s wiki-query
+    derivation: what the agent is actually, concretely doing right now (its
+    best-paying skill lately) is a short, deterministic, on-topic search term.
+    Only looks at the last 5 episodes — recent, not exhaustive."""
+    top: str | None = None
+    top_reward = 0.0
+    for ep in episodes[-5:]:
+        if ep.kind == "skill" and ep.reward > top_reward:
+            top, top_reward = ep.summary.split(" → ", 1)[0], ep.reward
+    return top
+
+
+def _wiki_query(ctx: SkillContext, job: str) -> str | None:
+    """A short, deterministic wiki search query for this `reconsider`: the
+    most-rewarded recent skill episode's name plus the job title (e.g.
+    "mine miner") — falls back to the job alone before any episode has landed.
+    `None` only when neither is available. `Wiki.search`'s own light stemming
+    (see `wiki.py::_stem`) bridges the skill-name/job-title vs wiki-page-title
+    mismatch (mine/miner -> "Mining", fisher -> "Fishing"); this function's only
+    job is picking a couple of on-topic words already on hand in `ctx` — no
+    extra I/O, safe to call every `reconsider`."""
+    parts = [p for p in (_top_skill_name(ctx.episodes), job) if p]
+    return " ".join(parts) or None
+
+
+def _wiki_line_for(wiki: Wiki | None, query: str | None, cache: dict[str, str | None]) -> str | None:
+    """Shared body of `LLMCognition._wiki_line`/`LLMReflection._wiki_line`: at
+    most one compact "Wiki — <title>: <excerpt>" line for `query`, or `None` if
+    there's no wiki, no query, or no hit. Memoized into the caller's own
+    per-instance `cache` dict, keyed on the exact query string — see
+    `LLMCognition.__init__`'s `_wiki_cache` docstring for the memoization
+    contract this preserves."""
+    if wiki is None or not query:
+        return None
+    if query in cache:
+        return cache[query]
+    line = None
+    hits = wiki.search(query, k=1)
+    if hits:
+        excerpt = wiki.excerpt(hits[0], limit=200)
+        if excerpt:
+            line = f"Wiki — {hits[0].title[:60]}: {excerpt}"[:280]
+    cache[query] = line
+    return line
+
+
 class LLMCognition:
     """Ask an LLM, in character, for a short in-game line to say (and a goal).
 
@@ -66,11 +126,23 @@ class LLMCognition:
     ``ctx.memory['pending_say']`` for the `SpeakPending` skill to voice in-game on
     the next tick. ``goal: goto`` (with x,y) is honored by agents whose planner has
     a `GoTo`; workers (no GoTo) just chatter while doing their job.
+
+    An optional `wiki` (PHASE2.md B1) adds at most one "Wiki — <title>:
+    <excerpt>" line to the situation prompt, from a query derived from `ctx`
+    (`_wiki_query`) — see `_wiki_line`. `None` (the default) keeps the prompt
+    exactly as before; wiki lookups never run when there's no wiki to consult.
     """
 
-    def __init__(self, client: LLMClient, job: str = "adventurer") -> None:
+    def __init__(self, client: LLMClient, job: str = "adventurer", wiki: Wiki | None = None) -> None:
         self.client = client
         self.job = job
+        self.wiki = wiki
+        #: Memoizes the formatted wiki line per query string (or `None` for a
+        #: query that hit nothing) — an unchanged query across many reconsiders
+        #: (the common case: same skill, same job) costs one `Wiki.search()`
+        #: call total, not one per call (DESIGN.md §7: cache wiki excerpts
+        #: aggressively). On top of `Wiki`'s own internal index/result cache.
+        self._wiki_cache: dict[str, str | None] = {}
 
     #: A goto the model picks is clamped to a short walk from where the agent
     #: stands, so a hallucinated far coordinate can't march it across the map (or
@@ -121,6 +193,12 @@ class LLMCognition:
         if cleaned:
             ctx.memory["pending_say"] = cleaned
 
+    def _wiki_line(self, ctx: SkillContext) -> str | None:
+        """At most one compact "Wiki — <title>: <excerpt>" line for the
+        situation prompt, or `None` if there's no wiki, no derivable query, or
+        no hit. See `_wiki_cache` (`__init__`) for the memoization contract."""
+        return _wiki_line_for(self.wiki, _wiki_query(ctx, self.job), self._wiki_cache)
+
     def _system(self, persona: Persona) -> str:
         return (
             f"You ARE {persona.name}, {persona.title or self.job}, a real person living in "
@@ -148,14 +226,18 @@ class LLMCognition:
         # as that window grows; `ctx.insights` below is the longer-range memory.
         memory = " | ".join(str(e) for e in ctx.episodes[-5:]) or "(nothing yet)"
         learned = " | ".join(str(i) for i in ctx.insights[-3:]) or "(nothing yet)"
-        return (
-            f"You are at work as a {self.job}, standing at ({p.x}, {p.y}).\n"
-            f"Nearby: {people}.\n"
-            f"Recently heard: {recent}\n"
-            f"Recently you: {memory}\n"
-            f"Lessons learned: {learned}\n"
-            "What do you say aloud right now — and do you stay, or stroll somewhere close?"
-        )
+        lines = [
+            f"You are at work as a {self.job}, standing at ({p.x}, {p.y}).",
+            f"Nearby: {people}.",
+            f"Recently heard: {recent}",
+            f"Recently you: {memory}",
+            f"Lessons learned: {learned}",
+        ]
+        wiki_line = self._wiki_line(ctx)
+        if wiki_line:
+            lines.append(wiki_line)
+        lines.append("What do you say aloud right now — and do you stay, or stroll somewhere close?")
+        return "\n".join(lines)
 
 
 class ThreadedCognition:
@@ -258,11 +340,20 @@ class LLMReflection:
     """LLM-backed reflection: one call summarizing recent episodes into 1-3 short,
     first-person insights (Generative Agents-style). Falls back to
     `HeuristicReflection` on any failure (bad/empty response, parse error, flaky
-    client) so reflection never breaks the slow loop."""
+    client) so reflection never breaks the slow loop.
 
-    def __init__(self, client: LLMClient) -> None:
+    An optional `wiki` (PHASE2.md B1) adds the same compact "Wiki — <title>:
+    <excerpt>" line `LLMCognition` uses, derived from the episodes being
+    reflected on (`_top_skill_name`) — grounds the reflection prompt in the
+    same textbook the goal-setting prompt consults. `None` (the default) keeps
+    the prompt exactly as before."""
+
+    def __init__(self, client: LLMClient, wiki: Wiki | None = None) -> None:
         self.client = client
+        self.wiki = wiki
         self._fallback = HeuristicReflection()
+        #: See `LLMCognition._wiki_cache` — same memoization contract.
+        self._wiki_cache: dict[str, str | None] = {}
 
     def reflect(self, episodes: list[Episode], persona: Persona) -> list[str]:
         if not episodes:
@@ -291,7 +382,18 @@ class LLMReflection:
 
     def _situation(self, episodes: list[Episode]) -> str:
         recent = "\n".join(str(e) for e in episodes)
-        return f"What just happened:\n{recent}\n\nWhat do you take away from this?"
+        parts = [f"What just happened:\n{recent}"]
+        wiki_line = self._wiki_line(episodes)
+        if wiki_line:
+            parts.append(wiki_line)
+        parts.append("What do you take away from this?")
+        return "\n\n".join(parts)
+
+    def _wiki_line(self, episodes: list[Episode]) -> str | None:
+        """Same idea as `LLMCognition._wiki_line`, keyed off the episodes being
+        reflected on instead of a live `SkillContext` (reflection has no `ctx`
+        or job title on hand — just the episode window and the persona)."""
+        return _wiki_line_for(self.wiki, _top_skill_name(episodes), self._wiki_cache)
 
 
 class ReflectingCognition:

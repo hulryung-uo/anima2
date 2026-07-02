@@ -84,9 +84,31 @@ real "work" loop).
   heuristic fallback — same resilience `LLMCognition` already relies on for bare
   prose); confirmed the insight reaching the next goal prompt's "Lessons learned:"
   line. Run: `python -m anima2.live_reflect`.
-- ⏳ **Semantic memory = uowiki** — `wiki_search`/`wiki_read_page`; consult before betting
-  on a mechanic (read-only here; filing discrepancy reports when reality differs is
-  Phase 4's fuller wiki loop — DESIGN.md §10).
+- ✅ **Semantic memory = uowiki** — `wiki.py::Wiki`: anima2 is a standalone Python
+  process (no MCP, no deployed-site access), so this reads `../uowiki/src/content/docs`
+  directly — a small, dependency-free keyword index (title/description/heading/body,
+  title weighted heavily; `ja`/`ko` locale duplicates and `templates`/`essays`
+  build-preset/narrative pages excluded — see `wiki.py`'s module docstring) built
+  lazily on first use and cached thereafter, so it never touches the fast loop. Wired
+  into `cognition.py::LLMCognition`/`LLMReflection` (both take an optional `wiki=`):
+  each derives a short query from context (`_wiki_query`/`_top_skill_name` — the
+  most-rewarded recent skill episode's name + job title) and splices at most one
+  compact "Wiki — `<title>`: `<excerpt>`" line into its prompt, memoized per query
+  so an unchanged query costs one `Wiki.search()` call, not one per reconsider
+  (DESIGN.md §7). Indexing the real ~2.4k-file tree (865 pages after exclusions)
+  measured ~0.35–0.45s — well under a second, and lazy indexing means it only ever
+  runs on a slow-loop thread (`ThreadedCognition`'s worker / `ReflectingCognition`'s
+  reflection thread), never the fast tick. Read-only: filing discrepancy reports
+  when reality differs is still Phase 4's fuller wiki loop (DESIGN.md §10).
+  **LIVE-VERIFIED**: mining at the Minoc ridge with the real `../uowiki` root wired
+  in (`python -m anima2.live_reflect`) and the Replicate qwen3 client, the actual
+  situation prompt sent to the LLM carried
+  `Wiki — Mining: Digging ore and stone from mountains and caves — ore types,
+  required skill, vein chances, and training route.` — the real `skills/mining.md`
+  page's frontmatter description, reached via the "mine miner" query derived from
+  the miner's own rewarded episodes — confirmed on every reconsider across a 90-tick
+  run (qwen's usual JSON-format flakiness didn't affect this: the evidence is the
+  prompt content, not the reply).
 
 ### B2 — new skills (need A actions)
 - ✅ **Mine/Gather** — `skills/harvest.py::Mine`: find tool (open pack if needed) →
@@ -151,9 +173,8 @@ real "work" loop).
    First "production" loop: **a character works and a skill rises, autonomously.**
 4. ✅ **Gump support (crafting)** — `GumpResponse`/`GumpView` (0xB0/0xB1) +
    `skills/craft.py::Blacksmith`; the banking gump is still ⏳ (Phase 3 item).
-5. 🚧 **Memory + wiki + reflection** — episodic memory ✅ and the reflection loop ✅
-   (workstream B1) are done; **wiki semantic memory is still ⏳** (Phase 2 close-out
-   item, DESIGN.md §10).
+5. ✅ **Memory + wiki + reflection** — episodic memory, the reflection loop, and
+   **wiki semantic memory** (workstream B1) are all done.
 
 → Land 1–3 live first: "the character works and a skill rises" is the foundation the
 Phase 3 curriculum/Director builds on.

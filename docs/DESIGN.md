@@ -12,10 +12,12 @@ working **village** of agents (`village.py`) each holding a profession: miner
 (mine + smelt ingots), lumberjack, fisher, blacksmith (gump-driven crafting),
 townsfolk, staged by the Control plane (`control.py::GmControl`). The slow LLM
 cognition loop steers with in-character chatter + a clamped `goal:goto`,
-periodically reflects episodic memory into persistent `Insight`s, and can write
-in-character posts to the uotavern forum. 92 tests green, ruff clean; the full
-village, smelting, and reflection loops are all live-verified against ServUO on
-:2594. See [`PHASE2.md`](PHASE2.md) for the detailed close-out status.
+periodically reflects episodic memory into persistent `Insight`s, consults a
+local read-only index of the companion wiki (`wiki.py::Wiki`) for a grounding
+excerpt, and can write in-character posts to the uotavern forum. 116 tests
+green, ruff clean; the full village, smelting, reflection, and wiki-grounded
+cognition loops are all live-verified against ServUO on :2594. See
+[`PHASE2.md`](PHASE2.md) for the detailed close-out status.
 
 ---
 
@@ -36,7 +38,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module landed; `navigate` bridge command still ⏳ (Phase 3) |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Late Phase 2 (cognition + memory close-out); 92 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Late Phase 2 (cognition + memory close-out); 116 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -266,9 +268,12 @@ The original analysis, kept as the decision record:
   (see the re-baselining note below): the Control plane (`control.py::GmControl`) and
   the society layer — a working multi-agent **village** (`village.py`) of staged
   professions (`profession.py`) that talk (`--chatter`) and chronicle their day
-  (`--forum`). Remaining: **uowiki semantic memory** (consult before betting on a
-  mechanic; discrepancy reports are Phase 4's fuller loop) and richer cognition
-  (respond to journal lines aimed at the agent, a wider goal vocabulary beyond `goto`).
+  (`--forum`) · **uowiki semantic memory** (`wiki.py::Wiki` — a local, read-only,
+  keyword-indexed lookup over `../uowiki`'s docs tree; `LLMCognition`/
+  `LLMReflection` consult it before betting on a mechanic, splicing a compact
+  excerpt into the slow-loop prompt; filing discrepancy reports back is still
+  Phase 4's fuller loop). Remaining: richer cognition (respond to journal lines
+  aimed at the agent, a wider goal vocabulary beyond `goto`).
 - **Phase 3 — Economy & interaction loop** *(redefined — see note below)*: inter-agent
   trade (a miner's ingots feed a blacksmith), bank + buy/sell (needs contract
   expansion — `Buy`/`Sell`/`ContextMenu`/banker gump; follow the 4-lockstep checklist in

@@ -38,12 +38,14 @@ each holding down a profession — miner (mine + smelt ingots), lumberjack
 (grove-aware chopping), fisher, blacksmith (gump-driven crafting), townsfolk —
 staged by the Control plane. The slow LLM cognition loop steers with
 in-character chatter and a clamped `goal:goto`, periodically reflects on
-episodic memory into persistent insights that feed back into later prompts, and
-can write in-character posts to the uotavern forum. 92 tests green.
+episodic memory into persistent insights that feed back into later prompts,
+consults a local read-only index of the companion wiki (`../uowiki`) for a
+grounding excerpt, and can write in-character posts to the uotavern forum. 116
+tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 92 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 116 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -62,11 +64,11 @@ python -m anima2.village
 # Single-skill live proofs (GM stages the scenario, then the brain works it):
 python -m anima2.live_mine      # mines ore, Mining skill rises
 python -m anima2.live_smelt     # mines then smelts ore into ingots, end to end
-python -m anima2.live_reflect   # LLM cognition + periodic reflection into insights
+python -m anima2.live_reflect   # LLM cognition + reflection, wiki-grounded prompts
 ```
 
-Next: uowiki semantic memory, richer cognition (respond to journal lines, wider
-goal vocabulary). See [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
+Next: richer cognition (respond to journal lines, wider goal vocabulary). See
+[`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
 
 ## Family
 

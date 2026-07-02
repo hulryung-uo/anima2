@@ -10,9 +10,16 @@
    configured, so the loop still demonstrates reflection offline.
 3. Print every insight produced, so the reflection loop's output is directly
    observable (not just "it ran").
+4. Wires a real `wiki.Wiki` (default root: `../uowiki/src/content/docs`,
+   `--wiki-root`/`--no-wiki` override) into both `LLMCognition` and
+   `LLMReflection` — the Phase 2 close-out item (PHASE2.md B1: semantic memory).
+   `_TracingClient` prints every "Wiki — <title>: ..." line that actually made it
+   into a situation prompt, so a real wiki excerpt reaching cognition is directly
+   observable in this script's output (independent of whether the LLM's reply
+   itself parses — see `_TracingClient`'s docstring).
 
 Requires a running ServUO and the built bridge (`cargo build -p anima-net`).
-Usage: python -m anima2.live_reflect [--ticks N]
+Usage: python -m anima2.live_reflect [--ticks N] [--wiki-root PATH] [--no-wiki]
 """
 
 from __future__ import annotations
@@ -30,10 +37,33 @@ from .cognition import (
 )
 from .control import GmControl
 from .ipc_body import IpcBody
-from .llm import ReplicateClient
+from .llm import LLMClient, ReplicateClient
 from .persona import Persona
 from .planner import Planner
 from .skills import GoTo, Mine, SpeakPending
+from .wiki import Wiki
+
+
+class _TracingClient:
+    """Wraps an `LLMClient` to print every "Wiki — <title>: ..." line found in a
+    situation prompt before forwarding the call unchanged.
+
+    Live evidence that a real wiki excerpt reaches the cognition prompt
+    (PHASE2.md B1) has to be the *prompt content*, not the reply — the Replicate
+    qwen3 client's well-known JSON-format flakiness (see PHASE2.md's reflection
+    write-up) is irrelevant to what we're proving here. This wrapper makes that
+    prompt content directly observable in this script's stdout without changing
+    `LLMCognition`/`LLMReflection`'s public API.
+    """
+
+    def __init__(self, inner: LLMClient) -> None:
+        self.inner = inner
+
+    def complete(self, system: str, user: str) -> str:
+        for line in user.splitlines():
+            if line.startswith("Wiki —"):
+                print(f"  [wiki -> prompt] {line}")
+        return self.inner.complete(system, user)
 
 
 def main() -> None:
@@ -44,12 +74,20 @@ def main() -> None:
     ap.add_argument("--cognition-interval", type=int, default=6)
     ap.add_argument("--every-n", type=int, default=4, help="reflect every N cognition reconsiders")
     ap.add_argument("--min-episodes", type=int, default=4, help="...or after M new episodes")
+    ap.add_argument("--wiki-root", default=None, help="override the wiki docs root (see wiki.py)")
+    ap.add_argument("--no-wiki", action="store_true", help="disable wiki-grounded prompts")
     args = ap.parse_args()
+
+    wiki = None if args.no_wiki else Wiki(args.wiki_root)
+    if wiki is not None:
+        print(f"wiki: root={wiki.root} available={wiki.available}")
 
     client = ReplicateClient.from_v1_config()
     if client is not None:
         print(f"LLM: {client.model} (live)")
-        goal_cog, reflect_producer = LLMCognition(client, job="miner"), LLMReflection(client)
+        traced = _TracingClient(client)
+        goal_cog = LLMCognition(traced, job="miner", wiki=wiki)
+        reflect_producer = LLMReflection(traced, wiki=wiki)
     else:
         print("LLM: none configured — offline heuristic demo")
         goal_cog, reflect_producer = HeuristicCognition(), HeuristicReflection()
