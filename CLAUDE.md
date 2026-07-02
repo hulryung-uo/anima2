@@ -12,23 +12,31 @@ A new, from-scratch **autonomous AI agent** that plays Ultima Online — the
 Clean redesign of `../anima` (v1, Python); mines v1 for assets and lessons.
 
 ## Current phase
-**Late Phase 2 (cognition + memory close-out).** The Python brain drives **live
-ServUO characters** via the `anima-agent` NDJSON bridge — from a single agent
-(`live.py`) up to a working **village** (`village.py`) of agents each staged
-(Control plane, `control.py::GmControl`) into a profession (`profession.py`):
-miner (mine + smelt ingots), lumberjack (grove-aware chopping), fisher,
-blacksmith (gump-driven MAKE-loop crafting), townsfolk. Package adds
-`skills.harvest`/`smelt`/`craft` (`Mine`/`Chop`/`Fish`/`MineAndSmelt`/`Blacksmith`)
-· `memory` (`EpisodicMemory` + `ReflectionMemory`) · `cognition` gains
+**Phase 3 begun (economy & interaction loop).** Phase 2 (cognition + memory)
+closed out — see PHASE2.md. The Python brain drives **live ServUO characters**
+via the `anima-agent` NDJSON bridge — from a single agent (`live.py`) up to a
+working **village** (`village.py`) of agents each staged (Control plane,
+`control.py::GmControl`) into a profession (`profession.py`): miner (mine +
+smelt ingots, and now **deliver** them), lumberjack (grove-aware chopping),
+fisher, blacksmith (gump-driven MAKE-loop crafting, and now **fetch** dropped
+ingots when starved), townsfolk. Package adds `skills.harvest`/`smelt`/`craft`
+(`Mine`/`Chop`/`Fish`/`MineAndSmelt`/`MineSmeltDeliver`/`Blacksmith`) ·
+`memory` (`EpisodicMemory` + `ReflectionMemory`) · `cognition` gains
 `ReflectingCognition` (episodes → persistent `Insight`s feeding later goal/speech
 prompts) and `LLMCognition` in-character chatter + a clamped `goal:goto` ·
 `forum` (LLM-written in-character posts to uotavern, `village.py --forum`) ·
 `contract` now carries `GumpResponse`/`GumpView` for crafting gumps · `wiki`
 (read-only semantic memory over the local `../uowiki` docs tree; optionally
-grounds `LLMCognition`/`LLMReflection` prompts with a compact excerpt). 116
-tests green, ruff clean. **Next:** richer cognition (respond to journal lines,
-wider goal vocabulary) — see PHASE2.md; then Phase 3 (economy & interaction
-loop — see DESIGN.md §10).
+grounds `LLMCognition`/`LLMReflection` prompts with a compact excerpt). **Phase
+3 item 1 — the first inter-agent economy loop — is live-verified**
+(`live_trade.py`): a miner mines, smelts, and hauls ingots to a co-located
+blacksmith that has run its own stock dry, drops them, and the blacksmith
+picks them up and crafts again — no contract changes needed (`Drop`/`PickUp`
+already existed); see PHASE3.md for the full breakdown (including several
+Phase-2-vintage bugs the live scenario finally exercised: a wrong CraftGump
+button, a tool that silently breaks, an anvil blocking the delivery
+corridor). 137 tests green, ruff clean. **Next:** PHASE3.md items 2–4 (bank +
+buy/sell, hunt/loot, A* navigate — see DESIGN.md §10).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

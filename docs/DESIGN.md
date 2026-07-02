@@ -5,19 +5,25 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-02 · Status: **Late Phase 2 (cognition + memory close-out).**
-The Python brain drives **live ServUO characters** via the `anima-agent` IPC
+Last updated: 2026-07-02 · Status: **Phase 3 begun (economy & interaction loop).**
+Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
+Python brain drives **live ServUO characters** via the `anima-agent` IPC
 bridge (perceive→reflexes→planner→skill→act) — from a single agent up to a
 working **village** of agents (`village.py`) each holding a profession: miner
-(mine + smelt ingots), lumberjack, fisher, blacksmith (gump-driven crafting),
+(mine + smelt ingots, and now **deliver** them), lumberjack, fisher, blacksmith
+(gump-driven crafting, and now **fetch** dropped ingots when starved),
 townsfolk, staged by the Control plane (`control.py::GmControl`). The slow LLM
 cognition loop steers with in-character chatter + a clamped `goal:goto`,
 periodically reflects episodic memory into persistent `Insight`s, consults a
 local read-only index of the companion wiki (`wiki.py::Wiki`) for a grounding
-excerpt, and can write in-character posts to the uotavern forum. 116 tests
-green, ruff clean; the full village, smelting, reflection, and wiki-grounded
-cognition loops are all live-verified against ServUO on :2594. See
-[`PHASE2.md`](PHASE2.md) for the detailed close-out status.
+excerpt, and can write in-character posts to the uotavern forum. **Phase 3
+item 1 — the first inter-agent economy loop (a miner's ingots feed a
+blacksmith) — is live-verified**, no contract changes needed; see
+[`PHASE3.md`](PHASE3.md) for the full breakdown. 137 tests green, ruff clean;
+the full village, smelting, reflection, wiki-grounded cognition, and
+miner→blacksmith trade loops are all live-verified against ServUO on :2594.
+See [`PHASE2.md`](PHASE2.md) for the Phase 2 close-out status and
+[`PHASE3.md`](PHASE3.md) for the Phase 3 breakdown.
 
 ---
 
@@ -38,7 +44,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module landed; `navigate` bridge command still ⏳ (Phase 3) |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Late Phase 2 (cognition + memory close-out); 116 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 begun (economy & interaction loop; item 1 — inter-agent trade — live-verified); 137 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -274,12 +280,29 @@ The original analysis, kept as the decision record:
   excerpt into the slow-loop prompt; filing discrepancy reports back is still
   Phase 4's fuller loop). Remaining: richer cognition (respond to journal lines
   aimed at the agent, a wider goal vocabulary beyond `goto`).
-- **Phase 3 — Economy & interaction loop** *(redefined — see note below)*: inter-agent
-  trade (a miner's ingots feed a blacksmith), bank + buy/sell (needs contract
-  expansion — `Buy`/`Sell`/`ContextMenu`/banker gump; follow the 4-lockstep checklist in
-  PHASE2.md), hunt/loot (corpse containers), and delegating `GoTo` to anima-net's
-  `Session::navigate_to` (A\* from anima-core's `path` module) for real commutes
-  between workplaces (open today; greedy-only so far).
+- **Phase 3 — Economy & interaction loop** *(redefined — see note below)* — 🚧
+  *in progress, item 1 done — see [`PHASE3.md`](PHASE3.md) for the itemized
+  status.* ✅ **Inter-agent trade** (a miner's ingots feed a blacksmith):
+  `skills/smelt.py::MineSmeltDeliver` adds a deliver/return phase to the
+  miner's work skill (opt-in, greedy no-A* walk to a configured smithy point,
+  two-step `PickUp`→`Drop` to the ground); `skills/craft.py::Blacksmith`
+  fetches a dropped pile (two-step `PickUp`→`Drop`-into-pack) when starved,
+  never fighting the gump state machine; `village.py` co-locates a
+  miner+blacksmith pair at a live-calibrated trade spot
+  (`profession.py`'s `TRADE_MINE_SPOT`/`TRADE_SMITH_SPOT`). **No contract
+  changes needed** — `Drop`/`PickUp`/`TargetObject`/`GumpResponse` already
+  existed. Live-verified end to end (`live_trade.py`): the smith crafts its
+  starting stock to zero and stalls, the miner mines/smelts/delivers, the
+  smith picks the ingots up and crafts again — see PHASE3.md for the full
+  transcript and the several Phase-2-vintage bugs this scenario finally
+  exercised (a wrong CraftGump button, a silently-breakable tool, a
+  path-blocking anvil). ⏳ Remaining: bank + buy/sell (needs contract
+  expansion — `Buy`/`Sell`/`ContextMenu`/banker gump; follow the 4-lockstep
+  checklist in PHASE2.md), hunt/loot (corpse containers), and delegating
+  `GoTo` (and `MineSmeltDeliver`'s own walker) to anima-net's
+  `Session::navigate_to` (A\* from anima-core's `path` module) for real
+  commutes between workplaces (open today; greedy-only, and — per the trade
+  loop above — co-located workplaces only).
 - **Phase 4 — The learning stack** *(redefined — see note below)*: the fuller uowiki
   loop (semantic-memory lookups **and** filing discrepancy reports, not just reads), a
   Voyager-style skill library + automatic curriculum, and cognition cost tiering

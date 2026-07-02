@@ -4,7 +4,10 @@ Releases a roster of agents, stages the workers via the Control plane (tools +
 skills + a distinct workplace), names each character, then runs them all
 concurrently. Miners mine at their own ore bank and **gain Mining skill** — the
 village's "work output" is the skill each agent accrues (recorded as episodic
-reward by the work skill).
+reward by the work skill). A roster with both a miner and a blacksmith gets
+the first of each co-located at a calibrated trade spot with the miner's
+delivery target set — goods actually flow between them (DESIGN.md §10 Phase
+3; see `live_trade.py` for a focused 2-agent live proof).
 
 Usage: python -m anima2.village [--miners N] [--townsfolk M] [--ticks T]
 """
@@ -25,6 +28,8 @@ from .profession import (
     FISHING_SPOTS,
     MINING_SPOTS,
     PROFESSIONS,
+    TRADE_MINE_SPOT,
+    TRADE_SMITH_SPOT,
     Profession,
 )
 from .uomap import find_tree_clusters
@@ -84,14 +89,32 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     #    lumberjack gets a grove (a stand spot + the exact tree statics in reach,
     #    found from the static map — trees can't be probed blindly, and a cluster
     #    lets a worker move tree-to-tree as each one depletes).
-    spots = iter(MINING_SPOTS)
+    #
+    #    Phase 3: a roster with *both* a miner and a blacksmith gets the first of
+    #    each co-located at the calibrated trade spot instead of drawn from the
+    #    separate pools below, and the miner's `smithy_drop` is set so its ore
+    #    haul actually goes somewhere — the first inter-agent economy loop
+    #    (DESIGN.md §10). Any further miners/blacksmiths beyond that first pair
+    #    fall back to their normal pools, and a roster with only one of the two
+    #    professions is untouched — same staging as before this feature.
+    has_trade_pair = (any(p.key == "miner" for _, p, _ in online)
+                      and any(p.key == "blacksmith" for _, p, _ in online))
+    # TRADE_MINE_SPOT *is* MINING_SPOTS[1] — once a trade pairing claims it
+    # directly (below), it must not also be handed out from this pool, or a
+    # later miner ends up staged on top of the trade miner.
+    spots = iter(s for s in MINING_SPOTS if not has_trade_pair or s != TRADE_MINE_SPOT)
     fish_spots = iter(FISHING_SPOTS)
     smith_spots = iter(BLACKSMITH_SPOTS)
     groves = iter(find_tree_clusters(LUMBER_MAP, *FOREST_BASE))
+    trade_miner_placed = trade_smith_placed = not has_trade_pair
     plan: list[dict] = []
     for body, prof, persona in online:
-        workplace, nodes = None, None
-        if prof.key == "lumberjack":
+        workplace, nodes, smithy_drop = None, None, None
+        if prof.key == "miner" and not trade_miner_placed:
+            workplace = TRADE_MINE_SPOT
+            smithy_drop = TRADE_SMITH_SPOT
+            trade_miner_placed = True
+        elif prof.key == "lumberjack":
             grove = next(groves, None)
             if grove is not None:
                 workplace, trees = grove
@@ -102,12 +125,15 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 (sx, sy), (wx, wy, wz) = spot
                 workplace = (sx, sy)
                 nodes = [(wx, wy, wz, 0)]  # cast at the exact water tile (land target)
+        elif prof.key == "blacksmith" and not trade_smith_placed:
+            workplace = TRADE_SMITH_SPOT
+            trade_smith_placed = True
         elif prof.key == "blacksmith":
             workplace = next(smith_spots, None)
         elif prof.needs_workplace:
             workplace = prof.workplace or next(spots)
         plan.append({"body": body, "prof": prof, "persona": persona,
-                     "workplace": workplace, "nodes": nodes})
+                     "workplace": workplace, "nodes": nodes, "smithy_drop": smithy_drop})
 
     # 3) Control plane: stage workers and name everyone.
     with GmControl.spawn(host, port) as gm:
@@ -146,6 +172,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                       cognition=cognition, cognition_interval=12)
         if p["nodes"]:
             agent.memory["harvest_nodes"] = p["nodes"]  # the grove to work, tree by tree
+        if p["smithy_drop"]:
+            agent.memory["smithy_drop"] = p["smithy_drop"]  # miner's delivery target (trade pairing)
         agents.append((agent, p["prof"].key))
         t = threading.Thread(target=_run_worker,
                              args=(agent, ticks, i, status, lock, p["prof"].key), daemon=True)
