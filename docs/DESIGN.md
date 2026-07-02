@@ -5,12 +5,17 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-06-25 · Status: **Phase 1 functional end-to-end.** The Python
-brain drives a **live ServUO character** via the `anima-agent` IPC bridge
-(perceive→reflexes→planner→skill→act). Skills: Wander, GoTo, Combat, Greet,
-SpeakPending. Slow LLM cognition loop is wired (provider-abstracted, non-blocking)
-with an offline heuristic default. 20 tests green, ruff clean; navigation +
-full-planner runs validated against ServUO on :2594.
+Last updated: 2026-07-02 · Status: **Late Phase 2 (cognition + memory close-out).**
+The Python brain drives **live ServUO characters** via the `anima-agent` IPC
+bridge (perceive→reflexes→planner→skill→act) — from a single agent up to a
+working **village** of agents (`village.py`) each holding a profession: miner
+(mine + smelt ingots), lumberjack, fisher, blacksmith (gump-driven crafting),
+townsfolk, staged by the Control plane (`control.py::GmControl`). The slow LLM
+cognition loop steers with in-character chatter + a clamped `goal:goto`,
+periodically reflects episodic memory into persistent `Insight`s, and can write
+in-character posts to the uotavern forum. 92 tests green, ruff clean; the full
+village, smelting, and reflection loops are all live-verified against ServUO on
+:2594. See [`PHASE2.md`](PHASE2.md) for the detailed close-out status.
 
 ---
 
@@ -28,10 +33,10 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 ### The family (4 projects, one system)
 | Project | Role | Lang | Status |
 |---------|------|------|--------|
-| [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing done |
+| [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module landed; `navigate` bridge command still ⏳ (Phase 3) |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | TBD (likely Python) | planning |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Late Phase 2 (cognition + memory close-out); 92 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -222,16 +227,16 @@ anti-gaming (produce-credit deltas, held-out re-eval).
 
 ## 9. Language / runtime decision
 
-**Open but leaning Python brain over the contract.**
+**✅ Resolved in Phase 1: Python brain over the contract via IPC** (see §11).
+The original analysis, kept as the decision record:
 
-- **Recommended:** anima2 brain in **Python**, talking to anima-core over the
-  Observation/Action contract via **IPC** (e.g. JSON-RPC/length-prefixed JSON over
-  a local socket or stdio; anima-core exposes a thin native shim that drives TCP
-  and serves the contract). Rationale: reuse v1's Python brain/Foundry/wiki/LLM
+- **Chosen:** anima2 brain in **Python**, talking to anima-core over the
+  Observation/Action contract via **IPC** (landed as the `anima-agent` NDJSON
+  bridge in anima-net). Rationale: reuse v1's Python brain/Foundry/wiki/LLM
   assets and the mature Python LLM ecosystem; keep the brain swappable.
-- **Alternative:** Rust brain linked in-process with anima-core (single binary,
-  best perf for many parallel agents) — but reimplements LLM/memory plumbing.
-- Decide before Phase 1 code. The contract makes this reversible.
+- **Alternative (not taken):** Rust brain linked in-process with anima-core
+  (single binary, best perf for many parallel agents) — but reimplements
+  LLM/memory plumbing. The contract keeps this reversible.
 
 ---
 
@@ -249,17 +254,41 @@ anti-gaming (produce-credit deltas, held-out re-eval).
   - ✅ **Slow LLM cognition** wired: `llm.py` (LLMClient + Anthropic/Stub) + `cognition.py`
     (Heuristic default · LLMCognition · ThreadedCognition non-blocking). Speech via `SpeakPending`.
   - ⏭ Next: more skills (gather/mine, eat/heal, bank — need new contract Actions like UseSkill/
-    target in anima-core); delegate `GoTo` to anima-core A* `navigate_to`; episodic memory.
-- **Phase 2 — Cognition + memory.** *In progress — see [`PHASE2.md`](PHASE2.md).* Critical
-  path **1–3 DONE & LIVE**: target cursor ✅ · skills 0x3A ✅ · container contents ✅ ·
-  **mining loop end-to-end ✅** (the Control plane `control.py::GmControl` stages the
-  scenario via GM `[` commands; the brain mined Mining 35.0 → 35.2 autonomously) ·
-  episodic memory ✅. Next: gump parsing (craft/bank), 0xC1 cliloc messages, wiki semantic
-  memory + reflection. This is the first complete "work → skill rises" loop — the Phase 3
-  curriculum/Director foundation.
-- **Phase 3 — Skill library + automatic curriculum:** Voyager-style growth; tutorial stage 0; difficulty ratchet.
-- **Phase 4 — Control plane + eval harness:** reuse Foundry GM kernel for repeatable episodes + independent fitness.
-- **Phase 5 — Evolution & society:** MAP-Elites over variants; multi-agent social world (Generative Agents).
+    target in anima-core); delegate `GoTo` to anima-net's `Session::navigate_to`
+    (A* from anima-core's `path` module); episodic memory.
+- **Phase 2 — Cognition + memory.** *Close-out — see [`PHASE2.md`](PHASE2.md) for the
+  itemized status.* Landed: gump-driven crafting (`GumpResponse`/`GumpView`, 0xB0/0xB1
+  — the blacksmith MAKE loop) · mining + **smelting** end-to-end (`Mine`, `MineAndSmelt`)
+  · fishing + lumberjacking (grove-aware, via the static-map tree finder) · episodic
+  memory (`EpisodicMemory`) · a **reflection loop** (`ReflectingCognition` + persistent
+  `Insight`s, Generative-Agents-style) · in-character LLM chatter + a clamped
+  `goal:goto` (`LLMCognition`) · LLM-written forum posts (`forum.py`). Landed *early*
+  (see the re-baselining note below): the Control plane (`control.py::GmControl`) and
+  the society layer — a working multi-agent **village** (`village.py`) of staged
+  professions (`profession.py`) that talk (`--chatter`) and chronicle their day
+  (`--forum`). Remaining: **uowiki semantic memory** (consult before betting on a
+  mechanic; discrepancy reports are Phase 4's fuller loop) and richer cognition
+  (respond to journal lines aimed at the agent, a wider goal vocabulary beyond `goto`).
+- **Phase 3 — Economy & interaction loop** *(redefined — see note below)*: inter-agent
+  trade (a miner's ingots feed a blacksmith), bank + buy/sell (needs contract
+  expansion — `Buy`/`Sell`/`ContextMenu`/banker gump; follow the 4-lockstep checklist in
+  PHASE2.md), hunt/loot (corpse containers), and delegating `GoTo` to anima-net's
+  `Session::navigate_to` (A\* from anima-core's `path` module) for real commutes
+  between workplaces (open today; greedy-only so far).
+- **Phase 4 — The learning stack** *(redefined — see note below)*: the fuller uowiki
+  loop (semantic-memory lookups **and** filing discrepancy reports, not just reads), a
+  Voyager-style skill library + automatic curriculum, and cognition cost tiering
+  (Haiku/Sonnet/Opus per call, caching, reconsider cadence).
+- **Phase 5 — Eval harness + evolution + society scale-out:** reuse the Foundry GM
+  kernel for repeatable episodes + independent fitness; MAP-Elites over agent variants;
+  scale the village toward persistent lives, with the uotavern forum as the village's
+  chronicle.
+
+> **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
+> Control plane, *then* evolution/society) got overtaken by events. The Control plane
+> (`GmControl`) and the society elements (the village, professions, and the forum)
+> arrived *early*, during Phase 2, because staging and exercising the new work skills
+> live needed them. Phases 3–5 above are re-baselined to what's genuinely left.
 
 ---
 
@@ -271,12 +300,19 @@ Resolved during Phase 1:
 - **Where the contract lives = anima-core** (`src/agent.rs`), JSON shapes in `anima-net/json.rs`,
   mirrored by anima2 `contract.py` (round-trip tested both sides). ✅
 
+Resolved during Phase 2:
+- **Single-agent first vs multi-agent.** ✅ Resolved in favor of multi-agent: the
+  village (`village.py`) runs a roster of agents concurrently, each Control-plane
+  staged into a distinct profession and workplace.
+
 Still open:
 - **How much v1 code to port vs reimplement** (per-module, §8).
-- **`GoTo` greedy vs delegate to anima-core A\* `navigate_to`** (bridge needs a `navigate` cmd +
-  UO data path). Greedy works in open terrain today.
-- **Cognition cadence / cost controls** (model tier per call, caching, how often to reconsider).
-- **Single-agent first vs multi-agent** (recommend single first).
+- **`GoTo` greedy vs delegate to anima-net's `Session::navigate_to`** (A\* from
+  anima-core's `path` module; bridge needs a `navigate`
+  cmd + UO data path) — now a **Phase 3** item: greedy still works for the short walks
+  today's professions do, but real commutes between workplaces need it.
+- **Cognition cadence / cost controls** (model tier per call, caching, how often to
+  reconsider) — now a **Phase 4** item (cost tiering).
 
 ---
 

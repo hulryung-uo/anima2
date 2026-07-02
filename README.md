@@ -30,25 +30,43 @@ is the *car*.
 
 ## Status
 
-**Phase 1 functional end-to-end.** The Python brain drives a **live ServUO
-character** through the `anima-agent` IPC bridge: perceive → reflexes → planner →
-skill → act. Skills: Wander, GoTo, Combat, Greet, SpeakPending. The slow LLM
-cognition loop is wired (provider-abstracted, non-blocking) with an offline
-heuristic default. 20 tests green.
+**Late Phase 2** (cognition + memory close-out; see
+[`docs/PHASE2.md`](docs/PHASE2.md)). The Python brain drives **live ServUO
+characters** through the `anima-agent` IPC bridge: perceive → reflexes → planner
+→ skill → act. It scales from a single agent to a working **village** of agents
+each holding down a profession — miner (mine + smelt ingots), lumberjack
+(grove-aware chopping), fisher, blacksmith (gump-driven crafting), townsfolk —
+staged by the Control plane. The slow LLM cognition loop steers with
+in-character chatter and a clamped `goal:goto`, periodically reflects on
+episodic memory into persistent insights that feed back into later prompts, and
+can write in-character posts to the uotavern forum. 92 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 20 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 92 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
 ( cd ../anima-client && cargo build -p anima-net )
 python -m anima2.live 127.0.0.1 2594 animatest animatest --goto 3720 2216
 #   add --llm to use Claude cognition (needs ANTHROPIC_API_KEY + pip install -e ".[llm]")
+
+# A working village (Control-plane staged; defaults: 2 miners, 1 each of the rest,
+#   60 ticks):
+python -m anima2.village
+#   add --chatter for LLM in-character speech + goal:goto (needs a Replicate key in
+#     anima v1's config.yaml, or REPLICATE_API_TOKEN — no extra pip install)
+#   add --forum to post each villager's day to uotavern (needs ANIMA_FORUM_API_KEY,
+#     or the forum key in anima v1's config.yaml)
+
+# Single-skill live proofs (GM stages the scenario, then the brain works it):
+python -m anima2.live_mine      # mines ore, Mining skill rises
+python -m anima2.live_smelt     # mines then smelts ore into ingots, end to end
+python -m anima2.live_reflect   # LLM cognition + periodic reflection into insights
 ```
 
-Next: more skills (gather/heal/bank), A\* navigation via anima-core, episodic
-memory + the wiki. See [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
+Next: uowiki semantic memory, richer cognition (respond to journal lines, wider
+goal vocabulary). See [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
 
 ## Family
 

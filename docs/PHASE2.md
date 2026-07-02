@@ -3,7 +3,8 @@
 Phase 2 = **two workstreams**. The DESIGN.md headline ("cognition + memory") is
 workstream B, but the real gate is **workstream A: expanding the contract** in
 anima-core — without new Actions/Observation fields, the brain literally cannot
-*express* mining, healing, crafting, or banking.
+*express* mining, healing, crafting, or banking. Mining and crafting now do
+(the target-cursor + gump surface landed); healing and banking still need it.
 
 Status legend: ✅ done · 🚧 in progress · ⏳ todo
 
@@ -19,12 +20,12 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 | Action | Packet | Unblocks | Status |
 |--------|--------|----------|--------|
 | **TargetObject / TargetGround** | 0x6C | mining, casting, healing, any targeted skill | ✅ |
-| UseSkill | 0x12 (sub 0x24) | Hiding, Peacemaking, Anatomy, Stealth… | ⏳ |
-| CastSpell | 0xBF/0x12 | magery, Heal/Cure | ⏳ |
-| Drop / Equip | 0x08 / 0x13 | inventory, looting, gear | ⏳ |
-| GumpResponse | 0xB1 | crafting menus (MAKE), banking, quests | ⏳ |
+| UseSkill | 0x12 (sub 0x24) | Hiding, Peacemaking, Anatomy, Stealth… | ⏳ (Rust side has `UseSkill` end-to-end; not mirrored in `contract.py` yet) |
+| **CastSpell** | 0xBF/0x12 | magery, Heal/Cure | ✅ (all 4 lockstep places + `test_contract.py`; no caster skill uses it yet) |
+| **Drop / Equip** | 0x08 / 0x13 | inventory, looting, gear | ✅ (all 4 lockstep places + `test_contract.py`; not yet driven by a skill) |
+| **GumpResponse** | 0xB1 | crafting menus (MAKE), banking, quests | ✅ — drives `skills/craft.py::Blacksmith`'s MAKE-button loop; banking not wired |
 | ContextMenu req/resp | 0xBF 0x13/0x15 | banker, vendor, many NPCs | ⏳ |
-| Buy / Sell | 0x3B / 0x9F | economy loop (sell ingots, buy tools) | ⏳ |
+| Buy / Sell | 0x3B / 0x9F | economy loop (sell ingots, buy tools) | ⏳ (Rust side has `BuyItems`/`SellItems`; not mirrored in `contract.py` yet) |
 
 ### A2 — new incoming parsing + World/Observation fields
 | Packet | New state | Why | Status |
@@ -32,16 +33,18 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 | **0x6C target cursor** | `World.pending_target` → `Observation.pending_target` | brain must know the server is asking for a target | ✅ |
 | **0x3A UpdateSkills** | `World.skills` → `Observation.skills[]` (value/base/cap/lock) | skill levels + **skill-gain reward signal** | ✅ |
 | **0xC1 / 0xCC cliloc** | `JournalEntry.cliloc` + args; resolved brain-side via `anima2/cliloc.py` (Cliloc.enu) | the brain reads localized messages (mining/combat/loot/system) | ✅ |
-| 0xB0 OpenGump | `pending_gump` (serial, buttons) | crafting/banking UI | ⏳ |
+| **0xB0 OpenGump** | `World.gumps` → `Observation.gumps[]` (`GumpView`: serial, gump_id, layout) | crafting/banking UI | ✅ — the blacksmith craft gump is live (`skills/craft.py`) |
 | **0x3C / 0x25 container** | items keyed by `container` + `ItemView.layer` | "do I have ore/ingots/gold?"; find pickaxe; looting; banking | ✅ |
 | corpse (0x2E + container) | loot view | hunt loop | ⏳ |
 
 ### A3 — bridge (anima-net) additions
 - ✅ new actions in `apply_action` + `json.rs`; `pending_target` in observation JSON.
-- ⏳ **`navigate` command** — delegate to anima-core A\* `navigate_to` (routes around
-  buildings). Needs a UO data path → **use `~/dev/uo/uo-resource`** (full `.mul`/`.uop`
-  set) via `anima-assets`.
-- ⏳ expose skills / gump / container in the observation JSON as A2 lands.
+- ⏳ **`navigate` command** — delegate to anima-net's `Session::navigate_to` (A\* from
+  anima-core's `path` module; routes around buildings). Needs a UO data path →
+  **use `~/dev/uo/uo-resource`** (full `.mul`/`.uop` set) via `anima-assets`.
+  Now a Phase 3 item (DESIGN.md §10).
+- ✅ skills / gump / container are all exposed in the observation JSON (0x3A →
+  `skills[]`, 0xB0 → `gumps[]`, 0x3C/0x25 → `items[]` keyed by `container`).
 
 ---
 
@@ -56,14 +59,25 @@ real "work" loop).
   into `SkillContext.episodes` and the `LLMCognition` situation prompt.
 - ✅ **Reflection loop** — `memory.py::Insight`/`ReflectionMemory` (bounded insight
   log, tracks which episodes each insight covered) + `cognition.py::ReflectingCognition`
-  (wraps any cognition; fires from *inside* `reconsider()` on a tunable cadence — every
-  N reconsiders or M new episodes since the last reflection — so it rides the same
-  background thread as `ThreadedCognition` and never touches the fast loop). Two
+  (wraps any cognition; a reflection becomes *due* from inside `reconsider()` on a
+  tunable cadence — every N reconsiders or M new episodes since the last reflection,
+  whichever comes first — but runs on its **own dedicated daemon thread**
+  (`_reflect_bg`), off the goal-delivery path entirely: `reconsider()` calls
+  `inner.reconsider()` and returns that goal immediately, so even a slow LLM-backed
+  reflection call can never add latency to goal delivery — including under the usual
+  `ThreadedCognition(ReflectingCognition(inner))` composition. A non-overlap guard
+  (`_reflecting`, mirroring `ThreadedCognition`'s busy-flag) skips a round rather than
+  overlapping if one is already in flight; cadence counters only reset when a pass
+  actually starts, so no due round is silently dropped; a reflection exception can
+  never wedge the guard or kill cognition. `wait_idle()` (also added to
+  `ThreadedCognition`) gives tests a deterministic, sleep-free join point.) Two
   producers behind one interface: `HeuristicReflection` (reward-per-skill + notable
   failures, offline default) and `LLMReflection` (one call → JSON insight array,
-  falls back to the heuristic on a bad/unparseable response). Insights flow into
-  `SkillContext.insights` and the `LLMCognition` situation prompt's new "Lessons
-  learned" line. **LIVE-VERIFIED**: mining at the Minoc ridge with `LLMReflection`
+  screened/clamped through the same `_clean_model_line()` defense `LLMCognition` uses
+  for speech, falls back to the heuristic on a bad/unparseable/character-breaking
+  response). Insights flow into `SkillContext.insights` and the `LLMCognition`
+  situation prompt's "Lessons learned" line. **LIVE-VERIFIED**: mining at the Minoc
+  ridge with `LLMReflection`
   wired to the Replicate qwen3 client, reflection fired after 5 skill-gain episodes
   and produced the insight *"mine has paid off: +0.5 reward over 5 turns."* (qwen
   didn't return valid JSON for the reflection call, so it went through the
@@ -71,7 +85,8 @@ real "work" loop).
   prose); confirmed the insight reaching the next goal prompt's "Lessons learned:"
   line. Run: `python -m anima2.live_reflect`.
 - ⏳ **Semantic memory = uowiki** — `wiki_search`/`wiki_read_page`; consult before betting
-  on a mechanic, file discrepancy reports when reality differs.
+  on a mechanic (read-only here; filing discrepancy reports when reality differs is
+  Phase 4's fuller wiki loop — DESIGN.md §10).
 
 ### B2 — new skills (need A actions)
 - ✅ **Mine/Gather** — `skills/harvest.py::Mine`: find tool (open pack if needed) →
@@ -94,12 +109,34 @@ real "work" loop).
   layer alone — now filters by `container == player.serial`, since a mobile's own
   contained items share the same placeholder ground position and can tie on
   distance).
-- ⏳ Craft (gump MAKE loop) · Eat/Heal (bandage→self, or Heal spell) · Bank ·
-  Loot (open corpse → PickUp).
+- ✅ **Chop / Fish** — `skills/harvest.py::Chop`/`Fish`, both `Harvest` subclasses
+  (shared probe/reward machinery with `Mine`): `Chop` works a grove of tree statics
+  found by the static-map finder (`uomap.py::find_tree_clusters`), switching trees
+  on depletion; `Fish` casts at a calibrated water tile and rewards per catch
+  (`CATCH_CLILOC`), since Fishing skill itself gains very slowly. Live in the
+  village as the lumberjack and fisher professions.
+- ✅ **Craft** — `skills/craft.py::Blacksmith`: drives the ServUO CraftGump via
+  `GumpResponse` (category → item → repeated MAKE LAST), reward on Blacksmithing
+  skill-base gain. Live in the village as the blacksmith profession, forging
+  daggers from iron ingots at a staged forge + anvil.
+- ⏳ Eat/Heal (bandage→self, or Heal spell) · Bank · Loot (open corpse → PickUp).
 
 ### B3 — richer cognition
-- ⏳ context-aware speech using episodic memory + wiki; respond to journal lines aimed at us.
-- ⏳ expand goal vocabulary: mine / craft / bank / hunt / socialize / explore.
+- ✅ **In-character chatter + `goal:goto`** — `cognition.py::LLMCognition`: each
+  reconsider asks the LLM, in character, for a short spoken line (voiced next tick
+  by `SpeakPending`) and an optional `goal: goto` clamped to a short walk
+  (`max_excursion`, so a hallucinated far coordinate can't march the agent across
+  the map). `Profession.planner()` puts `SpeakPending()`/`GoTo()` ahead of the work
+  skill so both get consumed. Live in the village via `village.py --chatter`
+  (`ThreadedCognition(LLMCognition(...))` per agent).
+- 🚧 partially done: the situation prompt already folds in recent episodic memory
+  (`ctx.episodes[-5:]`) and reflection `Insight`s (`ctx.insights[-3:]`, the
+  "Lessons learned" line — see B1 above), so speech already reacts to what just
+  happened. Still open: wiki-grounded speech (no `uowiki` lookups yet), and
+  **responding to journal lines aimed at us** specifically (recent journal text is
+  in the prompt, but nothing singles out lines directed at the agent).
+- ⏳ wider goal vocabulary: only `goto` exists today; still need craft / bank /
+  hunt / socialize / explore goals (Phase 3 items, DESIGN.md §10).
 
 ---
 
@@ -112,8 +149,11 @@ real "work" loop).
    Control plane, GM `[` commands via the bridge). GM stages pickaxe + Mining 35 +
    teleport to the Minoc ridge; the brain then mines, gaining Mining 35.0 → 35.2.
    First "production" loop: **a character works and a skill rises, autonomously.**
-4. ⏳ **Gump support** (crafting, banking).
-5. ⏳ **Memory + wiki + reflection** (workstream B core).
+4. ✅ **Gump support (crafting)** — `GumpResponse`/`GumpView` (0xB0/0xB1) +
+   `skills/craft.py::Blacksmith`; the banking gump is still ⏳ (Phase 3 item).
+5. 🚧 **Memory + wiki + reflection** — episodic memory ✅ and the reflection loop ✅
+   (workstream B1) are done; **wiki semantic memory is still ⏳** (Phase 2 close-out
+   item, DESIGN.md §10).
 
 → Land 1–3 live first: "the character works and a skill rises" is the foundation the
 Phase 3 curriculum/Director builds on.
@@ -133,4 +173,16 @@ Phase 3 curriculum/Director builds on.
 - Local ServUO on `127.0.0.1:2594`, account `animatest/animatest` (auto-created).
 - UO data files for `navigate`/tile checks: **`~/dev/uo/uo-resource`**.
 - Full mining/crafting live validation needs scenario setup (tools + location) — that's
-  the Control plane (Phase 4); until then, set it up manually or with a GM account.
+  what the Control plane (`control.py::GmControl`, landed early — see DESIGN.md §10's
+  re-baselining note) does; used by every `live_*.py` script and `village.py`.
+
+## Backlog (from review)
+- The reflection-loop adversarial-review follow-up round (four fixes to
+  `cognition.py`'s `ReflectingCognition`/`LLMReflection`, plus `agent.py`, `memory.py`,
+  `live_reflect.py`, and `tests/test_reflection.py`) intentionally skipped doc updates,
+  per its own scope note: *"No changes to docs/DESIGN.md, docs/PHASE2.md, or
+  CLAUDE.md's stale '20 tests' line — the task scoped the four fixes to code+tests+live
+  verification, and CLAUDE.md's test count was already stale before this change
+  (pre-existing, out of scope). Did not commit, per instructions."* — resolved by the
+  documentation sync pass that produced the current revision of this file (and
+  CLAUDE.md/README.md/DESIGN.md, re-baselined to ground truth: 92 tests).

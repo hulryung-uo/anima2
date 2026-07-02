@@ -12,14 +12,21 @@ A new, from-scratch **autonomous AI agent** that plays Ultima Online — the
 Clean redesign of `../anima` (v1, Python); mines v1 for assets and lessons.
 
 ## Current phase
-**Phase 1 functional end-to-end.** The Python brain drives a **live ServUO
-character** via the `anima-agent` NDJSON bridge (in `../anima-client/crates/anima-net`).
-Package: `contract` (mirrors anima-core `agent.rs`) · `body`+`MockBody` · `ipc_body`
-(spawns/drives the bridge) · `persona` · `skills` (`Wander`/`GoTo`/`Combat`/`Greet`/
-`SpeakPending`) · `planner` · `reflexes` · `agent` (two-rate loop) · `llm`+`cognition`
-(Heuristic default · LLMCognition · ThreadedCognition; **LLM never in the fast loop**).
-20 tests green, ruff clean. **Next:** more skills (gather/heal/bank — need new contract
-Actions in anima-core), A* nav via anima-core, episodic memory + wiki. See DESIGN.md §10.
+**Late Phase 2 (cognition + memory close-out).** The Python brain drives **live
+ServUO characters** via the `anima-agent` NDJSON bridge — from a single agent
+(`live.py`) up to a working **village** (`village.py`) of agents each staged
+(Control plane, `control.py::GmControl`) into a profession (`profession.py`):
+miner (mine + smelt ingots), lumberjack (grove-aware chopping), fisher,
+blacksmith (gump-driven MAKE-loop crafting), townsfolk. Package adds
+`skills.harvest`/`smelt`/`craft` (`Mine`/`Chop`/`Fish`/`MineAndSmelt`/`Blacksmith`)
+· `memory` (`EpisodicMemory` + `ReflectionMemory`) · `cognition` gains
+`ReflectingCognition` (episodes → persistent `Insight`s feeding later goal/speech
+prompts) and `LLMCognition` in-character chatter + a clamped `goal:goto` ·
+`forum` (LLM-written in-character posts to uotavern, `village.py --forum`) ·
+`contract` now carries `GumpResponse`/`GumpView` for crafting gumps. 92 tests
+green, ruff clean. **Next:** uowiki semantic memory, richer cognition
+(respond to journal lines, wider goal vocabulary) — see PHASE2.md; then Phase 3
+(economy & interaction loop — see DESIGN.md §10).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

@@ -4,10 +4,11 @@ A `Profession` bundles the Control-plane staging (skills to set, tools to give, 
 workplace) with the work skill the brain runs. The village runner assigns a
 profession (and, for resource jobs, a distinct workplace) to each agent.
 
-Currently only **mining** is fully calibrated (a verified resource + workplace).
-Lumberjacking/fishing/smithing are defined but need a calibrated spot (a real tree/
-water tile from the static map) or gump support (crafting) — see PHASE2.md. The
-framework is data-driven so adding them is just a row here once that lands.
+All five professions below run live in `village.py`: miner (mine + smelt at a
+staged forge), lumberjack (grove-aware chopping via the static-map tree finder),
+fisher (casts at a calibrated water tile), blacksmith (gump-driven MAKE-loop
+crafting), and townsfolk (no job — wander + greet). The framework is data-driven
+so adding a new profession is just a row here plus a matching work `Skill`.
 """
 
 from __future__ import annotations
@@ -116,7 +117,8 @@ PROFESSIONS: dict[str, Profession] = {
         persona_name="Sera",
         work_skill=None,  # no job — just lives in town (wander + greet)
     ),
-    # Defined but not yet live (need a calibrated tree tile from the static map):
+    # Live via `find_tree_clusters` (uomap.py), which locates real tree statics
+    # from the static map so village.py can assign each lumberjack its own grove:
     "lumberjack": Profession(
         key="lumberjack",
         persona_name="Bjorn",
