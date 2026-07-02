@@ -54,8 +54,22 @@ real "work" loop).
 - ✅ **Episodic memory** — `memory.py::EpisodicMemory` (bounded log of `Episode`s with
   rewards); the agent loop records terminal/rewarded skill outcomes; recent episodes flow
   into `SkillContext.episodes` and the `LLMCognition` situation prompt.
-- ⏳ **Reflection loop** — periodic LLM summary of episodes → updates goals/strategy
-  (Generative Agents). Runs in the slow loop (already non-blocking via `ThreadedCognition`).
+- ✅ **Reflection loop** — `memory.py::Insight`/`ReflectionMemory` (bounded insight
+  log, tracks which episodes each insight covered) + `cognition.py::ReflectingCognition`
+  (wraps any cognition; fires from *inside* `reconsider()` on a tunable cadence — every
+  N reconsiders or M new episodes since the last reflection — so it rides the same
+  background thread as `ThreadedCognition` and never touches the fast loop). Two
+  producers behind one interface: `HeuristicReflection` (reward-per-skill + notable
+  failures, offline default) and `LLMReflection` (one call → JSON insight array,
+  falls back to the heuristic on a bad/unparseable response). Insights flow into
+  `SkillContext.insights` and the `LLMCognition` situation prompt's new "Lessons
+  learned" line. **LIVE-VERIFIED**: mining at the Minoc ridge with `LLMReflection`
+  wired to the Replicate qwen3 client, reflection fired after 5 skill-gain episodes
+  and produced the insight *"mine has paid off: +0.5 reward over 5 turns."* (qwen
+  didn't return valid JSON for the reflection call, so it went through the
+  heuristic fallback — same resilience `LLMCognition` already relies on for bare
+  prose); confirmed the insight reaching the next goal prompt's "Lessons learned:"
+  line. Run: `python -m anima2.live_reflect`.
 - ⏳ **Semantic memory = uowiki** — `wiki_search`/`wiki_read_page`; consult before betting
   on a mechanic, file discrepancy reports when reality differs.
 

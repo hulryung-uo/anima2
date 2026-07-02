@@ -68,6 +68,7 @@ class Agent:
             goal=self.goal,
             memory=self.memory,
             episodes=self.episodes.recent(8),
+            episode_count=self.episodes.total_recorded,
         )
 
         # Slow loop, sampled: let cognition re-set the goal occasionally.

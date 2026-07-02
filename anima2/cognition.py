@@ -9,6 +9,9 @@ Implementations:
 - `HeuristicCognition` — offline default, no LLM (keeps/forms simple goals).
 - `LLMCognition` — prompts an `LLMClient` for a goal (+ optional in-character speech).
 - `ThreadedCognition` — non-blocking wrapper around any of the above.
+- `ReflectingCognition` — wraps a cognition; periodically distills recent episodes
+  into `Insight`s (Generative Agents-style reflection, PHASE2.md B1) via a
+  `HeuristicReflection` or `LLMReflection` producer.
 """
 
 from __future__ import annotations
@@ -16,10 +19,12 @@ from __future__ import annotations
 import json
 import re
 import threading
-from typing import Any
+from collections import defaultdict
+from typing import Any, Protocol
 
 from .contract import Position
 from .llm import LLMClient
+from .memory import Episode, Insight, ReflectionMemory
 from .persona import Persona
 from .skills.base import Goal, SkillContext
 
@@ -125,11 +130,13 @@ class LLMCognition:
         people = ", ".join(f"{m.name or 'someone'}@{m.distance}" for m in obs.mobiles[:5]) or "no one"
         recent = " | ".join(j.text for j in obs.new_journal[-4:]) or "(quiet)"
         memory = " | ".join(str(e) for e in ctx.episodes[-5:]) or "(nothing yet)"
+        learned = " | ".join(str(i) for i in ctx.insights[-3:]) or "(nothing yet)"
         return (
             f"You are at work as a {self.job}, standing at ({p.x}, {p.y}).\n"
             f"Nearby: {people}.\n"
             f"Recently heard: {recent}\n"
             f"Recently you: {memory}\n"
+            f"Lessons learned: {learned}\n"
             "What do you say aloud right now — and do you stay, or stroll somewhere close?"
         )
 
@@ -171,6 +178,151 @@ class ThreadedCognition:
             self._busy = False
 
 
+class ReflectionProducer(Protocol):
+    """Distills a run of episodes into 1-3 short natural-language insights."""
+
+    def reflect(self, episodes: list[Episode], persona: Persona) -> list[str]:
+        """Return short, in-character takeaways from `episodes` (may be empty)."""
+        ...
+
+
+class HeuristicReflection:
+    """No-LLM default: aggregate reward per skill + notable failures into 1-2
+    short insight strings. Offline-safe; also `LLMReflection`'s fallback."""
+
+    def reflect(self, episodes: list[Episode], persona: Persona) -> list[str]:
+        if not episodes:
+            return []
+        by_name: dict[str, list[Episode]] = defaultdict(list)
+        for ep in episodes:
+            name = ep.summary.split(" → ", 1)[0] if " → " in ep.summary else ep.kind
+            by_name[name].append(ep)
+
+        insights: list[str] = []
+        totals = {name: sum(e.reward for e in eps) for name, eps in by_name.items()}
+        best, best_total = max(totals.items(), key=lambda kv: kv[1])
+        if best_total > 0:
+            insights.append(
+                f"{best} has paid off: {best_total:+.1f} reward over {len(by_name[best])} turns."
+            )
+
+        failures = [e for e in episodes if e.summary.endswith("failure")]
+        if failures:
+            worst = failures[-1]
+            name = worst.summary.split(" → ", 1)[0]
+            insights.append(
+                f"Trouble with {name}: {len(failures)} setback(s), most recently at tick {worst.tick}."
+            )
+
+        if not insights:
+            insights.append(f"A quiet stretch: {len(episodes)} turns, nothing much to report.")
+        return insights[:2]
+
+
+class LLMReflection:
+    """LLM-backed reflection: one call summarizing recent episodes into 1-3 short,
+    first-person insights (Generative Agents-style). Falls back to
+    `HeuristicReflection` on any failure (bad/empty response, parse error, flaky
+    client) so reflection never breaks the slow loop."""
+
+    def __init__(self, client: LLMClient) -> None:
+        self.client = client
+        self._fallback = HeuristicReflection()
+
+    def reflect(self, episodes: list[Episode], persona: Persona) -> list[str]:
+        if not episodes:
+            return []
+        try:
+            raw = self.client.complete(self._system(persona), self._situation(episodes))
+        except Exception:  # noqa: BLE001 — a flaky LLM must not break reflection
+            return self._fallback.reflect(episodes, persona)
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        return _parse_insights(raw) or self._fallback.reflect(episodes, persona)
+
+    def _system(self, persona: Persona) -> str:
+        return (
+            f"You ARE {persona.name}, quietly taking stock of your recent work in Britannia — "
+            "not speaking aloud, just reflecting to yourself.\n"
+            "Distill 1-3 short, concrete lessons from what just happened: what worked, what to "
+            "avoid, patterns worth remembering. You are NOT an AI and must never say so. "
+            'Reply with ONLY a JSON array of short strings, e.g. '
+            '["The east vein paid better than the west one.", '
+            '"Best to smelt before the pack fills up."]'
+        )
+
+    def _situation(self, episodes: list[Episode]) -> str:
+        recent = "\n".join(str(e) for e in episodes)
+        return f"What just happened:\n{recent}\n\nWhat do you take away from this?"
+
+
+class ReflectingCognition:
+    """Wraps a `Cognition`; periodically distills recent episodes into short
+    `Insight`s that persist and feed back into later goal/speech decisions
+    (Generative Agents-style reflection, PHASE2.md B1).
+
+    Cadence lives entirely in the **slow loop**: reflection fires from inside
+    `reconsider()` when either `every_n_reconsiders` calls have passed, or at
+    least `min_new_episodes` new episodes (tracked via `SkillContext.episode_count`,
+    which — unlike `len(episodes)` — survives `EpisodicMemory`'s bounded window)
+    have accumulated since the last reflection — whichever comes first — *and*
+    at least one new episode has landed since then. That last condition keeps
+    an idle agent (no new episodes) from re-reflecting over the same unchanged
+    window every `every_n_reconsiders` calls, which would otherwise flood the
+    bounded `ReflectionMemory` with duplicate insights and, for `LLMReflection`,
+    burn a wasted LLM call per cycle. Because it runs inside `reconsider()`, the
+    usual `ThreadedCognition(ReflectingCognition(inner))` composition keeps
+    reflection off the fast loop's hot path entirely.
+    """
+
+    def __init__(
+        self,
+        inner: Any,
+        reflection: ReflectionProducer,
+        *,
+        every_n_reconsiders: int = 5,
+        min_new_episodes: int = 6,
+        episode_window: int = 20,
+        insights: ReflectionMemory | None = None,
+    ) -> None:
+        self.inner = inner
+        self.reflection = reflection
+        self.every_n_reconsiders = every_n_reconsiders
+        self.min_new_episodes = min_new_episodes
+        self.episode_window = episode_window
+        self.insights = insights if insights is not None else ReflectionMemory()
+        self._reconsiders_since = 0
+        self._episode_count_at_last = 0
+
+    def reconsider(self, ctx: SkillContext) -> Goal | None:
+        # Insights from *prior* reflection rounds inform this round's decision —
+        # not the reflection this call might itself produce below.
+        ctx.insights = self.insights.recent(3)
+        goal = self.inner.reconsider(ctx)
+
+        self._reconsiders_since += 1
+        new_episodes = ctx.episode_count - self._episode_count_at_last
+        due = new_episodes >= 1 and (
+            self._reconsiders_since >= self.every_n_reconsiders
+            or new_episodes >= self.min_new_episodes
+        )
+        if due and ctx.episodes:
+            self._reflect(ctx)
+        return goal
+
+    def _reflect(self, ctx: SkillContext) -> None:
+        window = ctx.episodes[-self.episode_window :]
+        for text in self.reflection.reflect(window, ctx.persona):
+            self.insights.record(
+                Insight(
+                    text=text,
+                    episode_ticks=(window[0].tick, window[-1].tick),
+                    episode_count=len(window),
+                )
+            )
+        self._reconsiders_since = 0
+        self._episode_count_at_last = ctx.episode_count
+
+
 def _parse_json(text: str) -> dict[str, Any] | None:
     """Extract the first JSON object from a model response (tolerates code fences)."""
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -181,3 +333,18 @@ def _parse_json(text: str) -> dict[str, Any] | None:
         return obj if isinstance(obj, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def _parse_insights(text: str) -> list[str]:
+    """Extract a JSON array of short strings from a model response (tolerates
+    code fences and surrounding prose). Returns `[]` if nothing usable is found."""
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if not match:
+        return []
+    try:
+        arr = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(arr, list):
+        return []
+    return [s.strip() for s in arr if isinstance(s, str) and s.strip()][:3]

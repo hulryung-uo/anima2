@@ -1,10 +1,11 @@
-"""Episodic memory — a rolling log of what happened, for reflection and context.
+"""Episodic + reflection memory — what happened, and what the agent made of it.
 
 The fast loop records `Episode`s (skill outcomes with rewards, notable events);
 the slow cognition loop reads recent episodes to set goals and reflect, and
-aggregate reward is the backbone learning signal (DESIGN.md §6). This is the
-offline-first core of workstream B; semantic memory (the wiki) and richer
-reflection build on top.
+aggregate reward is the backbone learning signal (DESIGN.md §6). `ReflectionMemory`
+is the Generative-Agents-style layer on top: the slow loop periodically distills a
+run of episodes into a handful of short `Insight`s (PHASE2.md B1), which persist
+and feed back into later goal/speech decisions (see `cognition.ReflectingCognition`).
 """
 
 from __future__ import annotations
@@ -33,9 +34,14 @@ class EpisodicMemory:
 
     def __init__(self, capacity: int = 500) -> None:
         self._eps: deque[Episode] = deque(maxlen=capacity)
+        #: Monotonic count of every `record()` call ever made — unlike `len()`,
+        #: this survives the deque's bounded truncation, so it's what cadence
+        #: logic (e.g. "M new episodes since the last reflection") should compare.
+        self.total_recorded = 0
 
     def record(self, ep: Episode) -> None:
         self._eps.append(ep)
+        self.total_recorded += 1
 
     def recent(self, n: int = 10) -> list[Episode]:
         if n <= 0:
@@ -50,3 +56,37 @@ class EpisodicMemory:
 
     def __len__(self) -> int:
         return len(self._eps)
+
+
+@dataclass
+class Insight:
+    """A short reflective takeaway distilled from a run of episodes.
+
+    Records which episodes it covered (by tick range + count) so an insight stays
+    traceable back to the memory that produced it.
+    """
+
+    text: str
+    episode_ticks: tuple[int, int]  # (first, last) tick among the episodes covered
+    episode_count: int
+
+    def __str__(self) -> str:
+        return self.text
+
+
+class ReflectionMemory:
+    """A bounded log of `Insight`s the slow loop has distilled from episodic memory."""
+
+    def __init__(self, capacity: int = 20) -> None:
+        self._insights: deque[Insight] = deque(maxlen=capacity)
+
+    def record(self, insight: Insight) -> None:
+        self._insights.append(insight)
+
+    def recent(self, n: int = 3) -> list[Insight]:
+        if n <= 0:
+            return []
+        return list(self._insights)[-n:]
+
+    def __len__(self) -> int:
+        return len(self._insights)

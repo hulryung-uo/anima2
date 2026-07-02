@@ -44,6 +44,12 @@ class SkillContext:
     memory: dict[str, Any] = field(default_factory=dict)
     # Recent episodes (read-only view), for cognition context. See memory.Episode.
     episodes: list[Any] = field(default_factory=list)
+    # Total episodes ever recorded (EpisodicMemory.total_recorded) — monotonic,
+    # unlike len(episodes); reflection cadence compares against this.
+    episode_count: int = 0
+    # Recent reflection insights (read-only view), for cognition context.
+    # See memory.Insight / cognition.ReflectingCognition.
+    insights: list[Any] = field(default_factory=list)
 
 
 @dataclass
