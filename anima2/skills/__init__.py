@@ -4,6 +4,7 @@ from .base import Goal, Skill, SkillContext, SkillResult, Status
 from .combat import Combat
 from .craft import Blacksmith
 from .harvest import Chop, Fish, Harvest, Mine
+from .hunt import Hunt
 from .market import BlacksmithMarket
 from .movement import GoTo, Wander
 from .smelt import MineAndSmelt, MineSmeltDeliver
@@ -23,6 +24,7 @@ __all__ = [
     "GoTo",
     "Greet",
     "Harvest",
+    "Hunt",
     "Mine",
     "MineAndSmelt",
     "MineSmeltDeliver",

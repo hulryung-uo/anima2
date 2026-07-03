@@ -31,28 +31,32 @@ is the *car*.
 ## Status
 
 **Phase 3 in progress** (economy & interaction loop; see
-[`docs/PHASE3.md`](docs/PHASE3.md) — items 1–2 done). Phase 2 (cognition +
+[`docs/PHASE3.md`](docs/PHASE3.md) — items 1–3 done). Phase 2 (cognition +
 memory) closed out — see [`docs/PHASE2.md`](docs/PHASE2.md). The Python brain
 drives **live ServUO characters** through the `anima-agent` IPC bridge:
 perceive → reflexes → planner → skill → act. It scales from a single agent to
 a working **village** of agents each holding down a profession — miner (mine +
 smelt ingots, and **deliver** them to a blacksmith), lumberjack (grove-aware
 chopping), fisher, blacksmith (gump-driven crafting, **fetch** dropped ingots
-when starved, and now **sell daggers to a vendor + bank the gold**),
-townsfolk — staged by the Control plane. The slow LLM cognition loop steers with
-in-character chatter and a clamped `goal:goto`, periodically reflects on
-episodic memory into persistent insights that feed back into later prompts,
-consults a local read-only index of the companion wiki (`../uowiki`) for a
-grounding excerpt, and can write in-character posts to the uotavern forum.
+when starved, and **sell daggers to a vendor + bank the gold**), hunter
+(engage weak creatures, then **loot their corpses**), townsfolk — staged by
+the Control plane. The slow LLM cognition loop steers with in-character
+chatter and a clamped `goal:goto`, periodically reflects on episodic memory
+into persistent insights that feed back into later prompts, consults a local
+read-only index of the companion wiki (`../uowiki`) for a grounding excerpt,
+and can write in-character posts to the uotavern forum.
 **The economy loop is live-verified end to end**: a miner hauls smelted ingots
 to a co-located blacksmith that's run dry, drops them, and the blacksmith
 picks them up, crafts again, sells the surplus daggers to a vendor (right-click
 context menu → `SellItems`), and banks the proceeds — see `live_trade.py` /
-`live_market.py`. 198 tests green.
+`live_market.py`. **Hunt/loot is live-verified too**: a bare-handed hunter
+engages weak creatures (Mongbats) at a calibrated field, and once one dies,
+opens its corpse and loots the gold into its pack — repeated, corpse-tied
+cycles, with loot provenance — see `live_hunt.py`. 245 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 198 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 245 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -69,6 +73,7 @@ python -m anima2.village
 #     anima v1's config.yaml, or REPLICATE_API_TOKEN — no extra pip install)
 #   add --forum to post each villager's day to uotavern (needs ANIMA_FORUM_API_KEY,
 #     or the forum key in anima v1's config.yaml)
+#   add --hunters N to include the hunter profession (opt-in, default 0)
 
 # Single-skill live proofs (GM stages the scenario, then the brain works it):
 python -m anima2.live_mine      # mines ore, Mining skill rises
@@ -76,9 +81,10 @@ python -m anima2.live_smelt     # mines then smelts ore into ingots, end to end
 python -m anima2.live_reflect   # LLM cognition + reflection, wiki-grounded prompts
 python -m anima2.live_trade     # 2-agent inter-agent economy proof: miner -> blacksmith
 python -m anima2.live_market    # blacksmith sells daggers to a vendor, banks the gold
+python -m anima2.live_hunt      # bare-handed hunter kills weak creatures, loots corpses
 ```
 
-Next: hunt/loot, A* navigate — see [`docs/PHASE3.md`](docs/PHASE3.md) and
+Next: A* navigate — see [`docs/PHASE3.md`](docs/PHASE3.md) and
 [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
 
 ## Family

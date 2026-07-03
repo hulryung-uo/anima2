@@ -3,11 +3,13 @@
 Phase 3 = the economy & interaction loop (DESIGN.md §10). Item 1 needed **no
 contract expansion at all**: `Drop`, `PickUp`, `TargetObject`, `GumpResponse`
 all already existed (Workstream A closed out in Phase 2), so it's pure
-brain-side work — new skill logic plus live geometry calibration. Item 2
-needed only a `contract.py` **mirror** of a shop/popup surface anima-net had
-already fully implemented Rust-side (see its own "Update" note below) — not a
-genuine expansion, but still `contract.py` work, unlike item 1. The remaining
-items (hunt/loot, A* navigate) do need real contract work and are still ⏳.
+brain-side work — new skill logic plus live geometry calibration. Items 2 and
+3 each needed only a `contract.py` **mirror** of a surface anima-net had
+already fully implemented Rust-side (shop/popup for item 2, `corpse_of`/
+`corpse_equip` for item 3 — see each item's own "Update"/ground-truth note) —
+not a genuine expansion, but still `contract.py` work, unlike item 1. The
+remaining item (A* navigate) does need real Rust-side work (a new bridge
+command) and is still ⏳.
 
 Status legend: ✅ done · 🚧 in progress · ⏳ todo
 
@@ -206,7 +208,7 @@ pile with plenty of metal or a gump still open, walks/picks-up/drops when
 starved and a pile is in range, the "stuck" not-enough-metal gump still
 triggers a fetch, a wedged pile falls back to crafting, the server's cliloc
 is an alternate trigger. 148 tests green (up from 118), `ruff check .` clean
-(HEAD reality after later items landed: 205 — see item 2 below for what grew it).
+(HEAD reality after later items landed: 210 — see item 2 below for what grew it).
 
 ---
 
@@ -464,13 +466,237 @@ byte-for-byte unchanged, the route's own leg index stays pinned for the whole
 trip rather than resetting mid-interaction, and a wedged return trip doesn't
 leak its leg index into the next trip's); and the sell/bank retrigger backoff
 that stops a permanently missing vendor/banker from turning into a permanent
-commute. 205 tests green (up from 148), `ruff check .` clean.
+commute. 210 tests green (up from 148), `ruff check .` clean.
 
-## ⏳ Item 3 — Hunt/loot
+## Item 3 — Hunt/loot ✅
 
-Needs corpse container observation (PHASE2.md A2: "corpse (0x2E + container)
-loot view") plus a loot skill (open corpse → `PickUp`, reusing the same
-lift/place two-step this phase's delivery/fetch logic established).
+**A hunter engages weak creatures, kills them, opens their corpses, and loots
+the contents into its pack — repeatedly, with loot provenance.** Closes
+PHASE2.md A2's last open row ("corpse (0x2E + container) loot view").
+
+### What landed
+
+- **`contract.py`** — the item's whole contract surface: `CorpseLink`
+  (`Observation.corpse_of`, `corpse_serial -> killed_serial`) and
+  `CorpseEquip`/`CorpseEquipEntry` (`Observation.corpse_equip`, a corpse's
+  worn-item layout) — a straight mirror of `anima-net`'s `json.rs`
+  (`corpse_of`/`corpse_equip` observation keys), which — per this item's own
+  ground truth, confirmed by reading `anima-core/src/net/game.rs` (0xAF
+  `DisplayDeath`, 0x89 `CorpseEquip`) and `world/mod.rs` directly — already
+  fully parsed both server packets. **No Rust changes were needed**, the same
+  "done in Rust, missing only the Python mirror" shape items 1-2 already hit
+  with shop/popup. Unlike `pending_target`/`shop_buy`/`popup` (a single
+  "currently open" slot, absent → `None`), `corpse_of`/`corpse_equip` are
+  *lists* — several corpses can be tracked at once — so absent/empty is `[]`,
+  not `None`; round-trip + backwards-compat tests in `tests/test_contract.py`
+  cover both shapes explicitly.
+- **`skills/hunt.py::Hunt(Combat)`** — the hunter's one work skill, composed
+  on top of `Combat` (reused, not duplicated — mirrors `MineAndSmelt(Mine)`/
+  `BlacksmithMarket(Blacksmith)`'s own subclass-and-defer shape) rather than
+  re-implementing WarMode/Attack. Phases: **engage** (`Combat.step()`
+  unmodified, but this skill's own reward is loot, not combat activity — see
+  below) → a kill is detected by scanning `Observation.corpse_of` for a link
+  whose `killed` is a serial `Hunt` has ever `Attack`ed (`hunt_attacked`,
+  since `Combat._target` always re-targets "nearest hostile" fresh every
+  tick — there's no sticky "current target" to key attribution off instead)
+  → **locate_corpse** (walk to it, stall-bounded) → **open** (`Use`, then a
+  fixed settle wait — a corpse is an ordinary container, **not a gump**, so
+  this structurally can't reshow the way a CraftGump can) → **loot**
+  (lift-then-place two-step for each item matching a small graphics
+  whitelist — Gold plus two verified-but-unexercised gem graphics) →
+  **resume** engage. Reward pays only for whitelisted valuables **confirmed
+  gained** in the pack, banked across observation lag exactly like
+  `MineSmeltDeliver._deliver_step`/`BlacksmithMarket._sell_step`'s own
+  confirmed-net-gain accounting — Combat's own per-`Attack` reward (0.05) is
+  explicitly zeroed out, never leaking through. **Never** reads
+  `Observation.corpse_equip` at all (worn items — a different mechanism,
+  out of scope for this MVP per the ground truth) — satisfied simply by not
+  touching that field anywhere in the skill. Every stage that can wait on the
+  server is bounded (walk stall, a bounded re-`Use` retry if literally
+  nothing shows up under the corpse's container, a bounded lift-then-place
+  attempt count) — baking in `craft.py::Blacksmith`'s "third dead gump"
+  lesson from day one (see the module docstring for why corpse-looting
+  structurally can't hit that *specific* failure mode, and what stands in
+  for the watchdog instead): a **give-up cooldown** (`hunt_giveup`, 30 ticks
+  — the exact constant and mechanism `BlacksmithMarket.giveup_cooldown_ticks`
+  uses) stops an abandoned corpse from re-entering the loot queue on the very
+  next tick (a livelock in all but name), while a corpse that's genuinely
+  fully looted is marked `hunt_looted` **permanently** and never revisited.
+- **`profession.py`** — a new `hunter` profession (persona "Ragnar"): bare-
+  handed (Wrestling 50, Tactics 50 — live-verified to reliably one-to-two-shot
+  a Mongbat, no weapon or healing needed), `work_skill=Hunt`, staged at a
+  newly live-calibrated `HUNTING_SPOT`. `Profession` gained a
+  `combat_disposition` field (`village.py::_persona_for` now threads it
+  through) so the hunter's persona can default to `"aggressive"` — every
+  other profession leaves it at `Persona`'s own `"neutral"` default, so this
+  is purely additive.
+- **`village.py`** — an opt-in `--hunters N` roster knob (default 0): the
+  default roster (`--miners 2 --lumberjacks 1 --fishers 1 --blacksmiths 1
+  --townsfolk 1`) is untouched unless a caller explicitly asks for hunters.
+- **`live_hunt.py`** — the live proof driver (see below), mirroring
+  `live_market.py`'s style: wipes the hunting pocket (items *and* mobiles),
+  stages one bare-handed hunter on a fresh account with its starting gold
+  deleted (so every gold piece it ever holds is provably corpse loot), spawns
+  several Mongbats **unpinned** (see "Design decisions" below), then ticks
+  the agent and prints a kill/loot-cycle evidence timeline.
+
+### Design decisions
+
+- **Target creature: Mongbat** (`Scripts/Mobiles/Normal/Mongbat.cs`) — 4-6
+  hits, `AddLoot(LootPack.Poor)`. Traced the loot-pack chain directly rather
+  than assuming: `LootPack.Poor` resolves `Core.SE ? SePoor : Core.AOS ?
+  AosPoor : OldPoor` (`Scripts/Misc/LootPack.cs`), and this shard's
+  `Config/Expansion.cfg` sets `CurrentExpansion=T2A` — both `Core.SE` and
+  `Core.AOS` are false, so it's `OldPoor`: **100% chance, `1d25` gold**, plus
+  a 0.02% chance of an unwhitelisted instrument. In practice a Mongbat corpse
+  is gold-only, confirmed live (every loot cycle in every proof run below
+  yielded a plain gold amount in that range).
+- **Not pinned.** Every vendor/banker this package stages elsewhere
+  (`VENDOR_SPOT`/`BANKER_SPOT`, `village.py`) gets `[Set CantWalk true` —
+  those are *passive* NPCs that need to hold still for a scripted route. A
+  Mongbat is the opposite case: `AI_Melee`/`FightMode.Closest` already makes
+  it approach and attack on its own once aggroed, and `CantWalk` would
+  neuter exactly that (a pinned Mongbat spawned a few tiles off could never
+  close the distance at all). Spawned instead within `Combat`'s own
+  `engage_range` (10) so the hunter notices them immediately.
+- **Bare-handed staging.** Wrestling 50 (+ Tactics 50 for hit chance) proved
+  more than sufficient live — every proof run below finished with the
+  hunter's HP comfortably above half (worst case 59/80 after fighting 8
+  mongbats at once), so no healing skill and no weapon were needed for the
+  proof, matching the ground truth's "verify healing is not needed" framing.
+
+### Geometry calibration
+
+`HUNTING_SPOT` needed a check the trade-spot calibration (item 1) didn't:
+not just walkable and flat, but **unpopulated** — a spot with pre-existing
+wildlife/townsfolk nearby would let `Hunt` (which, via `Combat`, attacks
+*any* qualifying-notoriety mobile in range, not specifically mongbats) engage
+the wrong thing, muddying `corpse_of` attribution and the "mongbat" proof
+narrative alike. Two grid-probed open-Britain-plains candidates (the same
+technique `BLACKSMITH_SPOTS` used) both turned out to already have mobiles
+within 15-20 tiles — named "innocent"-notoriety NPCs plus unrelated grey
+wildlife, evidently inhabited farmland rather than empty ground (live-caught
+by adding an explicit `nearby_mobiles` check the trade-spot calibration
+never needed). The Minoc-ridge `MINING_SPOTS` pool is all confirmed-**empty**
+(mining camps, not settlements) — reused that *area*, but not a pool entry
+verbatim: most nooks there are deliberately tight and walled-in (fine for a
+stationary miner, bad for a hunter chasing multiple corpses across several
+tiles), and reusing an exact `MINING_SPOTS` tuple risked a later collision
+with `village.py`'s own miner pool (nothing excludes it there the way
+`TRADE_MINE_SPOT` is). Real, collision-checked `Walk` probing (the Z-map +
+real-Walk method, item 1) a few tiles past `MINING_SPOTS[2]` (2584, 411 —
+itself only 3/8 directions open one step out) found `(2587, 408)` opens into
+a genuinely large pocket: 2-4 real tiles in **every** one of the 8
+directions before anything blocks, a consistent z=15 throughout (no slope),
+and zero mobiles within 20 tiles — ~66 tiles from the trade corridor,
+~1100 from `BLACKSMITH_SPOTS`.
+
+### Live proof
+
+`python -m anima2.live_hunt` (needs ServUO on :2594 + the built bridge).
+Reran three times (fresh accounts each time, area wiped first) — all three
+passed the `MIN_LOOT_CYCLES >= 2` gate, the first two within 50 ticks, a
+richer 8-mongbat/4-cycle run (`--mongbats 8 --min-cycles 4`) below chosen as
+the primary transcript for its longer, more illustrative timeline:
+
+```
+hunter at (2587, 408)
+hunter: animahuntfinal serial=16878
+GM staged hunter at (2587,408,15): {'Wrestling': 50, 'Tactics': 50}, bare-handed (Wrestling only)
+GM deleted the hunter's starting gold (1000) — every gold piece from here on is provably corpse loot
+GM spawned 8/8 mongbats around the hunter (unpinned — they aggro in)
+  tick    0: SNAPSHOT hunts=0 looted_cycles=0 pack_valuables=0 hp=80/80
+  tick   50: SNAPSHOT hunts=0 looted_cycles=0 pack_valuables=0 hp=74/80
+  tick   73: KILLED mongbat 0x41f0 -> corpse 0x400174b0
+  tick   78: LOOT CYCLE 1/4 complete — corpse 0x400174b0 yielded 23 valuables (pack 0 -> 23); running total looted=23
+  tick  100: SNAPSHOT hunts=1 looted_cycles=1 pack_valuables=23 hp=64/80
+  tick  113: KILLED mongbat 0x41ef -> corpse 0x400174b3
+  tick  118: LOOT CYCLE 2/4 complete — corpse 0x400174b3 yielded 20 valuables (pack 23 -> 43); running total looted=43
+  tick  133: KILLED mongbat 0x41f4 -> corpse 0x400174b6
+  tick  138: LOOT CYCLE 3/4 complete — corpse 0x400174b6 yielded 9 valuables (pack 43 -> 52); running total looted=52
+  tick  150: SNAPSHOT hunts=3 looted_cycles=3 pack_valuables=52 hp=59/80
+  tick  184: KILLED mongbat 0x41da -> corpse 0x400174b8
+  tick  189: LOOT CYCLE 4/4 complete — corpse 0x400174b8 yielded 14 valuables (pack 52 -> 66); running total looted=66
+
+4 loot cycles demonstrated by tick 189 — stopping early.
+
+--- result ---
+mongbats killed:              4
+loot cycles (corpse-tied):    4 (need >= 4) -> True
+total valuables looted:       66
+episodic reward:              66.0
+
+HUNT/LOOT CONFIRMED: engage -> kill -> corpse -> open -> loot, live (4 cycles, all corpse-tied).
+```
+
+Each loot cycle is tied to the **specific corpse** being processed when the
+pack gain landed (tracking `hunt_queue[0]`'s own turnover tick by tick, not
+`hunt_phase`'s coarser engage/loot edges — a single uninterrupted loot run
+can drain more than one queued corpse when two mongbats die close together,
+and counting by phase transitions alone would under-count that), and every
+gold piece is provenance-safe (the fresh account's starting 1000 gold was
+GM-deleted before the first kill). Two earlier, smaller reruns
+(`--mongbats 6`, default `--min-cycles 2`) both passed at tick 47, confirming
+the loop isn't a one-off:
+
+```
+tick   22: KILLED mongbat 0x41e1 -> corpse 0x40017470
+tick   27: LOOT CYCLE 1/2 complete — corpse 0x40017470 yielded 9 valuables (pack 0 -> 9)
+tick   42: KILLED mongbat 0x41e5 -> corpse 0x40017472
+tick   47: LOOT CYCLE 2/2 complete — corpse 0x40017472 yielded 25 valuables (pack 9 -> 34)
+2 loot cycles demonstrated by tick 47 — stopping early.
+```
+
+### Bugs found live
+
+Unlike items 1-2, this item's live testing didn't surface any brain-side
+logic bugs in `Hunt` itself (the composed-phase design worked correctly on
+the very first live run) — but two real *calibration* mistakes, both caught
+before they could taint the proof:
+
+1. **The obvious "open field" candidates weren't actually empty.** The
+   first `HUNTING_SPOT` candidates were chosen the same way `BLACKSMITH_SPOTS`
+   was — grid-probe for walkable/flat Britain-plains ground — but that
+   calibration never checked for *inhabitants*. Both early candidates
+   (`(1600, 1700)`, `(1580, 1580)`) turned out to already have nearby
+   mobiles (named "innocent" NPCs, unrelated wildlife) within 15-20 tiles,
+   live-caught by adding an explicit `nearby_mobiles` check before staging
+   anything — worth generalizing: any future "empty pocket" calibration
+   should check population, not just terrain.
+2. **A reused test account silently carries over state.** An early
+   diagnostic run reused an account name from a prior smoke test; the GM's
+   "delete starting gold" step printed "deleted 15" instead of "deleted
+   1000" — the *character* wasn't fresh, it already held a prior run's loot.
+   The safety logic itself was unaffected (it deletes whatever `Gold` items
+   it finds, not an assumed amount), but it's why `live_hunt.py` insists on
+   a fresh `--hunter-account` per run, same as `live_trade.py`/
+   `live_market.py` already document.
+
+### Offline tests
+
+`tests/test_contract.py` — `CorpseLink`/`CorpseEquip` round-trips both
+directions; backwards compatibility (an observation dict with neither key at
+all still parses, both fields `[]` not `None`, distinguishing this shape
+from `pending_target`/`shop_buy`/`popup`'s single-slot `None` convention).
+`tests/test_hunt.py` (20 tests) — `Hunt`: pacifist/no-target/no-queue
+`can_run` gating, Combat's own attack reward never leaking through (always
+0.0), kill attribution (only a corpse whose `killed` we actually attacked
+enters the queue), the engage→loot phase switch, walking to a corpse
+(stall-bounded, wedge gives up with the cooldown — and does **not**
+immediately re-queue during that cooldown, only after it elapses), the
+`open` stage's `Use`-once/settle/conditional-retry sequence (including the
+"nothing shows up at all" retry-then-accept path), the whitelist (picks
+gold, skips a non-whitelisted item, never reads `corpse_equip` even when
+populated), the lift-then-place two-step, reward paid only on **confirmed**
+pack gain (not on issuing `PickUp`/`Drop`) and banked across the tick a scan
+comes up empty, a bounded-attempts give-up on a `Drop` that never lands
+(bounces forever), and a multi-corpse queue draining sequentially within one
+loot run. `tests/test_profession.py`/`village.py` — the `hunter` profession
+is bare-handed and workplace-fixed at `HUNTING_SPOT` (not a `MINING_SPOTS`
+member — no pool-collision risk with a real miner), its planner runs `Hunt`,
+and `combat_disposition` threads through `_persona_for` without touching any
+other profession's default. 245 tests green (up from 210), `ruff check .`
+clean.
 
 ## ⏳ Item 4 — A* navigate
 
@@ -486,15 +712,18 @@ instead of an out-of-reach distance.
 ## References
 
 - DESIGN.md §10 — Phase 3 definition and the re-baselining note.
-- PHASE2.md — the 4-lockstep contract-change checklist (item 3 above will
-  still need it); the workstream-A/B split this phase didn't need.
-- `anima2/skills/smelt.py`, `anima2/skills/craft.py`, `anima2/skills/market.py`
-  — the three skills this phase extended, each carrying its own detailed
-  module/class docstrings (`market.py`'s covers the speech-vs-context-menu
-  finding in full).
+- PHASE2.md — the 4-lockstep contract-change checklist; the workstream-A/B
+  split this phase didn't need. Item 3 above closes A2's last open row.
+- `anima2/skills/smelt.py`, `anima2/skills/craft.py`, `anima2/skills/market.py`,
+  `anima2/skills/hunt.py` — the four skills this phase extended/added, each
+  carrying its own detailed module/class docstrings (`market.py`'s covers the
+  speech-vs-context-menu finding in full; `hunt.py`'s covers loot attribution,
+  selection, and the bounded-retry discipline in full).
 - `anima2/profession.py` — `TRADE_MINE_SPOT`/`TRADE_SMITH_SPOT`/`TRADE_HUB`/
-  `VENDOR_SPOT`/`BANKER_SPOT` provenance comments; the corrected `blacksmith`
-  profession's `items`/`structures`/`work_skill`.
+  `VENDOR_SPOT`/`BANKER_SPOT`/`HUNTING_SPOT` provenance comments; the
+  corrected `blacksmith` profession's `items`/`structures`/`work_skill`; the
+  new `hunter` profession.
 - `anima2/control.py` — `GmControl.find_mobile_near`'s distance-to-query-point
   fix and `exclude` parameter.
-- `anima2/live_trade.py`, `anima2/live_market.py` — the live proof drivers.
+- `anima2/live_trade.py`, `anima2/live_market.py`, `anima2/live_hunt.py` —
+  the live proof drivers.

@@ -12,25 +12,27 @@ A new, from-scratch **autonomous AI agent** that plays Ultima Online — the
 Clean redesign of `../anima` (v1, Python); mines v1 for assets and lessons.
 
 ## Current phase
-**Phase 3 in progress (economy & interaction loop), items 1–2 done.** Phase 2
+**Phase 3 in progress (economy & interaction loop), items 1–3 done.** Phase 2
 (cognition + memory) closed out — see PHASE2.md. The Python brain drives
 **live ServUO characters** via the `anima-agent` NDJSON bridge — from a single
 agent (`live.py`) up to a working **village** (`village.py`) of agents each
 staged (Control plane, `control.py::GmControl`) into a profession
 (`profession.py`): miner (mine + smelt ingots, and **deliver** them),
 lumberjack (grove-aware chopping), fisher, blacksmith (gump-driven MAKE-loop
-crafting, **fetch** dropped ingots when starved, and now **sell daggers to a
-vendor + bank the gold**), townsfolk. Package adds
-`skills.harvest`/`smelt`/`craft`/`market`
+crafting, **fetch** dropped ingots when starved, and **sell daggers to a
+vendor + bank the gold**), hunter (engage weak creatures, then **loot their
+corpses**), townsfolk. Package adds
+`skills.harvest`/`smelt`/`craft`/`market`/`hunt`
 (`Mine`/`Chop`/`Fish`/`MineAndSmelt`/`MineSmeltDeliver`/`Blacksmith`/
-`BlacksmithMarket`) · `memory` (`EpisodicMemory` + `ReflectionMemory`) ·
+`BlacksmithMarket`/`Hunt`) · `memory` (`EpisodicMemory` + `ReflectionMemory`) ·
 `cognition` gains `ReflectingCognition` (episodes → persistent `Insight`s
 feeding later goal/speech prompts) and `LLMCognition` in-character chatter + a
 clamped `goal:goto` · `forum` (LLM-written in-character posts to uotavern,
 `village.py --forum`) · `contract` now carries `GumpResponse`/`GumpView` for
 crafting gumps, `ShopBuy`/`ShopSell`/`BuyItems`/`SellItems` for vendor
-transactions, and `PopupMenu`/`PopupRequest`/`PopupSelect` for right-click
-context menus · `wiki` (read-only semantic memory over the local `../uowiki`
+transactions, `PopupMenu`/`PopupRequest`/`PopupSelect` for right-click
+context menus, and `CorpseLink`/`CorpseEquip` for corpse loot/equipment
+links · `wiki` (read-only semantic memory over the local `../uowiki`
 docs tree; optionally grounds `LLMCognition`/`LLMReflection` prompts with a
 compact excerpt). **Phase 3 item 1 — the first inter-agent economy loop —
 is live-verified** (`live_trade.py`): a miner mines, smelts, and hauls
@@ -45,14 +47,22 @@ bug 1), then banks the proceeds at a staged `Banker` the same way (opens the
 bank box, then the established lift-then-place two-step) — a manually
 curated waypoint route around the trade smithy's own narrow corridor
 (`profession.py`'s `VENDOR_SPOT`/`BANKER_SPOT`), since a single straight-line
-greedy walk can't reach either from the smith's stand tile. See PHASE3.md
-for the full breakdown of both items (including several Phase-2-vintage bugs
-the live scenarios finally exercised: a wrong CraftGump button, a tool that
-silently breaks, an anvil blocking the delivery corridor, a proximity-failure
-CraftGump reshow that froze the MAKE loop, and — for item 2 — a stale bridge
-binary, a wrong-distance `find_mobile_near`, and a wandering vendor NPC).
-205 tests green, ruff clean. **Next:** PHASE3.md items 3–4 (hunt/loot, A*
-navigate — see DESIGN.md §10).
+greedy walk can't reach either from the smith's stand tile. **Phase 3 item 3
+— hunt/loot — is live-verified** (`live_hunt.py`): a bare-handed hunter
+(Wrestling 50) engages Mongbats at a live-calibrated, unpopulated pocket
+(`profession.py`'s `HUNTING_SPOT`), and once one dies (`Observation.corpse_of`
+links its corpse to a serial the hunter attacked) opens the corpse and loots
+the gold into its pack — repeated, corpse-tied kill→loot cycles, gold
+provenance-safe (the fresh account's starting gold is GM-deleted first). See
+PHASE3.md for the full breakdown of all three items (including several
+Phase-2-vintage bugs the live scenarios finally exercised: a wrong CraftGump
+button, a tool that silently breaks, an anvil blocking the delivery corridor,
+a proximity-failure CraftGump reshow that froze the MAKE loop, a stale bridge
+binary, a wrong-distance `find_mobile_near`, a wandering vendor NPC, and — for
+item 3 — two "open field" calibration candidates that turned out to already
+be inhabited).
+245 tests green, ruff clean. **Next:** PHASE3.md item 4 (A* navigate — see
+DESIGN.md §10).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

@@ -281,6 +281,55 @@ class PopupMenu:
 
 
 @dataclass
+class CorpseLink:
+    """One corpse→killed-mobile link (0xAF DisplayDeath). Mirrors anima-core's
+    `Observation.corpse_of`: `(corpse_serial, killed_mobile_serial)`, letting a
+    brain confirm "this is the corpse of what I killed" before looting (see
+    `anima2/skills/hunt.py::Hunt`).
+    """
+
+    corpse: int
+    killed: int
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CorpseLink:
+        return cls(corpse=d.get("corpse", 0), killed=d.get("killed", 0))
+
+
+@dataclass
+class CorpseEquipEntry:
+    """One worn-item entry from a corpse's equipment layout (0x89 CorpseEquip):
+    `(layer, item_serial)`. `Hunt` deliberately never reads these in its MVP —
+    see that module's docstring — this mirror exists for completeness/future use.
+    """
+
+    layer: int
+    serial: int
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CorpseEquipEntry:
+        return cls(layer=d.get("layer", 0), serial=d.get("serial", 0))
+
+
+@dataclass
+class CorpseEquip:
+    """A corpse's worn-item layout (0x89 CorpseEquip) — what the creature had
+    *equipped* at death, distinct from its container contents (`Observation.items`
+    with `container == corpse_serial`, the ordinary loot `Hunt` picks up).
+    """
+
+    corpse: int
+    entries: list[CorpseEquipEntry] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CorpseEquip:
+        return cls(
+            corpse=d.get("corpse", 0),
+            entries=[CorpseEquipEntry.from_dict(e) for e in d.get("entries", [])],
+        )
+
+
+@dataclass
 class Observation:
     """A perception snapshot. ``mobiles`` and ``items`` are sorted by distance."""
 
@@ -299,6 +348,14 @@ class Observation:
     shop_sell: ShopSell | None = None
     # An open right-click context menu (0xBF/0x14) — `None` when none is open.
     popup: PopupMenu | None = None
+    # Corpse→killed-mobile links (0xAF DisplayDeath) and each corpse's worn-item
+    # layout (0x89 CorpseEquip) — unlike `pending_target`/`shop_buy`/`popup`
+    # these are *lists*, not a single "currently open" slot (several corpses can
+    # be tracked at once), so an absent/empty key is just `[]`, not `None`.
+    # Mirrors anima-net's `corpse_of`/`corpse_equip` observation keys
+    # (`json.rs::observation_to_json`). See `anima2/skills/hunt.py::Hunt`.
+    corpse_of: list[CorpseLink] = field(default_factory=list)
+    corpse_equip: list[CorpseEquip] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Observation:
@@ -317,6 +374,8 @@ class Observation:
             shop_buy=ShopBuy.from_dict(sb) if sb else None,
             shop_sell=ShopSell.from_dict(ss) if ss else None,
             popup=PopupMenu.from_dict(pu) if pu else None,
+            corpse_of=[CorpseLink.from_dict(c) for c in d.get("corpse_of", [])],
+            corpse_equip=[CorpseEquip.from_dict(c) for c in d.get("corpse_equip", [])],
         )
 
 

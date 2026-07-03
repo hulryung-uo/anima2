@@ -146,6 +146,51 @@ def test_observation_popup_roundtrip():
     assert Observation.from_dict({"player": {}}).popup is None
 
 
+def test_observation_corpse_of_roundtrip():
+    obs = Observation.from_dict(
+        {
+            "player": {"serial": 1},
+            "corpse_of": [{"corpse": 0x4001, "killed": 0x2001}, {"corpse": 0x4002, "killed": 0x2002}],
+        }
+    )
+    assert len(obs.corpse_of) == 2
+    assert obs.corpse_of[0].corpse == 0x4001
+    assert obs.corpse_of[0].killed == 0x2001
+    assert obs.corpse_of[1].corpse == 0x4002
+    assert obs.corpse_of[1].killed == 0x2002
+    # Absent → empty list, not None (corpse_of/corpse_equip are lists of links,
+    # not a single "currently open" slot like pending_target/shop_buy/popup).
+    assert Observation.from_dict({"player": {}}).corpse_of == []
+
+
+def test_observation_corpse_equip_roundtrip():
+    obs = Observation.from_dict(
+        {
+            "player": {"serial": 1},
+            "corpse_equip": [
+                {"corpse": 0x4001, "entries": [{"layer": 1, "serial": 0x9001}, {"layer": 7, "serial": 0x9002}]},
+            ],
+        }
+    )
+    assert len(obs.corpse_equip) == 1
+    assert obs.corpse_equip[0].corpse == 0x4001
+    assert len(obs.corpse_equip[0].entries) == 2
+    assert obs.corpse_equip[0].entries[0].layer == 1
+    assert obs.corpse_equip[0].entries[0].serial == 0x9001
+    assert obs.corpse_equip[0].entries[1].layer == 7
+    assert obs.corpse_equip[0].entries[1].serial == 0x9002
+    assert Observation.from_dict({"player": {}}).corpse_equip == []
+
+
+def test_observation_without_corpse_keys_still_parses():
+    # Backwards compatible: an observation dict from before this change (no
+    # corpse_of/corpse_equip keys at all) must still parse fine, exactly like
+    # the shop_buy/shop_sell/popup backwards-compat test above.
+    obs = Observation.from_dict({"player": {"serial": 1}, "items": []})
+    assert obs.corpse_of == []
+    assert obs.corpse_equip == []
+
+
 def test_observation_from_dict():
     obs = Observation.from_dict(
         {

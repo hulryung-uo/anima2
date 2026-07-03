@@ -5,15 +5,16 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-02 · Status: **Phase 3 in progress (economy & interaction
-loop), items 1–2 done.**
+Last updated: 2026-07-03 · Status: **Phase 3 in progress (economy & interaction
+loop), items 1–3 done.**
 Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
 Python brain drives **live ServUO characters** via the `anima-agent` IPC
 bridge (perceive→reflexes→planner→skill→act) — from a single agent up to a
 working **village** of agents (`village.py`) each holding a profession: miner
 (mine + smelt ingots, and **deliver** them), lumberjack, fisher, blacksmith
-(gump-driven crafting, **fetch** dropped ingots when starved, and now **sell
-daggers to a vendor + bank the gold**), townsfolk, staged by the Control plane
+(gump-driven crafting, **fetch** dropped ingots when starved, and **sell
+daggers to a vendor + bank the gold**), hunter (engage weak creatures, then
+**loot their corpses**), townsfolk, staged by the Control plane
 (`control.py::GmControl`). The slow LLM cognition loop steers with
 in-character chatter + a clamped `goal:goto`, periodically reflects episodic
 memory into persistent `Insight`s, consults a local read-only index of the
@@ -24,10 +25,14 @@ live-verified**, no contract changes needed. **Phase 3 item 2 — closing the
 loop into gold — is live-verified**: the blacksmith sells surplus daggers to a
 vendor via its right-click context menu and banks the proceeds at a banker
 (`contract.py` gained `ShopBuy`/`ShopSell`/`BuyItems`/`SellItems` and
-`PopupMenu`/`PopupRequest`/`PopupSelect`); see [`PHASE3.md`](PHASE3.md) for
-the full breakdown of both items. 198 tests green, ruff clean; the full
-village, smelting, reflection, wiki-grounded cognition, and miner→blacksmith→
-vendor→bank trade loops are all live-verified against ServUO on :2594.
+`PopupMenu`/`PopupRequest`/`PopupSelect`). **Phase 3 item 3 — hunt/loot — is
+live-verified**: a bare-handed hunter engages weak creatures (Mongbats) and
+loots gold from their corpses in repeated, corpse-tied cycles
+(`contract.py` gained `CorpseLink`/`CorpseEquip`); see [`PHASE3.md`](PHASE3.md)
+for the full breakdown of all three items. 245 tests green, ruff clean; the
+full village, smelting, reflection, wiki-grounded cognition, miner→blacksmith→
+vendor→bank trade loop, and hunt/loot loop are all live-verified against
+ServUO on :2594.
 See [`PHASE2.md`](PHASE2.md) for the Phase 2 close-out status and
 [`PHASE3.md`](PHASE3.md) for the Phase 3 breakdown.
 
@@ -50,7 +55,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module landed; `navigate` bridge command still ⏳ (Phase 3) |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 in progress (economy & interaction loop; items 1–2 — inter-agent trade, sell/bank — live-verified); 198 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 in progress (economy & interaction loop; items 1–3 — inter-agent trade, sell/bank, hunt/loot — live-verified); 245 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -287,7 +292,7 @@ The original analysis, kept as the decision record:
   Phase 4's fuller loop). Remaining: richer cognition (respond to journal lines
   aimed at the agent, a wider goal vocabulary beyond `goto`).
 - **Phase 3 — Economy & interaction loop** *(redefined — see note below)* — 🚧
-  *in progress, items 1–2 done — see [`PHASE3.md`](PHASE3.md) for the itemized
+  *in progress, items 1–3 done — see [`PHASE3.md`](PHASE3.md) for the itemized
   status.* ✅ **Inter-agent trade** (a miner's ingots feed a blacksmith):
   `skills/smelt.py::MineSmeltDeliver` adds a deliver/return phase to the
   miner's work skill (opt-in, greedy no-A* walk to a configured smithy point,
@@ -317,8 +322,34 @@ The original analysis, kept as the decision record:
   entries only), banks the gold (context menu → lift-then-place into the
   bank box) — see PHASE3.md for the full transcript and the live-only bugs
   this item's own testing found (a stale bridge binary, a wrong-distance
-  `find_mobile_near`, a wandering vendor NPC). ⏳ Remaining: hunt/loot (corpse
-  containers), and delegating `GoTo` (and `MineSmeltDeliver`'s/
+  `find_mobile_near`, a wandering vendor NPC). ✅ **Hunt/loot** (engage weak
+  creatures, kill them, loot their corpses): `contract.py` gained
+  `CorpseLink`/`CorpseEquip` (`Observation.corpse_of`/`corpse_equip`,
+  mirroring an already-implemented Rust-side surface — 0xAF `DisplayDeath` +
+  0x89 `CorpseEquip`, verified directly against `anima-core`); `skills/
+  hunt.py::Hunt` composes `Combat` (reused via subclassing, not duplicated)
+  with an engage→loot phase pair: a kill is attributed by scanning
+  `corpse_of` for a link whose `killed` serial `Hunt` has attacked (`Combat`
+  always re-targets "nearest hostile" fresh each tick, so there's no sticky
+  target to key off instead), then the corpse is walked to, `Use`-opened
+  (an ordinary container, not a gump), and looted via the established
+  lift-then-place two-step for a small whitelisted-graphics selection (gold
+  plus two verified-but-unexercised gem graphics) — reward pays only for
+  valuables **confirmed gained** in the pack, and every stage (walk, open,
+  loot) is stall/attempt-bounded with a give-up cooldown (mirrors
+  `BlacksmithMarket.giveup_cooldown_ticks`) so an abandoned corpse isn't
+  retried immediately. `profession.py` gained a `hunter` profession
+  (bare-handed — Wrestling alone reliably kills the calibrated target,
+  Mongbat) at a newly live-calibrated, unpopulated `HUNTING_SPOT`;
+  `village.py` gained an opt-in `--hunters N` roster knob (default 0,
+  existing rosters untouched). Live-verified end to end (`live_hunt.py`): the
+  hunter engages, kills, and loots Mongbat corpses in repeated cycles, each
+  tied to the specific corpse that produced the confirmed gold gain (not
+  just a coarse phase transition) — see PHASE3.md for the full transcript
+  and the live-only calibration lesson this item's own testing found (an
+  "open field" candidate isn't necessarily *empty* — two early
+  `HUNTING_SPOT` candidates turned out to already have nearby wildlife/
+  townsfolk). ⏳ Remaining: delegating `GoTo` (and `MineSmeltDeliver`'s/
   `BlacksmithMarket`'s own walkers) to anima-net's `Session::navigate_to` (A\*
   from anima-core's `path` module) for real commutes between workplaces (open
   today; greedy-only, and — per the trade loops above — co-located

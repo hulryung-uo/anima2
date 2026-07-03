@@ -43,7 +43,8 @@ LUMBER_MAP = 1
 
 
 def _persona_for(prof: Profession, idx: int) -> Persona:
-    return Persona(name=f"{prof.persona_name}{idx}", title=f"a {prof.key}")
+    return Persona(name=f"{prof.persona_name}{idx}", title=f"a {prof.key}",
+                   combat_disposition=prof.combat_disposition)
 
 
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
@@ -247,6 +248,11 @@ def main() -> None:
     ap.add_argument("--fishers", type=int, default=1)
     ap.add_argument("--blacksmiths", type=int, default=1)
     ap.add_argument("--townsfolk", type=int, default=1)
+    # Opt-in, default 0: the hunter profession (Phase 3 item 3) has its own
+    # calibrated, isolated field (`profession.HUNTING_SPOT`) and doesn't need
+    # to join the default roster for the village to keep working exactly as
+    # before — mirrors every other roster knob's own default-count shape.
+    ap.add_argument("--hunters", type=int, default=0)
     ap.add_argument("--ticks", type=int, default=60)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2594)
@@ -255,7 +261,7 @@ def main() -> None:
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
-              + ["townsfolk"] * args.townsfolk)
+              + ["townsfolk"] * args.townsfolk + ["hunter"] * args.hunters)
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
                 forum=args.forum, chatter=args.chatter)
 

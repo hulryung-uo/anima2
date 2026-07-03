@@ -37,7 +37,7 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 | **0x3C / 0x25 container** | items keyed by `container` + `ItemView.layer` | "do I have ore/ingots/gold?"; find pickaxe; looting; banking | ✅ |
 | **0x74 / 0x9E shop windows** | `World.shop_buy`/`shop_sell` → `Observation.shop_buy`/`shop_sell` | vendor buy/sell prices — answer with `BuyItems`/`SellItems` | ✅ (Phase 3 item 2 — `ShopBuy`/`ShopSell`/`ShopBuyEntry`/`ShopSellItem` mirrored into `contract.py`; `shop_sell` drives `BlacksmithMarket`) |
 | **0xBF/0x14 popup menu** | `World.popup` → `Observation.popup` (`PopupMenu`: serial, entries) | right-click context menus (vendor sell, open bank box, …) | ✅ (Phase 3 item 2 — `PopupMenu`/`PopupEntry` mirrored into `contract.py`) |
-| corpse (0x2E + container) | loot view | hunt loop | ⏳ |
+| corpse (0x2E + container) | loot view | hunt loop | ✅ (Phase 3 item 3 — `Observation.corpse_of`/`corpse_equip` mirrored into `contract.py` as `CorpseLink`/`CorpseEquip`; already fully parsed Rust-side — 0xAF `DisplayDeath` + 0x89 `CorpseEquip`, verified directly against `anima-core/src/net/game.rs`/`world/mod.rs` — drives `skills/hunt.py::Hunt`) |
 
 ### A3 — bridge (anima-net) additions
 - ✅ new actions in `apply_action` + `json.rs`; `pending_target` in observation JSON.
@@ -143,7 +143,12 @@ real "work" loop).
   `GumpResponse` (category → item → repeated MAKE LAST), reward on Blacksmithing
   skill-base gain. Live in the village as the blacksmith profession, forging
   daggers from iron ingots at a staged forge + anvil.
-- ⏳ Eat/Heal (bandage→self, or Heal spell) · Bank · Loot (open corpse → PickUp).
+- ✅ **Bank** — `skills/market.py::BlacksmithMarket`'s bank phase (Phase 3
+  item 2; context-menu `OpenBankEntry` → lift-then-place into the bank box).
+- ✅ **Loot** — `skills/hunt.py::Hunt` (Phase 3 item 3; open corpse → `PickUp`
+  → `Drop` into the pack, a whitelisted-graphics selection, reward on
+  confirmed pack gain).
+- ⏳ Eat/Heal (bandage→self, or Heal spell).
 
 ### B3 — richer cognition
 - ✅ **In-character chatter + `goal:goto`** — `cognition.py::LLMCognition`: each

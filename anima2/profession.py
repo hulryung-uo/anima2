@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, MineSmeltDeliver, Skill, SpeakPending, Wander
+from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, Skill, SpeakPending, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -101,6 +101,35 @@ TRADE_HUB: tuple[int, int] = (2610, 474)
 VENDOR_SPOT: list[tuple[int, int]] = [TRADE_HUB, (2610, 473)]
 BANKER_SPOT: list[tuple[int, int]] = [TRADE_HUB, (2610, 475)]
 
+# Phase 3 item 3 (hunt/loot): a hunting pocket well away from the trade zone
+# above (2609-2611, 473-475) — mongbats spawned here must never wander close
+# enough to aggro the vendor/banker or cross paths with the trade miner's own
+# delivery walk, and (a check the trade-spot calibration didn't need) must not
+# already be *populated* — a spot with pre-existing wildlife/townsfolk nearby
+# would let the hunter's Combat/Hunt (which attacks *any* qualifying-notoriety
+# mobile in range, not specifically mongbats) engage the wrong thing, muddying
+# `corpse_of` attribution and the "mongbat" narrative alike. Live-checked via
+# `GmControl` before picking: two open-Britain-plains candidates (grid-probed
+# the way `BLACKSMITH_SPOTS` was) both turned out to already have nearby
+# mobiles within 15-20 tiles (named "innocent"-notoriety NPCs plus unrelated
+# grey wildlife — evidently inhabited farmland, not empty ground). The
+# Minoc-ridge `MINING_SPOTS` pool is all confirmed-**empty** (mining camps,
+# not settlements) — reused that *area*, but not a pool entry verbatim:
+# most nooks there are deliberately tight and walled-in (good for a
+# stationary miner, bad for a hunter chasing multiple corpses), and reusing
+# an exact `MINING_SPOTS` tuple would let `village.py`'s miner pool
+# eventually hand the *same* tile to a real miner (nothing excludes it there
+# the way `TRADE_MINE_SPOT` is excluded — see that constant's own comment).
+# Real, collision-checked `Walk` probing (the Z-map + real-Walk method,
+# PHASE3.md item 1) a few tiles past `MINING_SPOTS[2]` (2584, 411) — itself
+# only 3/8 directions open one step out — found `(2587, 408)` opens into a
+# genuinely large pocket: 2-4 real tiles in **every** one of the 8
+# directions before anything blocks, all at a consistent z=15 (no slope),
+# and zero mobiles within 20 tiles. ~66 tiles from the trade corridor and
+# ~1100 from `BLACKSMITH_SPOTS`; not a `MINING_SPOTS` member, so no pool
+# collision risk with a real miner either.
+HUNTING_SPOT: tuple[int, int] = (2587, 408)
+
 
 @dataclass
 class Profession:
@@ -119,6 +148,12 @@ class Profession:
     #: World objects to `[Add` near the workplace: (type, dx, dy). E.g. a smith's
     #: forge + anvil. Placed by the Control plane when staging.
     structures: list[tuple[str, int, int]] = field(default_factory=list)
+    #: `Persona.combat_disposition` this profession's characters are staged
+    #: with (`village.py::_persona_for`). Every existing profession leaves
+    #: this at the `Persona` default ("neutral", which `Combat`/`Hunt` both
+    #: already treat as "will fight" — only "pacifist" opts out), so this is
+    #: purely flavor for the hunter below, not a behavioural change elsewhere.
+    combat_disposition: str = "neutral"
 
     def planner(self) -> Planner:
         """Voice a pending line, honour an LLM 'go there' goal, else work, be
@@ -203,5 +238,27 @@ PROFESSIONS: dict[str, Profession] = {
         items=["Hatchet"],
         needs_workplace=True,
         work_skill=Chop,
+    ),
+    # Phase 3 item 3 (hunt/loot, DESIGN.md §10): engages weak creatures
+    # (calibrated target: Mongbat — `Scripts/Mobiles/Normal/Mongbat.cs`, 4-6
+    # hits, `AddLoot(LootPack.Poor)`) bare-handed. No weapon needed —
+    # Wrestling alone reliably kills a Mongbat in one or two swings
+    # (live-verified, `live_hunt.py`); Tactics raises the hit chance so
+    # engagements don't drag on. No `structures` (unlike mining/blacksmithing,
+    # hunting needs no forge/anvil/tree) and no starting weapon `items` (bare
+    # hands *are* the weapon here). `HUNTING_SPOT` is a single calibrated
+    # pocket (see its own comment) — every hunter shares it, matching
+    # `TRADE_SMITH_SPOT`'s single-workplace shape rather than the per-agent
+    # pools miners/fishers/lumberjacks draw from (a village today only ever
+    # stages one hunter at a time in practice; nothing stops staging more,
+    # they'd simply share the field).
+    "hunter": Profession(
+        key="hunter",
+        persona_name="Ragnar",
+        skills={"Wrestling": 50, "Tactics": 50},
+        needs_workplace=True,
+        workplace=HUNTING_SPOT,
+        work_skill=Hunt,
+        combat_disposition="aggressive",
     ),
 }
