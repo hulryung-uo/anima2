@@ -30,8 +30,8 @@ is the *car*.
 
 ## Status
 
-**Phase 3 in progress** (economy & interaction loop; see
-[`docs/PHASE3.md`](docs/PHASE3.md) — items 1–3 done). Phase 2 (cognition +
+**Phase 3 complete** (economy & interaction loop; see
+[`docs/PHASE3.md`](docs/PHASE3.md) — all four items done). Phase 2 (cognition +
 memory) closed out — see [`docs/PHASE2.md`](docs/PHASE2.md). The Python brain
 drives **live ServUO characters** through the `anima-agent` IPC bridge:
 perceive → reflexes → planner → skill → act. It scales from a single agent to
@@ -52,11 +52,16 @@ context menu → `SellItems`), and banks the proceeds — see `live_trade.py` /
 `live_market.py`. **Hunt/loot is live-verified too**: a bare-handed hunter
 engages weak creatures (Mongbats) at a calibrated field, and once one dies,
 opens its corpse and loots the gold into its pack — repeated, corpse-tied
-cycles, with loot provenance — see `live_hunt.py`. 245 tests green.
+cycles, with loot provenance — see `live_hunt.py`. **A* navigate is
+live-verified too**: `GoTo` now delegates to the bridge's non-blocking route
+driver instead of greedy tile-by-tile stepping — a differential live proof
+shows a forced-greedy control run wedging on a rock-blocked Minoc-ridge
+course a straight line can't cross, while the real `GoTo` crosses it both
+ways (round trip) — see `live_navigate.py`. 256 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 245 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 256 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -82,10 +87,13 @@ python -m anima2.live_reflect   # LLM cognition + reflection, wiki-grounded prom
 python -m anima2.live_trade     # 2-agent inter-agent economy proof: miner -> blacksmith
 python -m anima2.live_market    # blacksmith sells daggers to a vendor, banks the gold
 python -m anima2.live_hunt      # bare-handed hunter kills weak creatures, loots corpses
+python -m anima2.live_navigate  # differential proof: greedy wedges, WalkTo-delegated GoTo crosses (round trip)
 ```
 
-Next: A* navigate — see [`docs/PHASE3.md`](docs/PHASE3.md) and
-[`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
+Next: Phase 4 — the learning stack (fuller uowiki loop, Voyager-style skill
+library + curriculum, cognition cost tiering) — see
+[`docs/PHASE3.md`](docs/PHASE3.md) and [`docs/DESIGN.md`](docs/DESIGN.md) §10
+for the roadmap.
 
 ## Family
 

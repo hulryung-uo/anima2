@@ -404,6 +404,37 @@ class Walk(Action):
 
 
 @dataclass
+class WalkTo(Action):
+    """Queue a non-blocking auto-walk (click-to-walk) route to `(x, y)` —
+    anima-net's `Session::advance_route` (an A* route, `anima-core::path`)
+    drives it one step per `pump` call at its own cadence, routing around
+    static obstacles (mountains, buildings) a greedy tile-by-tile `Walk` can't.
+    Unlike every other Action, this one only *starts* something: there is no
+    "arrived"/"blocked" reply on the wire — the brain must infer progress (or
+    a stall) from `x`/`y` deltas across successive Observations, exactly like
+    `skills/movement.py::GoTo` does. A later `Walk` cancels an in-flight
+    route; a later `WalkTo` replaces it with a fresh one (mirrors
+    `Session::apply_action`).
+
+    `x`/`y` ride the wire as `u16`: `anima-net`'s `json.rs::action_from_json`
+    requires both as present, whole-number JSON values and **errors** (not a
+    silent 0/map-origin default) on a missing/non-integer coordinate;
+    `action_from_dict` mirrors that by requiring both keys (a missing one
+    raises `KeyError`, matching the "must error, not silently default"
+    discipline `json.rs`'s own comment states). Neither side range-checks:
+    an out-of-range integer would wrap in the Rust `as u16` cast, so keep
+    coordinates on the map (every current producer already does).
+    """
+
+    x: int
+    y: int
+    type: str = field(default="WalkTo", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "WalkTo", "x": self.x, "y": self.y}
+
+
+@dataclass
 class Say(Action):
     text: str
     type: str = field(default="Say", init=False)
@@ -601,6 +632,8 @@ def action_from_dict(d: dict[str, Any]) -> Action:
     match t:
         case "Walk":
             return Walk(dir=d["dir"], run=d.get("run", False))
+        case "WalkTo":
+            return WalkTo(x=d["x"], y=d["y"])
         case "Say":
             return Say(text=d["text"])
         case "Attack":

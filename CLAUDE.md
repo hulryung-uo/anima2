@@ -12,7 +12,7 @@ A new, from-scratch **autonomous AI agent** that plays Ultima Online — the
 Clean redesign of `../anima` (v1, Python); mines v1 for assets and lessons.
 
 ## Current phase
-**Phase 3 in progress (economy & interaction loop), items 1–3 done.** Phase 2
+**Phase 3 complete (economy & interaction loop), all four items done.** Phase 2
 (cognition + memory) closed out — see PHASE2.md. The Python brain drives
 **live ServUO characters** via the `anima-agent` NDJSON bridge — from a single
 agent (`live.py`) up to a working **village** (`village.py`) of agents each
@@ -31,8 +31,9 @@ clamped `goal:goto` · `forum` (LLM-written in-character posts to uotavern,
 `village.py --forum`) · `contract` now carries `GumpResponse`/`GumpView` for
 crafting gumps, `ShopBuy`/`ShopSell`/`BuyItems`/`SellItems` for vendor
 transactions, `PopupMenu`/`PopupRequest`/`PopupSelect` for right-click
-context menus, and `CorpseLink`/`CorpseEquip` for corpse loot/equipment
-links · `wiki` (read-only semantic memory over the local `../uowiki`
+context menus, `CorpseLink`/`CorpseEquip` for corpse loot/equipment
+links, and `WalkTo` for the bridge's non-blocking A* route driver ·
+`wiki` (read-only semantic memory over the local `../uowiki`
 docs tree; optionally grounds `LLMCognition`/`LLMReflection` prompts with a
 compact excerpt). **Phase 3 item 1 — the first inter-agent economy loop —
 is live-verified** (`live_trade.py`): a miner mines, smelts, and hauls
@@ -53,16 +54,30 @@ greedy walk can't reach either from the smith's stand tile. **Phase 3 item 3
 (`profession.py`'s `HUNTING_SPOT`), and once one dies (`Observation.corpse_of`
 links its corpse to a serial the hunter attacked) opens the corpse and loots
 the gold into its pack — repeated, corpse-tied kill→loot cycles, gold
-provenance-safe (the fresh account's starting gold is GM-deleted first). See
-PHASE3.md for the full breakdown of all three items (including several
-Phase-2-vintage bugs the live scenarios finally exercised: a wrong CraftGump
-button, a tool that silently breaks, an anvil blocking the delivery corridor,
-a proximity-failure CraftGump reshow that froze the MAKE loop, a stale bridge
-binary, a wrong-distance `find_mobile_near`, a wandering vendor NPC, and — for
-item 3 — two "open field" calibration candidates that turned out to already
-be inhabited).
-245 tests green, ruff clean. **Next:** PHASE3.md item 4 (A* navigate — see
-DESIGN.md §10).
+provenance-safe (the fresh account's starting gold is GM-deleted first).
+**Phase 3 item 4 — A* navigate — is live-verified** (`live_navigate.py`):
+`skills/movement.py::GoTo` now delegates to the bridge's non-blocking route
+driver (`Action::WalkTo`/`Session::advance_route` — a different mechanism
+than the originally-scoped blocking `Session::navigate_to`, see PHASE2.md
+A3's note) instead of greedy tile-by-tile stepping, monitoring progress
+purely from position deltas (no route state reaches the observation JSON)
+and falling back to the old greedy stepping only when the route makes no
+progress at all — which is what keeps `MockBody` working unchanged. A
+**differential** live proof on a Minoc-ridge course 36 tiles apart, greedy-
+blocked by rock: a control run forced into pure greedy stepping wedges
+immediately (0 progress), while the real `GoTo` arrives and navigates all
+the way back (round trip). See PHASE3.md for the full breakdown of all four
+items (including several Phase-2-vintage bugs the live scenarios finally
+exercised: a wrong CraftGump button, a tool that silently breaks, an anvil
+blocking the delivery corridor, a proximity-failure CraftGump reshow that
+froze the MAKE loop, a stale bridge binary, a wrong-distance
+`find_mobile_near`, a wandering vendor NPC, item 3's two "open field"
+calibration candidates that turned out to already be inhabited, and item 4's
+own "distance must improve" progress-signal bug plus a GM-invisible one-way
+alcove trap).
+256 tests green, ruff clean. **Next:** Phase 4 — the learning stack (fuller
+uowiki loop, Voyager-style skill library + curriculum, cognition cost
+tiering — see DESIGN.md §10).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

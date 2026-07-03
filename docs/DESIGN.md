@@ -5,8 +5,8 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-03 · Status: **Phase 3 in progress (economy & interaction
-loop), items 1–3 done.**
+Last updated: 2026-07-03 · Status: **Phase 3 complete (economy & interaction
+loop), all four items done.**
 Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
 Python brain drives **live ServUO characters** via the `anima-agent` IPC
 bridge (perceive→reflexes→planner→skill→act) — from a single agent up to a
@@ -28,10 +28,17 @@ vendor via its right-click context menu and banks the proceeds at a banker
 `PopupMenu`/`PopupRequest`/`PopupSelect`). **Phase 3 item 3 — hunt/loot — is
 live-verified**: a bare-handed hunter engages weak creatures (Mongbats) and
 loots gold from their corpses in repeated, corpse-tied cycles
-(`contract.py` gained `CorpseLink`/`CorpseEquip`); see [`PHASE3.md`](PHASE3.md)
-for the full breakdown of all three items. 245 tests green, ruff clean; the
-full village, smelting, reflection, wiki-grounded cognition, miner→blacksmith→
-vendor→bank trade loop, and hunt/loot loop are all live-verified against
+(`contract.py` gained `CorpseLink`/`CorpseEquip`). **Phase 3 item 4 — A*
+navigate — is live-verified**: `GoTo` now delegates to the bridge's
+non-blocking route driver (`contract.py` gained `WalkTo`) instead of greedy
+tile-by-tile stepping, monitoring progress from position deltas and falling
+back to greedy only when the route makes no progress at all; a differential
+live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
+straight line can't cross, while the real `GoTo` crosses it both ways (round
+trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
+256 tests green, ruff clean; the full village, smelting, reflection,
+wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
+loop, and A* navigate differential proof are all live-verified against
 ServUO on :2594.
 See [`PHASE2.md`](PHASE2.md) for the Phase 2 close-out status and
 [`PHASE3.md`](PHASE3.md) for the Phase 3 breakdown.
@@ -52,10 +59,10 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 ### The family (4 projects, one system)
 | Project | Role | Lang | Status |
 |---------|------|------|--------|
-| [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module landed; `navigate` bridge command still ⏳ (Phase 3) |
+| [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 in progress (economy & interaction loop; items 1–3 — inter-agent trade, sell/bank, hunt/loot — live-verified); 245 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate — all four items live-verified); 256 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -291,8 +298,8 @@ The original analysis, kept as the decision record:
   excerpt into the slow-loop prompt; filing discrepancy reports back is still
   Phase 4's fuller loop). Remaining: richer cognition (respond to journal lines
   aimed at the agent, a wider goal vocabulary beyond `goto`).
-- **Phase 3 — Economy & interaction loop** *(redefined — see note below)* — 🚧
-  *in progress, items 1–3 done — see [`PHASE3.md`](PHASE3.md) for the itemized
+- **Phase 3 — Economy & interaction loop** *(redefined — see note below)* — ✅
+  *complete, all four items done — see [`PHASE3.md`](PHASE3.md) for the itemized
   status.* ✅ **Inter-agent trade** (a miner's ingots feed a blacksmith):
   `skills/smelt.py::MineSmeltDeliver` adds a deliver/return phase to the
   miner's work skill (opt-in, greedy no-A* walk to a configured smithy point,
@@ -349,11 +356,28 @@ The original analysis, kept as the decision record:
   and the live-only calibration lesson this item's own testing found (an
   "open field" candidate isn't necessarily *empty* — two early
   `HUNTING_SPOT` candidates turned out to already have nearby wildlife/
-  townsfolk). ⏳ Remaining: delegating `GoTo` (and `MineSmeltDeliver`'s/
-  `BlacksmithMarket`'s own walkers) to anima-net's `Session::navigate_to` (A\*
-  from anima-core's `path` module) for real commutes between workplaces (open
-  today; greedy-only, and — per the trade loops above — co-located
-  workplaces, or a manually curated route, only).
+  townsfolk). ✅ **A* navigate** (`GoTo` delegated from greedy stepping to the
+  bridge's route driver): `contract.py` gained `WalkTo(x, y)`, mirroring
+  `anima-net`'s already-implemented non-blocking `Action::WalkTo`/
+  `Session::advance_route` (not the originally-scoped blocking
+  `Session::navigate_to` — see PHASE2.md A3's updated note); `skills/
+  movement.py::GoTo` now emits `WalkTo` once and monitors progress purely
+  from position deltas (no route state reaches the observation JSON at all),
+  bounded-retries a genuine stall, and falls back to the pre-A* greedy
+  stepping if the route makes no progress whatsoever — which is what keeps
+  `MockBody` (no route driver) working unchanged. Live-verified with a
+  **differential** proof (`live_navigate.py`): on a Minoc-ridge course 36
+  tiles apart where a straight line is rock-blocked, a forced-greedy control
+  run wedges immediately (0 progress) while the real `GoTo` arrives and
+  navigates all the way back (round trip) — see PHASE3.md item 4 for the
+  full transcript and two live-only findings: a naive "distance must
+  improve" progress signal misreads a healthy A* detour (which routinely
+  moves *away* from the target first) as a stall, and a GM-calibrated
+  destination can be a real character's one-way trap even when the GM itself
+  never sees a problem (GM movement bypasses normal collision denial).
+  Migrating `MineSmeltDeliver`'s/`BlacksmithMarket`'s own private greedy
+  walkers to `WalkTo` (dropping their manually-curated waypoint routes) is a
+  natural follow-up, explicitly out of this item's scope.
 - **Phase 4 — The learning stack** *(redefined — see note below)*: the fuller uowiki
   loop (semantic-memory lookups **and** filing discrepancy reports, not just reads), a
   Voyager-style skill library + automatic curriculum, and cognition cost tiering
@@ -384,12 +408,20 @@ Resolved during Phase 2:
   village (`village.py`) runs a roster of agents concurrently, each Control-plane
   staged into a distinct profession and workplace.
 
+Resolved during Phase 3:
+- **`GoTo` greedy vs delegate to anima-net's route driver.** ✅ Resolved in favor
+  of delegating: `GoTo` now emits `Action::WalkTo` (the non-blocking route driver
+  that actually landed Rust-side — not the originally-scoped blocking
+  `Session::navigate_to`, see PHASE2.md A3's updated note) and monitors progress
+  from position deltas, falling back to the old greedy stepping only when the
+  route makes no progress at all (keeps `MockBody` working unchanged). Live
+  differential proof in PHASE3.md item 4: greedy wedges on a rock-blocked Minoc
+  course a straight line can't cross; `WalkTo`-delegated `GoTo` crosses it both
+  ways. `MineSmeltDeliver`'s/`BlacksmithMarket`'s own private greedy walkers
+  still aren't migrated — noted as a follow-up in PHASE3.md item 4.
+
 Still open:
 - **How much v1 code to port vs reimplement** (per-module, §8).
-- **`GoTo` greedy vs delegate to anima-net's `Session::navigate_to`** (A\* from
-  anima-core's `path` module; bridge needs a `navigate`
-  cmd + UO data path) — now a **Phase 3** item: greedy still works for the short walks
-  today's professions do, but real commutes between workplaces need it.
 - **Cognition cadence / cost controls** (model tier per call, caching, how often to
   reconsider) — now a **Phase 4** item (cost tiering).
 

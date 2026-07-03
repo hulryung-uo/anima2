@@ -31,17 +31,22 @@ def test_wander_moves_the_player():
 
 
 def test_goto_reaches_target_in_open_terrain():
+    """Under `MockBody` (no route driver) `GoTo` spends its bounded WalkTo
+    probe budget first (issue, stall, several bounded retries — see
+    `GoTo.walkto_max_retries`'s own live-calibration comment) before falling
+    back to greedy stepping, hence the generous tick budget below."""
     body = MockBody()
     body.player.pos = Position(100, 100, 0)
     target = Position(105, 103, 0)
     agent = make_agent(body, goal=Goal(kind="goto", params={"target": target}))
     # Keep the goto goal alive (NullCognition passes the current goal through).
     agent.cognition = NullCognition()
-    for _ in range(20):
+    for _ in range(40):
         agent.tick()
         if (body.player.pos.x, body.player.pos.y) == (target.x, target.y):
             break
     assert (body.player.pos.x, body.player.pos.y) == (target.x, target.y)
+    assert agent.memory["goto_mode"] == "greedy"  # confirms it did fall back
 
 
 def test_speaking_does_not_drop_an_active_goto_goal():
@@ -62,7 +67,15 @@ def test_speaking_does_not_drop_an_active_goto_goal():
 
 
 def test_wedged_goto_clears_the_goal_and_resumes():
-    """GoTo boxed in on all sides fails; the agent drops the goal (no wall-retry loop)."""
+    """GoTo boxed in on all sides fails; the agent drops the goal (no wall-retry loop).
+
+    Under `MockBody` (no route driver — `WalkTo` is a silent no-op) `GoTo`
+    first spends its bounded WalkTo-probe budget (issue, stall, several
+    bounded retries — see `GoTo.walkto_max_retries`'s own live-calibration
+    comment) before falling back to greedy stepping, which then needs its
+    own `stall_limit` wedge ticks — more ticks than the pre-A* pure-greedy
+    version needed, hence the larger budget below.
+    """
     body = MockBody()
     body.player.pos = Position(50, 50, 0)
     body.blocked = {(50 + dx, 50 + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)} - {(50, 50)}
@@ -70,11 +83,12 @@ def test_wedged_goto_clears_the_goal_and_resumes():
     agent = Agent(body=body, persona=Persona(name="T"),
                   planner=Planner([GoTo(), Wander()]),
                   cognition=NullCognition(), goal=goal, cognition_interval=1)
-    for _ in range(10):
+    for _ in range(30):
         agent.tick()
         if agent.goal is None:
             break
     assert agent.goal is None  # gave up the unreachable target
+    assert agent.memory["goto_mode"] == "greedy"  # confirms it did fall back, not just time out
 
 
 def test_wander_turns_when_blocked():

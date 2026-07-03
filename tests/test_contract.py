@@ -1,5 +1,7 @@
 """The Python contract must round-trip JSON faithfully (it mirrors anima-core)."""
 
+import pytest
+
 from anima2.contract import (
     BuyItems,
     CastSpell,
@@ -13,6 +15,7 @@ from anima2.contract import (
     TargetGround,
     TargetObject,
     Walk,
+    WalkTo,
     action_from_dict,
 )
 
@@ -20,6 +23,7 @@ from anima2.contract import (
 def test_action_json_roundtrip():
     for action in [
         Walk(dir=3, run=True),
+        WalkTo(x=1200, y=800),
         PickUp(serial=0x4000_0001, amount=5),
         TargetObject(serial=0xAABBCCDD),
         TargetGround(x=1000, y=2000, z=-5, graphic=0x01A4),
@@ -33,6 +37,22 @@ def test_action_json_roundtrip():
     ]:
         again = action_from_dict(action.to_dict())
         assert again == action
+
+
+def test_walk_to_json_shape_matches_json_rs():
+    # Mirrors anima-net's `action_from_json`: `{"type": "WalkTo", "x": .., "y": ..}`,
+    # no extra keys (no `run`/`z` — a route, not a single step).
+    assert WalkTo(x=1200, y=800).to_dict() == {"type": "WalkTo", "x": 1200, "y": 800}
+
+
+def test_walk_to_malformed_missing_coordinate_errors():
+    # json.rs's `req_u16` errors (not a silent 0/map-origin default) on a
+    # missing WalkTo coordinate; `action_from_dict` mirrors that with a
+    # `KeyError` for either required key.
+    with pytest.raises(KeyError):
+        action_from_dict({"type": "WalkTo", "y": 800})
+    with pytest.raises(KeyError):
+        action_from_dict({"type": "WalkTo", "x": 1200})
 
 
 def test_buy_items_json_shape_matches_json_rs():

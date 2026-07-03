@@ -3,13 +3,13 @@
 Phase 3 = the economy & interaction loop (DESIGN.md §10). Item 1 needed **no
 contract expansion at all**: `Drop`, `PickUp`, `TargetObject`, `GumpResponse`
 all already existed (Workstream A closed out in Phase 2), so it's pure
-brain-side work — new skill logic plus live geometry calibration. Items 2 and
-3 each needed only a `contract.py` **mirror** of a surface anima-net had
+brain-side work — new skill logic plus live geometry calibration. Items 2, 3,
+and 4 each needed only a `contract.py` **mirror** of a surface anima-net had
 already fully implemented Rust-side (shop/popup for item 2, `corpse_of`/
-`corpse_equip` for item 3 — see each item's own "Update"/ground-truth note) —
-not a genuine expansion, but still `contract.py` work, unlike item 1. The
-remaining item (A* navigate) does need real Rust-side work (a new bridge
-command) and is still ⏳.
+`corpse_equip` for item 3, `Action::WalkTo`'s non-blocking route driver for
+item 4 — see each item's own "Update"/ground-truth note) — not a genuine
+expansion, but still `contract.py` work, unlike item 1. **All four items are
+now done** — Phase 3 is complete.
 
 Status legend: ✅ done · 🚧 in progress · ⏳ todo
 
@@ -698,14 +698,233 @@ and `combat_disposition` threads through `_persona_for` without touching any
 other profession's default. 245 tests green (up from 210), `ruff check .`
 clean.
 
-## ⏳ Item 4 — A* navigate
+## Item 4 — A* navigate ✅
 
-Delegate `GoTo` (and `MineSmeltDeliver`'s own greedy walker) to anima-net's
-`Session::navigate_to` (A* from anima-core's `path` module — already landed,
-just not wired to a bridge command). Would remove the "co-located workplaces
-only" constraint this phase's trade loop lives under, and turn the Britain
-↔ Minoc commute (or any real inter-workplace trip) into a real possibility
-instead of an out-of-reach distance.
+**Delegate `GoTo` from greedy tile-by-tile stepping to the bridge's `WalkTo`
+route driver**, so agents can reach destinations greedy walking cannot
+(around mountains/buildings) — removing the "co-located workplaces only"
+constraint this phase's trade loop lives under, in principle. Proving a real
+long-commute re-layout (e.g. an actual Britain ↔ Minoc trade route) is
+explicitly **out of scope**; the deliverable is `GoTo`-over-`WalkTo` plus a
+differential live proof that greedy fails a course A* crosses.
+
+### Update — ground truth's `navigate_to` vs what actually landed
+
+The original scope note (DESIGN.md §10/§11, PHASE2.md A3) pointed at
+`Session::navigate_to` — a *blocking* A* helper. What was actually already
+built Rust-side, and what this item wires up, is a **different, non-blocking
+mechanism**: `Action::WalkTo { x, y }` (`json.rs`) queues a route
+(`Session::apply_action`), and `Session::advance_route` — called once per
+`pump` by the bridge bin (`anima-net/src/bin/agent.rs`) — advances it at
+most one step per call, paced to mirror the play server's own click-to-walk
+cadence (400ms/step), with its own deny-detection and `Avoiding` re-route
+state (`lib.rs`'s `Route`). This fits the headless brain loop much better
+than a blocking call would (the fast loop never blocks on pathfinding) and
+needed **no Rust changes** — same "done in Rust, missing only the Python
+mirror" shape items 2-3 hit with shop/popup/corpse. Critically, **no route
+state is exposed in the observation JSON at all** (confirmed by reading
+`lib.rs`/`json.rs` directly: no `route`/`walking`/`arrived` key anywhere) —
+the brain has exactly one signal, position deltas across successive
+Observations, and had to be designed around that.
+
+### What landed
+
+- **`contract.py`** — `WalkTo(x, y)`, a straight mirror of `json.rs`'s
+  `action_from_json` `"WalkTo"` arm: both coordinates required (a missing key
+  raises `KeyError`, mirroring `req_u16`'s "must error, not silently default
+  to the map origin" discipline), no extra fields (not a single step — a
+  route). Round-trip + malformed-input tests in `tests/test_contract.py`.
+- **`skills/movement.py::GoTo`** — redesigned around three tiers, `ctx.memory`
+  breadcrumbing the active one (`goto_mode`, deliberately *not* wiped on a
+  terminal result so it survives as "how did the last attempt finish"):
+  1. **`walkto`** (default): emit `WalkTo(target)` **once**, then monitor —
+     every tick the tile position is unchanged resets nothing; every tick it
+     *does* change resets the stall counter (see "Bugs found live" #1 for why
+     this is "did the position change *at all*", not "did distance-to-target
+     improve"). No new action is sent while the route is making progress —
+     it advances on its own, driven by the body's own `pump` cadence.
+  2. **Genuine stall** (`walkto_stall_limit` ticks completely unmoved) is a
+     bounded retry: re-issue `WalkTo` (a fresh route has an empty
+     deny-blacklist) up to `walkto_max_retries` times — live-calibrated to 3,
+     not the original 1 (see "Bugs found live" #2).
+  3. **No progress at all** even after every retry falls back to the
+     **pre-A* greedy stepping** (`Walk` + `direction_toward`) — this is what
+     keeps `GoTo` working under `MockBody`, which has no route driver at all
+     (`WalkTo` is silently accepted as a no-op — indistinguishable, from the
+     brain's side, from "the route genuinely can't make progress"). Greedy
+     fallback is itself `stall_limit`-bounded → FAILURE on a genuine dead end,
+     unchanged from the pre-A* skill.
+  Arrival is unchanged — an exact tile match (chebyshev 0) — since `WalkTo`'s
+  own Rust-side route target is likewise exact; no reason to loosen the
+  skill's own contract for this. A new `use_walkto` class attribute
+  (default `True`) is an escape hatch: setting it `False` on an instance
+  skips the probe entirely and behaves byte-for-byte like the pre-A* skill —
+  added so the live differential proof's control run could exercise "pure
+  greedy" through the *real* shipped skill rather than a hand-rolled
+  reimplementation.
+- **`profession.py`** — `NAV_START`/`NAV_DEST`: the calibrated course for
+  `live_navigate.py`'s differential proof (see Geometry below).
+- **`live_navigate.py`** — the live proof driver (see below): control run
+  (greedy `GoTo`) vs. the real `GoTo`, same course, both directions.
+
+The LLM `goal:goto` clamp (`cognition.py::LLMCognition.max_excursion`) is
+unchanged — it still caps *distance*, not *mechanism*; a clamped short hop
+now simply rides `WalkTo` instead of greedy stepping.
+
+### Bugs found live (both in this item's own new code — none were hypothetical)
+
+1. **"Distance-to-target must improve" is the wrong progress signal — a real
+   A* detour needs to move *away* from the target first.** The first cut of
+   `GoTo`'s stall detector tracked a best-seen chebyshev-distance watermark
+   and treated "no improvement" as the stall condition. Live-caught during
+   the geometry-calibration probing that preceded the actual proof script (a
+   raw `WalkTo` sent directly, not yet through `GoTo`): routing around the
+   calibrated course's spur, distance-to-target *climbed* from 33 to 39 over
+   the first ~50 ticks (arcing north around the obstruction) before it
+   started closing — a **correct, healthy** route the old detector's own
+   arithmetic would have misread as an immediate stall (no improvement
+   within a handful of ticks), re-issued into, and abandoned for greedy well
+   before it ever got the chance to arrive — defeating the entire point of
+   delegating to A*. Fixed by switching the signal to "did the tile position
+   change at all since the last tick" — direction-agnostic, tolerates
+   backtracking, matches what's actually observable and actually means "the
+   route is advancing" (see `GoTo`'s own docstring for the full reasoning).
+   Caught and fixed *before* the differential proof script (`GoTo` itself)
+   was ever run against real ServUO, purely by reasoning through a probe
+   transcript — the "calibrate live first, design the skill around what's
+   observable" order this item's own ground truth called for, working
+   exactly as intended.
+2. **A live-only trap: a real character can enter a tight alcove and then
+   get permanently stuck leaving it — even a GM's own body doesn't reproduce
+   it.** The differential proof's first calibrated destination reused
+   `MINING_SPOTS[2]` (2584, 411) — already documented (item 3's own
+   `HUNTING_SPOT` comment) as "only 3/8 directions open one step out". A GM
+   character (`GmControl`'s own body) round-tripped through it flawlessly,
+   repeatedly — misleadingly reassuring, because **GM movement bypasses
+   normal collision denial**, so the GM never exercises the real deny/reroute
+   path a normal character needs. The **real, collision-respecting navigator
+   character** arrived at that alcove fine (after a lot of wobbling on the
+   final approach — itself a hint) but then got **permanently** wedged
+   trying to leave: frozen on the exact same tile through 200 ticks and 10
+   full fresh-`WalkTo` retries (each with an empty deny-blacklist), never
+   moving once — a genuine, reproducible live pathfinding dead end for that
+   specific tile, not a transient hiccup `GoTo`'s own retry budget could ever
+   paper over (confirmed: even 10 retries, far more than any sane bounded
+   skill budget, never helped). Fixed by **not** using that destination —
+   swapped to the already-documented, deliberately spacious `HUNTING_SPOT`
+   (2587, 408), 3 tiles away ("2-4 real tiles in every one of the 8
+   directions before anything blocks") — re-tested with the real navigator
+   character and it never stalled more than a single tick either way, both
+   directions. General lesson recorded in `profession.py`'s own comment:
+   calibrating a destination via the GM body alone doesn't prove it's
+   enterable/leaveable by a normal character; a tight single-exit alcove can
+   look perfectly fine to a GM and still be a one-way trap for anyone else.
+   `GoTo.walkto_max_retries` was separately bumped 1 → 3 while chasing this
+   (a real, if smaller, transient stall was also observed once on the *old*
+   destination before its alcove nature was understood) — cheap, bounded
+   insurance against a genuine transient hiccup, kept even after the real
+   fix (the bad destination) landed.
+
+### Geometry calibration
+
+`NAV_START` reuses `MINING_SPOTS[3]` (2551, 420); `NAV_DEST` reuses
+`HUNTING_SPOT` (2587, 408) — see `profession.py`'s own `NAV_START`/`NAV_DEST`
+comment for the full story (including bug 2 above, which is really a
+geometry-calibration lesson as much as a code bug). Both are already
+confirmed-empty, already-documented spots reused rather than newly
+calibrated ground. `direction_toward` (the greedy technique `GoTo` itself
+uses) walked from `NAV_START` toward `NAV_DEST` **never moves at all** —
+wedged at the very first attempted step, live-confirmed with real,
+collision-checked `Walk` actions — confirming the Minoc-ridge spur between
+them has no straight-line line of sight. 36 tiles apart (chebyshev),
+comfortably "a few dozen". `WalkTo` crosses it both ways in ~110-121 ticks
+(~45-50s at the usual 400ms route cadence), via a real detour arcing north
+through ~(2545-2580, 383-420) — distance-to-target climbs well above the
+starting distance before it starts closing (the case bug 1 above is built
+on).
+
+### Live proof
+
+`python -m anima2.live_navigate` (needs ServUO on :2594 + the built bridge).
+A **differential** proof on one course: a control run forces `GoTo` into
+pure greedy stepping (`use_walkto = False` — the real shipped skill, not a
+reimplementation) and must wedge short of the target; the real, default
+`GoTo` must then arrive, and navigate all the way **back** (round trip — the
+same multi-cycle lesson every other Phase 3 item's live proof leaned on: a
+one-way pass can't tell "works" from "got lucky once", and hides return-leg
+state bugs a fresh forward-only run never exercises). Reran twice more after
+the `HUNTING_SPOT` fix landed (fresh accounts each time) — both passed
+cleanly, `goto_mode` staying `walkto` the entire time (never once falling
+back), exact (radius-0) arrival both ways:
+
+```
+course: NAV_START=(2551, 420) <-> NAV_DEST=(2587, 408) (chebyshev 36 tiles apart)
+navigator: animanav4 serial=16921
+GM staged navigator at (2551,420,20)
+
+--- control run: greedy GoTo (use_walkto=False) ---
+    [control] tick    0 pos=(2551,420) dist= 36 mode=greedy
+    [control] tick    4 pos=(2551,420) dist= 36 mode=greedy
+  greedy control result: final=(2551, 420) dist_to_dest=36 goal_cleared=True mode=greedy -> WEDGED (as expected)
+
+--- forward leg: WalkTo-delegated GoTo, NAV_START -> NAV_DEST ---
+    [forward] tick    0 pos=(2551,420) dist= 36 mode=walkto
+    [forward] tick   50 pos=(2552,393) dist= 35 mode=walkto
+    [forward] tick  100 pos=(2579,395) dist= 13 mode=walkto
+    [forward] tick  116 pos=(2587,408) dist=  0 mode=walkto
+  forward result: final=(2587, 408) dist_to_dest=0 goal_cleared=True mode=walkto -> ARRIVED
+
+--- return leg: WalkTo-delegated GoTo, NAV_DEST -> NAV_START ---
+    [return] tick    0 pos=(2587,408) dist= 36 mode=walkto
+    [return] tick   50 pos=(2563,384) dist= 36 mode=walkto
+    [return] tick  100 pos=(2546,413) dist=  7 mode=walkto
+    [return] tick  114 pos=(2551,420) dist=  0 mode=walkto
+  return result: final=(2551, 420) dist_to_start=0 goal_cleared=True mode=walkto -> ARRIVED
+
+--- result ---
+greedy control wedged short of the target:  True
+WalkTo GoTo arrived (forward leg):           True
+WalkTo GoTo arrived (return leg, round trip): True
+
+A* NAVIGATE CONFIRMED: greedy GoTo cannot cross this course; WalkTo-delegated GoTo crosses it both ways.
+```
+
+(Full per-10-tick timeline in the actual run logs; trimmed here for length —
+every sampled tick between forward's tick 0→116 and return's tick 0→114
+stayed in `mode=walkto`, confirming the fixed position-changed stall signal
+tolerates the real detour without ever triggering the greedy fallback.)
+
+### Offline tests
+
+`tests/test_contract.py` — `WalkTo` round-trip and malformed-input (missing
+`x`/`y` → `KeyError`) tests, mirroring `json.rs`'s `req_u16` discipline.
+`tests/test_movement.py` (new, 9 tests) — `GoTo`: issues `WalkTo` exactly
+once then sends no action while the route is making progress; a detour that
+moves *away* from the target before curving back never trips the stall
+counter (the bug 1 regression test); bounded stall → retry → (if still no
+progress) fall back to greedy, observably via `ctx.memory['goto_mode']`;
+`MockBody` compatibility (`WalkTo` silently no-op'd, greedy fallback still
+gets there); a changed target mid-flight resets cleanly; greedy-mode
+wedge → FAILURE unchanged; `use_walkto=False` behaves byte-for-byte like the
+pre-A* skill. `tests/test_agent_loop.py` — the two pre-existing `GoTo`
+Agent-level tests (open-terrain arrival, wedged-goal-clears) still pass
+under `MockBody`, tick budgets widened to fit the new bounded WalkTo-probe
+phase ahead of the greedy fallback, plus explicit `ctx.memory['goto_mode']`
+assertions confirming the fallback actually happened rather than just timing
+out. 256 tests green (up from 245), `ruff check .` clean.
+
+### Follow-up (not in this item's scope)
+
+`skills/smelt.py::MineSmeltDeliver`'s delivery walk and
+`skills/market.py::BlacksmithMarket`'s vendor/banker route walk both still
+use their own private greedy `direction_toward` walkers (predating this
+item) — migrating them to `WalkTo` would let those trips drop their
+manually-curated waypoint routes (`VENDOR_SPOT`/`BANKER_SPOT`) in favor of a
+single target point, and is the natural next step toward removing the
+"co-located workplaces" constraint for real (a genuine Britain ↔ Minoc
+commute). Deliberately out of scope here per the ground truth — this item's
+deliverable is `GoTo`-over-`WalkTo` plus the differential proof, not a
+re-layout of the village.
 
 ---
 
@@ -713,17 +932,20 @@ instead of an out-of-reach distance.
 
 - DESIGN.md §10 — Phase 3 definition and the re-baselining note.
 - PHASE2.md — the 4-lockstep contract-change checklist; the workstream-A/B
-  split this phase didn't need. Item 3 above closes A2's last open row.
+  split this phase didn't need. Item 3 above closes A2's last open row; item 4
+  closes A3's `navigate` row.
 - `anima2/skills/smelt.py`, `anima2/skills/craft.py`, `anima2/skills/market.py`,
-  `anima2/skills/hunt.py` — the four skills this phase extended/added, each
-  carrying its own detailed module/class docstrings (`market.py`'s covers the
-  speech-vs-context-menu finding in full; `hunt.py`'s covers loot attribution,
-  selection, and the bounded-retry discipline in full).
+  `anima2/skills/hunt.py`, `anima2/skills/movement.py` — the five skills this
+  phase extended/added, each carrying its own detailed module/class
+  docstrings (`market.py`'s covers the speech-vs-context-menu finding in
+  full; `hunt.py`'s covers loot attribution, selection, and the
+  bounded-retry discipline in full; `movement.py::GoTo`'s covers the
+  distance-vs-position progress-signal finding in full).
 - `anima2/profession.py` — `TRADE_MINE_SPOT`/`TRADE_SMITH_SPOT`/`TRADE_HUB`/
-  `VENDOR_SPOT`/`BANKER_SPOT`/`HUNTING_SPOT` provenance comments; the
-  corrected `blacksmith` profession's `items`/`structures`/`work_skill`; the
-  new `hunter` profession.
+  `VENDOR_SPOT`/`BANKER_SPOT`/`HUNTING_SPOT`/`NAV_START`/`NAV_DEST`
+  provenance comments; the corrected `blacksmith` profession's
+  `items`/`structures`/`work_skill`; the new `hunter` profession.
 - `anima2/control.py` — `GmControl.find_mobile_near`'s distance-to-query-point
   fix and `exclude` parameter.
-- `anima2/live_trade.py`, `anima2/live_market.py`, `anima2/live_hunt.py` —
-  the live proof drivers.
+- `anima2/live_trade.py`, `anima2/live_market.py`, `anima2/live_hunt.py`,
+  `anima2/live_navigate.py` — the live proof drivers.

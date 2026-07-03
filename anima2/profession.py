@@ -130,6 +130,49 @@ BANKER_SPOT: list[tuple[int, int]] = [TRADE_HUB, (2610, 475)]
 # collision risk with a real miner either.
 HUNTING_SPOT: tuple[int, int] = (2587, 408)
 
+# Phase 3 item 4 (A* navigate): a start/destination pair on opposite sides of
+# a Minoc-ridge spur where a straight greedy walk is completely blocked by
+# rock, for `live_navigate.py`'s greedy-vs-WalkTo differential proof.
+# `NAV_START` reuses `MINING_SPOTS[3]` (2551, 420), an already-calibrated,
+# confirmed-empty mining pocket. Live-probed with real, collision-checked
+# `Walk` actions (the greedy technique `skills/movement.py::GoTo` itself
+# uses): a plain `direction_toward` walk from `NAV_START` toward the ridge's
+# far side **never moves at all** — wedged at the very first attempted step,
+# 0 tiles of progress — confirming the spur has no straight-line line of
+# sight across it.
+#
+# `NAV_DEST` deliberately reuses `HUNTING_SPOT` (2587, 408), *not* the
+# nearer, tighter `MINING_SPOTS[2]` (2584, 411) the first calibration pass
+# tried — live-caught, the hard way, why that matters: `MINING_SPOTS[2]`'s
+# own "only 3/8 directions open one step out" isn't just cosmetic. A **GM**
+# character could walk `WalkTo` routes through it fine both ways (GM
+# movement bypasses normal collision denial — misleadingly reassuring), but
+# the **real, collision-respecting navigator character** could arrive there
+# (after a lot of wobbling on the final approach) yet then get *permanently*
+# wedged trying to leave — stuck on the exact same tile through 200 ticks and
+# 10 full fresh-`WalkTo` retries (each with an empty deny-blacklist), never
+# moving once. `HUNTING_SPOT`, 3 tiles away, is the already-documented fix
+# for exactly this class of problem (its own comment: "genuinely large
+# pocket: 2-4 real tiles in every one of the 8 directions before anything
+# blocks") — re-tested with the real navigator character and it never
+# stalled more than a single tick either way. General lesson (worth
+# generalizing beyond this one pair): calibrating a destination via the *GM*
+# body alone isn't sufficient proof it's enterable/leaveable by a normal
+# character — a tight single-exit alcove can look fine to a GM and still be
+# a one-way trap for anyone else.
+#
+# `NAV_START` <-> `NAV_DEST` are 36 tiles apart (chebyshev), comfortably "a
+# few dozen". `Action::WalkTo` (`anima-net`'s A*), issued from either spot,
+# arrives both ways (~110-121 ticks at the usual 400ms route cadence) by
+# taking a real detour: distance-to-target *climbs* well above the starting
+# distance over the first ~50 ticks (looping north around the spur through
+# ~(2545-2580, 383-420)) before finally closing — the concrete case that
+# ruled out a "distance must monotonically improve" progress signal in
+# `GoTo` itself (see that class's own docstring) in favor of plain "did the
+# tile position change at all".
+NAV_START: tuple[int, int] = MINING_SPOTS[3]  # (2551, 420)
+NAV_DEST: tuple[int, int] = HUNTING_SPOT  # (2587, 408) — spacious, not a one-way alcove
+
 
 @dataclass
 class Profession:

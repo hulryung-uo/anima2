@@ -41,10 +41,16 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 
 ### A3 — bridge (anima-net) additions
 - ✅ new actions in `apply_action` + `json.rs`; `pending_target` in observation JSON.
-- ⏳ **`navigate` command** — delegate to anima-net's `Session::navigate_to` (A\* from
-  anima-core's `path` module; routes around buildings). Needs a UO data path →
-  **use `~/dev/uo/uo-resource`** (full `.mul`/`.uop` set) via `anima-assets`.
-  Now a Phase 3 item (DESIGN.md §10).
+- ✅ **`navigate` command** — landed as `Action::WalkTo { x, y }` (`json.rs`), not the
+  originally-envisioned blocking `Session::navigate_to` call: `Session::apply_action`
+  queues a non-blocking route and `Session::advance_route` (called once per `pump` by
+  the bridge bin, `anima-net/src/bin/agent.rs`) drives it one step at a time, paced to
+  mirror the play server's own click-to-walk cadence — a better fit for the headless
+  brain's fast loop than a blocking call would be. Uses the UO data path
+  (`~/dev/uo/uo-resource`, `anima-assets::MapData`) exactly as originally scoped; no
+  route state is exposed in the observation JSON (position deltas are the only
+  progress signal — see PHASE3.md item 4). Consumed brain-side: `contract.py::WalkTo`
+  + `skills/movement.py::GoTo` (Phase 3 item 4, DESIGN.md §10).
 - ✅ skills / gump / container are all exposed in the observation JSON (0x3A →
   `skills[]`, 0xB0 → `gumps[]`, 0x3C/0x25 → `items[]` keyed by `container`).
 
@@ -179,7 +185,8 @@ real "work" loop).
    teleport to the Minoc ridge; the brain then mines, gaining Mining 35.0 → 35.2.
    First "production" loop: **a character works and a skill rises, autonomously.**
 4. ✅ **Gump support (crafting)** — `GumpResponse`/`GumpView` (0xB0/0xB1) +
-   `skills/craft.py::Blacksmith`; the banking gump is still ⏳ (Phase 3 item).
+   `skills/craft.py::Blacksmith`; banking landed in Phase 3 item 2 via the
+   banker's context menu + bank-box container — no banking gump needed.
 5. ✅ **Memory + wiki + reflection** — episodic memory, the reflection loop, and
    **wiki semantic memory** (workstream B1) are all done.
 
