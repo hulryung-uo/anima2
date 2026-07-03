@@ -12,31 +12,47 @@ A new, from-scratch **autonomous AI agent** that plays Ultima Online — the
 Clean redesign of `../anima` (v1, Python); mines v1 for assets and lessons.
 
 ## Current phase
-**Phase 3 begun (economy & interaction loop).** Phase 2 (cognition + memory)
-closed out — see PHASE2.md. The Python brain drives **live ServUO characters**
-via the `anima-agent` NDJSON bridge — from a single agent (`live.py`) up to a
-working **village** (`village.py`) of agents each staged (Control plane,
-`control.py::GmControl`) into a profession (`profession.py`): miner (mine +
-smelt ingots, and now **deliver** them), lumberjack (grove-aware chopping),
-fisher, blacksmith (gump-driven MAKE-loop crafting, and now **fetch** dropped
-ingots when starved), townsfolk. Package adds `skills.harvest`/`smelt`/`craft`
-(`Mine`/`Chop`/`Fish`/`MineAndSmelt`/`MineSmeltDeliver`/`Blacksmith`) ·
-`memory` (`EpisodicMemory` + `ReflectionMemory`) · `cognition` gains
-`ReflectingCognition` (episodes → persistent `Insight`s feeding later goal/speech
-prompts) and `LLMCognition` in-character chatter + a clamped `goal:goto` ·
-`forum` (LLM-written in-character posts to uotavern, `village.py --forum`) ·
-`contract` now carries `GumpResponse`/`GumpView` for crafting gumps · `wiki`
-(read-only semantic memory over the local `../uowiki` docs tree; optionally
-grounds `LLMCognition`/`LLMReflection` prompts with a compact excerpt). **Phase
-3 item 1 — the first inter-agent economy loop — is live-verified**
-(`live_trade.py`): a miner mines, smelts, and hauls ingots to a co-located
-blacksmith that has run its own stock dry, drops them, and the blacksmith
-picks them up and crafts again — no contract changes needed (`Drop`/`PickUp`
-already existed); see PHASE3.md for the full breakdown (including several
-Phase-2-vintage bugs the live scenario finally exercised: a wrong CraftGump
-button, a tool that silently breaks, an anvil blocking the delivery
-corridor). 137 tests green, ruff clean. **Next:** PHASE3.md items 2–4 (bank +
-buy/sell, hunt/loot, A* navigate — see DESIGN.md §10).
+**Phase 3 in progress (economy & interaction loop), items 1–2 done.** Phase 2
+(cognition + memory) closed out — see PHASE2.md. The Python brain drives
+**live ServUO characters** via the `anima-agent` NDJSON bridge — from a single
+agent (`live.py`) up to a working **village** (`village.py`) of agents each
+staged (Control plane, `control.py::GmControl`) into a profession
+(`profession.py`): miner (mine + smelt ingots, and **deliver** them),
+lumberjack (grove-aware chopping), fisher, blacksmith (gump-driven MAKE-loop
+crafting, **fetch** dropped ingots when starved, and now **sell daggers to a
+vendor + bank the gold**), townsfolk. Package adds
+`skills.harvest`/`smelt`/`craft`/`market`
+(`Mine`/`Chop`/`Fish`/`MineAndSmelt`/`MineSmeltDeliver`/`Blacksmith`/
+`BlacksmithMarket`) · `memory` (`EpisodicMemory` + `ReflectionMemory`) ·
+`cognition` gains `ReflectingCognition` (episodes → persistent `Insight`s
+feeding later goal/speech prompts) and `LLMCognition` in-character chatter + a
+clamped `goal:goto` · `forum` (LLM-written in-character posts to uotavern,
+`village.py --forum`) · `contract` now carries `GumpResponse`/`GumpView` for
+crafting gumps, `ShopBuy`/`ShopSell`/`BuyItems`/`SellItems` for vendor
+transactions, and `PopupMenu`/`PopupRequest`/`PopupSelect` for right-click
+context menus · `wiki` (read-only semantic memory over the local `../uowiki`
+docs tree; optionally grounds `LLMCognition`/`LLMReflection` prompts with a
+compact excerpt). **Phase 3 item 1 — the first inter-agent economy loop —
+is live-verified** (`live_trade.py`): a miner mines, smelts, and hauls
+ingots to a co-located blacksmith that has run its own stock dry, drops
+them, and the blacksmith picks them up and crafts again — no contract
+changes needed (`Drop`/`PickUp` already existed). **Phase 3 item 2 — closing
+the loop into gold — is live-verified** (`live_market.py`): the blacksmith
+sells surplus daggers to a staged vendor via its right-click context menu
+(0x9E `SellList` → `SellItems`, dagger entries only — a plain `Say`
+"vendor sell" turned out to be unreachable on real ServUO, see PHASE3.md
+bug 1), then banks the proceeds at a staged `Banker` the same way (opens the
+bank box, then the established lift-then-place two-step) — a manually
+curated waypoint route around the trade smithy's own narrow corridor
+(`profession.py`'s `VENDOR_SPOT`/`BANKER_SPOT`), since a single straight-line
+greedy walk can't reach either from the smith's stand tile. See PHASE3.md
+for the full breakdown of both items (including several Phase-2-vintage bugs
+the live scenarios finally exercised: a wrong CraftGump button, a tool that
+silently breaks, an anvil blocking the delivery corridor, a proximity-failure
+CraftGump reshow that froze the MAKE loop, and — for item 2 — a stale bridge
+binary, a wrong-distance `find_mobile_near`, and a wandering vendor NPC).
+205 tests green, ruff clean. **Next:** PHASE3.md items 3–4 (hunt/loot, A*
+navigate — see DESIGN.md §10).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

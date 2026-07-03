@@ -3,7 +3,7 @@
 from anima2.contract import ItemView, Observation, PlayerView, Position
 from anima2.persona import Persona
 from anima2.profession import MINING_SPOTS, PROFESSIONS
-from anima2.skills import GoTo, Mine, MineAndSmelt, MineSmeltDeliver
+from anima2.skills import Blacksmith, BlacksmithMarket, GoTo, Mine, MineAndSmelt, MineSmeltDeliver
 from anima2.skills.base import Goal, SkillContext
 
 
@@ -53,3 +53,19 @@ def test_miner_planner_goto_is_inert_without_a_goal_but_preempts_work_with_one()
 def test_enough_distinct_mining_spots_for_a_crew():
     # Workers are placed on distinct ore banks; ensure the pool isn't trivially small.
     assert len(set(MINING_SPOTS)) >= 8
+
+
+def test_blacksmith_profession_is_calibrated():
+    smith = PROFESSIONS["blacksmith"]
+    # `BlacksmithMarket` subclasses `Blacksmith` and is a strict superset when
+    # unconfigured (Phase 3 item 2 — see its docstring), so it's the
+    # blacksmith's *one* work skill rather than switching between two classes.
+    assert smith.needs_workplace and smith.work_skill is BlacksmithMarket
+    assert issubclass(BlacksmithMarket, Blacksmith)
+    assert smith.skills == {"Blacksmith": 35}
+    assert ("Forge", 0, -1) in smith.structures and ("Anvil", 0, 1) in smith.structures
+
+
+def test_blacksmith_planner_runs_the_craft_skill():
+    planner = PROFESSIONS["blacksmith"].planner()
+    assert any(isinstance(s, Blacksmith) for s in planner.skills)  # BlacksmithMarket counts (subclass)

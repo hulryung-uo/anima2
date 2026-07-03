@@ -12,6 +12,8 @@ serial targets → `TargetObject`, ground targets → `TargetGround`.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from .contract import Say, TargetGround, TargetObject
 from .ipc_body import IpcBody
 
@@ -94,11 +96,56 @@ class GmControl:
                 return it
         return None
 
-    def find_mobile_near(self, x: int, y: int, max_dist: int = 1):
-        """Find a spawned mobile near a tile. Returns MobileView | None (nearest)."""
-        cands = [m for m in self.body.observe().mobiles
-                 if abs(m.pos.x - x) <= max_dist and abs(m.pos.y - y) <= max_dist]
-        return min(cands, key=lambda m: m.distance) if cands else None
+    def find_mobile_near(self, x: int, y: int, max_dist: int = 3,
+                         exclude: int | Iterable[int] | None = None, retries: int = 3):
+        """Find a spawned mobile near a tile. Returns MobileView | None (nearest
+        to `(x, y)` — NOT `m.distance`, which is relative to *this* body's own
+        position, not the query tile; sorting by that instead could return a
+        mobile merely close to us, e.g. our own staged character passing by,
+        rather than the one actually at `(x, y)` — live-caught while chasing
+        down a `[Add`-spawned NPC's serial for `live_market.py`'s evidence log).
+
+        `max_dist` is generous by default, not the ~1-tile a naive "it's
+        right where I asked" assumption would suggest: `[Add`'s ground-target
+        placement can settle a tile or two off the exact requested spot
+        (live-observed) — matches `skills/market.py`'s own
+        `MOBILE_SEARCH_RADIUS` for the same reason. `retries` re-observes a
+        few times before giving up empty-handed — a just-`[Add`-ed NPC's own
+        position report can lag a tick or two behind the command that
+        spawned it.
+
+        `exclude` drops one serial, or a whole collection of them, from
+        consideration — a staged character can legitimately be standing
+        within `max_dist` of a spot a `[Add`-ed NPC was *also* just placed at
+        (workplace tiles are typically only a few apart), and picking the
+        wrong one silently mislabels which mobile is "the vendor"/"the
+        banker" (live-caught: a GM command meant for the freshly-added NPC
+        landed on the staged character instead). A caller that knows its
+        *entire* roster of agent serials (e.g. `village.py`, once more than
+        one agent is staged) should pass all of them — excluding only the
+        character currently being staged still leaves *other* known agents
+        (e.g. a co-located trade miner standing within a widened radius of
+        the trade smithy's own vendor/banker spots) eligible to be
+        mis-resolved as the NPC. There's no reliable "is this an NPC, not a
+        player" signal in the observation surface today (a `[Add`-ed
+        vendor/banker's `body`/`notoriety` look just like an ordinary human
+        player character's) — a thorough `exclude` set plus nearest-to-
+        `(x, y)` is the best available proxy.
+        """
+        if exclude is None:
+            excluded: frozenset[int] = frozenset()
+        elif isinstance(exclude, int):
+            excluded = frozenset({exclude})
+        else:
+            excluded = frozenset(exclude)
+
+        for _ in range(max(1, retries)):
+            cands = [m for m in self.body.observe().mobiles
+                     if abs(m.pos.x - x) <= max_dist and abs(m.pos.y - y) <= max_dist
+                     and m.serial not in excluded]
+            if cands:
+                return min(cands, key=lambda m: max(abs(m.pos.x - x), abs(m.pos.y - y)))
+        return None
 
     def create_world(self, pumps: int = 60) -> list[str]:
         """Generate the full standard world via ServUO's built-in `[CreateWorld`.
@@ -126,6 +173,37 @@ class GmControl:
         return (pos.x, pos.y, pos.z)
 
     # --- scenarios -------------------------------------------------------------
+
+    def stage_npc(self, command: str, x: int, y: int, z: int, *,
+                  exclude: int | Iterable[int] | None = None):
+        """`[Add <command>` at `(x, y, z)`, find the spawned mobile, and pin it
+        with `[Set CantWalk true` so it can't wander off (`VendorAI.
+        DoActionWander` roams an idle `BaseVendor`/`Banker` — live-caught
+        drifting a freshly-added NPC out of a fixed search radius/route).
+
+        `find_mobile_near`'s own docstring already covers *finding* a
+        `[Add`-ed NPC that settled a tile or two off the requested spot, but a
+        mis-settle isn't always harmless: if it lands on a route waypoint
+        another agent's greedy walk needs to cross (e.g. `skills/market.py`'s
+        hub tile), pinning it there with `CantWalk` doesn't just misplace the
+        NPC — it permanently walls off that tile (live-caught: a banker
+        `[Add`-ed at `BANKER_SPOT`'s final waypoint settled one step short, on
+        the hub tile itself, denying every future step the smith tried to take
+        through it — the same "genuinely blocked, not desynced" `DenyWalk` a
+        real collision would produce). So before pinning, this corrects the
+        position back to the exact requested spot whenever it drifted, the
+        same `[Set X Y Z` lift `stage()` already uses to place a character.
+        Returns the mobile (now sitting exactly on `(x, y)` and pinned), or
+        `None` if nothing was found to pin.
+        """
+        self.command_at(f"[Add {command}", x, y, z)
+        npc = self.find_mobile_near(x, y, exclude=exclude)
+        if npc is None:
+            return None
+        if (npc.pos.x, npc.pos.y) != (x, y):
+            self.command_on(f"[Set X {x} Y {y} Z {z}", npc.serial)
+        self.command_on("[Set CantWalk true", npc.serial)
+        return npc
 
     def stage(
         self,

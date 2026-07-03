@@ -5,23 +5,29 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-02 · Status: **Phase 3 begun (economy & interaction loop).**
+Last updated: 2026-07-02 · Status: **Phase 3 in progress (economy & interaction
+loop), items 1–2 done.**
 Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
 Python brain drives **live ServUO characters** via the `anima-agent` IPC
 bridge (perceive→reflexes→planner→skill→act) — from a single agent up to a
 working **village** of agents (`village.py`) each holding a profession: miner
-(mine + smelt ingots, and now **deliver** them), lumberjack, fisher, blacksmith
-(gump-driven crafting, and now **fetch** dropped ingots when starved),
-townsfolk, staged by the Control plane (`control.py::GmControl`). The slow LLM
-cognition loop steers with in-character chatter + a clamped `goal:goto`,
-periodically reflects episodic memory into persistent `Insight`s, consults a
-local read-only index of the companion wiki (`wiki.py::Wiki`) for a grounding
-excerpt, and can write in-character posts to the uotavern forum. **Phase 3
-item 1 — the first inter-agent economy loop (a miner's ingots feed a
-blacksmith) — is live-verified**, no contract changes needed; see
-[`PHASE3.md`](PHASE3.md) for the full breakdown. 137 tests green, ruff clean;
-the full village, smelting, reflection, wiki-grounded cognition, and
-miner→blacksmith trade loops are all live-verified against ServUO on :2594.
+(mine + smelt ingots, and **deliver** them), lumberjack, fisher, blacksmith
+(gump-driven crafting, **fetch** dropped ingots when starved, and now **sell
+daggers to a vendor + bank the gold**), townsfolk, staged by the Control plane
+(`control.py::GmControl`). The slow LLM cognition loop steers with
+in-character chatter + a clamped `goal:goto`, periodically reflects episodic
+memory into persistent `Insight`s, consults a local read-only index of the
+companion wiki (`wiki.py::Wiki`) for a grounding excerpt, and can write
+in-character posts to the uotavern forum. **Phase 3 item 1 — the first
+inter-agent economy loop (a miner's ingots feed a blacksmith) — is
+live-verified**, no contract changes needed. **Phase 3 item 2 — closing the
+loop into gold — is live-verified**: the blacksmith sells surplus daggers to a
+vendor via its right-click context menu and banks the proceeds at a banker
+(`contract.py` gained `ShopBuy`/`ShopSell`/`BuyItems`/`SellItems` and
+`PopupMenu`/`PopupRequest`/`PopupSelect`); see [`PHASE3.md`](PHASE3.md) for
+the full breakdown of both items. 198 tests green, ruff clean; the full
+village, smelting, reflection, wiki-grounded cognition, and miner→blacksmith→
+vendor→bank trade loops are all live-verified against ServUO on :2594.
 See [`PHASE2.md`](PHASE2.md) for the Phase 2 close-out status and
 [`PHASE3.md`](PHASE3.md) for the Phase 3 breakdown.
 
@@ -44,7 +50,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module landed; `navigate` bridge command still ⏳ (Phase 3) |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 begun (economy & interaction loop; item 1 — inter-agent trade — live-verified); 137 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 in progress (economy & interaction loop; items 1–2 — inter-agent trade, sell/bank — live-verified); 198 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -281,7 +287,7 @@ The original analysis, kept as the decision record:
   Phase 4's fuller loop). Remaining: richer cognition (respond to journal lines
   aimed at the agent, a wider goal vocabulary beyond `goto`).
 - **Phase 3 — Economy & interaction loop** *(redefined — see note below)* — 🚧
-  *in progress, item 1 done — see [`PHASE3.md`](PHASE3.md) for the itemized
+  *in progress, items 1–2 done — see [`PHASE3.md`](PHASE3.md) for the itemized
   status.* ✅ **Inter-agent trade** (a miner's ingots feed a blacksmith):
   `skills/smelt.py::MineSmeltDeliver` adds a deliver/return phase to the
   miner's work skill (opt-in, greedy no-A* walk to a configured smithy point,
@@ -296,13 +302,27 @@ The original analysis, kept as the decision record:
   smith picks the ingots up and crafts again — see PHASE3.md for the full
   transcript and the several Phase-2-vintage bugs this scenario finally
   exercised (a wrong CraftGump button, a silently-breakable tool, a
-  path-blocking anvil). ⏳ Remaining: bank + buy/sell (needs contract
-  expansion — `Buy`/`Sell`/`ContextMenu`/banker gump; follow the 4-lockstep
-  checklist in PHASE2.md), hunt/loot (corpse containers), and delegating
-  `GoTo` (and `MineSmeltDeliver`'s own walker) to anima-net's
-  `Session::navigate_to` (A\* from anima-core's `path` module) for real
-  commutes between workplaces (open today; greedy-only, and — per the trade
-  loop above — co-located workplaces only).
+  path-blocking anvil). ✅ **Bank + buy/sell** (closing the loop into gold):
+  `contract.py` gained `ShopBuy`/`ShopSell`/`BuyItems`/`SellItems` (mirroring
+  an already-implemented Rust-side surface) and `PopupMenu`/`PopupRequest`/
+  `PopupSelect` (added mid-item, once live testing showed the ground truth's
+  speech-keyword design is unreachable from `Say` — ServUO keyword matching
+  needs client-side `speech.mul` encoding anima-core doesn't do; the
+  right-click context menu sidesteps it and was *also* already implemented
+  Rust-side); `skills/market.py::BlacksmithMarket` adds sell/bank phases to
+  the blacksmith's work skill (opt-in, same composed-phase pattern, a
+  manually curated waypoint **route** — not just a point — for the trade
+  smithy's own narrow corridor). Live-verified end to end (`live_market.py`):
+  crafts daggers, sells them to a vendor (context menu → `SellItems`, dagger
+  entries only), banks the gold (context menu → lift-then-place into the
+  bank box) — see PHASE3.md for the full transcript and the live-only bugs
+  this item's own testing found (a stale bridge binary, a wrong-distance
+  `find_mobile_near`, a wandering vendor NPC). ⏳ Remaining: hunt/loot (corpse
+  containers), and delegating `GoTo` (and `MineSmeltDeliver`'s/
+  `BlacksmithMarket`'s own walkers) to anima-net's `Session::navigate_to` (A\*
+  from anima-core's `path` module) for real commutes between workplaces (open
+  today; greedy-only, and — per the trade loops above — co-located
+  workplaces, or a manually curated route, only).
 - **Phase 4 — The learning stack** *(redefined — see note below)*: the fuller uowiki
   loop (semantic-memory lookups **and** filing discrepancy reports, not just reads), a
   Voyager-style skill library + automatic curriculum, and cognition cost tiering

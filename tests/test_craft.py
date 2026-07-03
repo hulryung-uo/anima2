@@ -265,3 +265,47 @@ def test_proximity_stuck_return_walk_gives_up_and_retries_instead_of_freezing():
     assert mem["bs_state"] == "item"  # gave up, fell through to pressing buttons anyway
     assert isinstance(res.action, GumpResponse) and res.action.button == CATEGORY_BTN
     assert "bs_return_stall" not in mem
+
+
+# --- Dead-gump watchdog: cliloc-independent, catches the reshow class -----------
+#
+# `stuck_gump`/`proximity_stuck` above only recognize a reshow by its specific
+# baked-in cliloc. A third variant slips past both (live-caught: a truly-
+# starved MAKE LAST press with nothing on the ground to fetch reshows a gump
+# whose layout matches *neither* NOT_ENOUGH_METAL_CLILOC nor
+# PROXIMITY_CLILOC), and `stuck_gump`'s own fetch-and-fail resets `bs_state`
+# to "open" every tick with nothing to show for it, so it advances
+# open->item->loop->[fails, reshows]->open->... forever — a fresh gump serial
+# every single tick, never giving up. The watchdog tracks the *outcome*
+# (pack ingots, pack daggers, Blacksmithing base) instead of any gump's text.
+
+
+def test_dead_gump_watchdog_disengages_when_no_recognized_cliloc_ever_matches():
+    items = [_backpack()]  # 0 pack ingots, nothing on the ground — genuinely starved
+    mem = {"bs_state": "loop"}
+    skill = Blacksmith()
+    for i in range(skill.dead_gump_presses):
+        g = GumpView(serial=0xA00 + i, gump_id=0xCD, layout="{ some unrecognized layout }")
+        res = skill.step(_ctx(gumps=[g], items=items, memory=mem))
+        assert isinstance(res.action, GumpResponse)  # still pressing — hasn't tripped yet
+
+    # One more zero-progress tick trips the watchdog: falls through to the
+    # "no gump open" path (re-opens with the tool) instead of pressing yet
+    # another dead button.
+    g_final = GumpView(serial=0xA99, gump_id=0xCD, layout="{ some unrecognized layout }")
+    res = skill.step(_ctx(gumps=[g_final], items=items, memory=mem))
+    assert isinstance(res.action, Use) and res.action.serial == 0x40
+    assert mem["bs_dead_presses"] == 0  # reset once it trips
+
+
+def test_dead_gump_watchdog_does_not_trip_when_ingots_are_actually_dropping():
+    # Real progress (the pack ingot count actually moving, tick to tick) must
+    # keep resetting the watchdog counter, not accumulate toward a false trip.
+    mem = {"bs_state": "loop"}
+    skill = Blacksmith()
+    for amount in range(30, 30 - skill.dead_gump_presses - 2, -1):
+        items = [_backpack(), _pack_ingot(0x700, amount=amount)]
+        g = GumpView(serial=0xB00 + amount, gump_id=0xCD, layout="{ some layout }")
+        res = skill.step(_ctx(gumps=[g], items=items, memory=mem))
+        assert isinstance(res.action, GumpResponse)
+        assert mem["bs_dead_presses"] == 0

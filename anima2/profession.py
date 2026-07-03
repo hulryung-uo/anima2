@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import Blacksmith, Chop, Fish, GoTo, Greet, MineSmeltDeliver, Skill, SpeakPending, Wander
+from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, MineSmeltDeliver, Skill, SpeakPending, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -75,6 +75,31 @@ BLACKSMITH_SPOTS: list[tuple[int, int]] = [
 # after the initial staging.
 TRADE_MINE_SPOT: tuple[int, int] = MINING_SPOTS[1]
 TRADE_SMITH_SPOT: tuple[int, int] = (2609, 474)
+
+# Phase 3 item 2 (the trade-smith's own vendor + banker): `TRADE_SMITH_SPOT`
+# sits at the closed end of a single-tile-wide corridor with exactly **one**
+# real (collision-checked `Walk`, not `[Go`) open exit — due east, through
+# `(2610, 474)` to `TRADE_MINE_SPOT` — every other direction from the smith's
+# own stand tile is walled rock, confirmed by probing all 8 directions live.
+# `(2610, 474)` (the corridor's middle tile) turned out to be a small open
+# hub, not just a pass-through: real single-`Walk`-step probes from it found
+# N/NE/E/SE/S/W all open (only SW/NW blocked) — room for more than the one
+# extra tile the corridor's straight line offers. But `direction_toward`
+# (`skills/market.py`'s `_market_walk_toward`) picks *one* straight-line
+# direction toward the **final** target and has no fallback when that's
+# blocked (no A* — DESIGN.md §10 item 4), so a target off the corridor's own
+# east-west line is unreachable in a single leg from the smith's stand tile
+# (the very first computed direction, e.g. NE for a target north of the mine
+# spot, is exactly the rock this corridor is walled in by). `VENDOR_SPOT`/
+# `BANKER_SPOT` are therefore **routes** (`skills/market.py` accepts a
+# `[(x, y), ...]` waypoint list, not just a point) through that hub: due east
+# to `(2610, 474)`, then due north/south — both confirmed-open single steps,
+# landing on distinct tiles so a `[Add Blacksmith`/`[Add Banker` staged there
+# doesn't overlap. Both `z=20`, matching the smith/forge/anvil/mine spot (no
+# "steep Minoc slope" mismatch — see `TRADE_SMITH_SPOT`'s own comment).
+TRADE_HUB: tuple[int, int] = (2610, 474)
+VENDOR_SPOT: list[tuple[int, int]] = [TRADE_HUB, (2610, 473)]
+BANKER_SPOT: list[tuple[int, int]] = [TRADE_HUB, (2610, 475)]
 
 
 @dataclass
@@ -149,7 +174,13 @@ PROFESSIONS: dict[str, Profession] = {
         # exactly like the `IronIngot <amount>` pattern below.
         items=["SmithHammer 999", "IronIngot 300"],
         needs_workplace=True,  # assigned a BLACKSMITH_SPOTS spot
-        work_skill=Blacksmith,
+        # `BlacksmithMarket` is a strict superset of `Blacksmith` — with no
+        # `vendor_spot`/`banker_spot` staged (the common case) it behaves
+        # identically (Phase 3 item 2, DESIGN.md §10), so this stays the
+        # blacksmith's *one* work skill rather than branching between two
+        # skill classes at wiring time (mirrors `MineSmeltDeliver` becoming
+        # the miner's one work skill in item 1).
+        work_skill=BlacksmithMarket,
         # Forge/anvil north/south of the stand spot, not east/west: a Phase 3
         # trade pairing has the miner approach (and stand adjacent to drop
         # ingots) from the side, and an anvil is a solid, blocking static —

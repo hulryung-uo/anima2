@@ -24,8 +24,8 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 | **CastSpell** | 0xBF/0x12 | magery, Heal/Cure | ✅ (all 4 lockstep places + `test_contract.py`; no caster skill uses it yet) |
 | **Drop / Equip** | 0x08 / 0x13 | inventory, looting, gear | ✅ (all 4 lockstep places + `test_contract.py`; not yet driven by a skill) |
 | **GumpResponse** | 0xB1 | crafting menus (MAKE), banking, quests | ✅ — drives `skills/craft.py::Blacksmith`'s MAKE-button loop; banking not wired |
-| ContextMenu req/resp | 0xBF 0x13/0x15 | banker, vendor, many NPCs | ⏳ |
-| Buy / Sell | 0x3B / 0x9F | economy loop (sell ingots, buy tools) | ⏳ (Rust side has `BuyItems`/`SellItems`; not mirrored in `contract.py` yet) |
+| ContextMenu req/resp | 0xBF 0x13/0x15 | banker, vendor, many NPCs | ✅ (Phase 3 item 2 — `PopupRequest`/`PopupSelect`/`PopupMenu`; drives `skills/market.py::BlacksmithMarket`'s vendor-sell/bank-open flow) |
+| Buy / Sell | 0x3B / 0x9F | economy loop (sell ingots, buy tools) | ✅ (Phase 3 item 2 — `BuyItems`/`SellItems` mirrored into `contract.py`; `SellItems` drives `BlacksmithMarket`, `BuyItems` unused so far) |
 
 ### A2 — new incoming parsing + World/Observation fields
 | Packet | New state | Why | Status |
@@ -35,6 +35,8 @@ anima-core `agent.rs`/`world`/`net` → `anima-net` (`lib.rs` apply_action + `js
 | **0xC1 / 0xCC cliloc** | `JournalEntry.cliloc` + args; resolved brain-side via `anima2/cliloc.py` (Cliloc.enu) | the brain reads localized messages (mining/combat/loot/system) | ✅ |
 | **0xB0 OpenGump** | `World.gumps` → `Observation.gumps[]` (`GumpView`: serial, gump_id, layout) | crafting/banking UI | ✅ — the blacksmith craft gump is live (`skills/craft.py`) |
 | **0x3C / 0x25 container** | items keyed by `container` + `ItemView.layer` | "do I have ore/ingots/gold?"; find pickaxe; looting; banking | ✅ |
+| **0x74 / 0x9E shop windows** | `World.shop_buy`/`shop_sell` → `Observation.shop_buy`/`shop_sell` | vendor buy/sell prices — answer with `BuyItems`/`SellItems` | ✅ (Phase 3 item 2 — `ShopBuy`/`ShopSell`/`ShopBuyEntry`/`ShopSellItem` mirrored into `contract.py`; `shop_sell` drives `BlacksmithMarket`) |
+| **0xBF/0x14 popup menu** | `World.popup` → `Observation.popup` (`PopupMenu`: serial, entries) | right-click context menus (vendor sell, open bank box, …) | ✅ (Phase 3 item 2 — `PopupMenu`/`PopupEntry` mirrored into `contract.py`) |
 | corpse (0x2E + container) | loot view | hunt loop | ⏳ |
 
 ### A3 — bridge (anima-net) additions

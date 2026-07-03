@@ -24,12 +24,14 @@ from .control import GmControl
 from .ipc_body import IpcBody
 from .persona import Persona
 from .profession import (
+    BANKER_SPOT,
     BLACKSMITH_SPOTS,
     FISHING_SPOTS,
     MINING_SPOTS,
     PROFESSIONS,
     TRADE_MINE_SPOT,
     TRADE_SMITH_SPOT,
+    VENDOR_SPOT,
     Profession,
 )
 from .uomap import find_tree_clusters
@@ -94,9 +96,14 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     #    each co-located at the calibrated trade spot instead of drawn from the
     #    separate pools below, and the miner's `smithy_drop` is set so its ore
     #    haul actually goes somewhere — the first inter-agent economy loop
-    #    (DESIGN.md §10). Any further miners/blacksmiths beyond that first pair
-    #    fall back to their normal pools, and a roster with only one of the two
-    #    professions is untouched — same staging as before this feature.
+    #    (DESIGN.md §10). The same pairing also gets its own vendor + banker
+    #    (item 2 — `skills/market.py::BlacksmithMarket`, opt-in the same way)
+    #    staged near the smithy via `profession.py`'s `VENDOR_SPOT`/
+    #    `BANKER_SPOT` routes. Any further miners/blacksmiths beyond that first
+    #    pair fall back to their normal pools (and get no vendor/banker — the
+    #    routes are calibrated to this one smithy spot's own narrow geometry,
+    #    not the general `BLACKSMITH_SPOTS`), and a roster with only one of the
+    #    two professions is untouched — same staging as before this feature.
     has_trade_pair = (any(p.key == "miner" for _, p, _ in online)
                       and any(p.key == "blacksmith" for _, p, _ in online))
     # TRADE_MINE_SPOT *is* MINING_SPOTS[1] — once a trade pairing claims it
@@ -109,7 +116,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     trade_miner_placed = trade_smith_placed = not has_trade_pair
     plan: list[dict] = []
     for body, prof, persona in online:
-        workplace, nodes, smithy_drop = None, None, None
+        workplace, nodes, smithy_drop, vendor_spot, banker_spot = None, None, None, None, None
         if prof.key == "miner" and not trade_miner_placed:
             workplace = TRADE_MINE_SPOT
             smithy_drop = TRADE_SMITH_SPOT
@@ -127,15 +134,25 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 nodes = [(wx, wy, wz, 0)]  # cast at the exact water tile (land target)
         elif prof.key == "blacksmith" and not trade_smith_placed:
             workplace = TRADE_SMITH_SPOT
+            vendor_spot = VENDOR_SPOT
+            banker_spot = BANKER_SPOT
             trade_smith_placed = True
         elif prof.key == "blacksmith":
             workplace = next(smith_spots, None)
         elif prof.needs_workplace:
             workplace = prof.workplace or next(spots)
         plan.append({"body": body, "prof": prof, "persona": persona,
-                     "workplace": workplace, "nodes": nodes, "smithy_drop": smithy_drop})
+                     "workplace": workplace, "nodes": nodes, "smithy_drop": smithy_drop,
+                     "vendor_spot": vendor_spot, "banker_spot": banker_spot})
 
     # 3) Control plane: stage workers and name everyone.
+    #    `find_mobile_near`'s own exclude set needs every agent serial the
+    #    village knows, not just the one currently being staged — a widened
+    #    search radius (see that method's docstring) can otherwise resolve to
+    #    a *different* known agent standing nearby (e.g. the trade miner
+    #    sitting within reach of the trade smithy's own vendor/banker spots)
+    #    instead of the NPC actually being searched for.
+    all_agent_serials = {p["body"].ready["player"]["serial"] for p in plan}
     with GmControl.spawn(host, port) as gm:
         gm.hide()
         for p in plan:
@@ -145,6 +162,20 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                                       skills=p["prof"].skills, items=p["prof"].items)
                 for stype, dx, dy in p["prof"].structures:
                     gm.command_at(f"[Add {stype}", gx + dx, gy + dy, gz)
+                if p["vendor_spot"]:
+                    # `stage_npc` adds, finds, corrects the position back onto
+                    # the exact requested spot if `[Add` settled it a tile off
+                    # (live-caught pinning it dead onto the trade corridor's
+                    # own hub waypoint instead, permanently blocking every
+                    # walk through it — see that method's docstring), and
+                    # pins it (`VendorAI.DoActionWander` roams a BaseVendor
+                    # when idle, which can drift it out of the market skill's
+                    # search radius / the smith's fixed route).
+                    vx, vy = p["vendor_spot"][-1]
+                    gm.stage_npc("Blacksmith", vx, vy, gz, exclude=all_agent_serials)
+                if p["banker_spot"]:
+                    bx, by = p["banker_spot"][-1]
+                    gm.stage_npc("Banker", bx, by, gz, exclude=all_agent_serials)
             gm.command_on(f'[Set Name "{p["persona"].name}"', serial)
     print("staged & named. work begins.\n")
 
@@ -174,6 +205,10 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             agent.memory["harvest_nodes"] = p["nodes"]  # the grove to work, tree by tree
         if p["smithy_drop"]:
             agent.memory["smithy_drop"] = p["smithy_drop"]  # miner's delivery target (trade pairing)
+        if p["vendor_spot"]:
+            agent.memory["vendor_spot"] = p["vendor_spot"]  # blacksmith's sell route (trade pairing)
+        if p["banker_spot"]:
+            agent.memory["banker_spot"] = p["banker_spot"]  # blacksmith's bank route (trade pairing)
         agents.append((agent, p["prof"].key))
         t = threading.Thread(target=_run_worker,
                              args=(agent, ticks, i, status, lock, p["prof"].key), daemon=True)

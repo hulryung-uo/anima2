@@ -78,6 +78,12 @@ def _button(btn_type: int, index: int) -> int:
 CATEGORY_BTN = _button(0, 3)  # 22 — select the "bladed" category
 DAGGER_BTN = _button(1, 2)  # 16 — make a dagger
 MAKE_LAST_BTN = _button(6, 2)  # 21 — re-make the last item (the craft loop)
+# The Dagger's own item graphic (ServUO Scripts/VendorInfo/SBBlacksmith.cs:
+# `GenericBuyInfo(typeof(Dagger), 21, 20, 0xF52, 0)`) — what `skills/market.py`'s
+# sell phase matches pack/SellList items against to find crafted daggers, as
+# opposed to the tools/ingots also sitting in the pack (a smith must never sell
+# its own hammer or its remaining metal, even though SBBlacksmith buys those too).
+DAGGER_GRAPHIC = 0x0F52
 
 # How long (ticks) to wait for the craft gump to re-appear before re-opening it
 # with the tool — the craft delay is ~2s.
@@ -91,8 +97,12 @@ class Blacksmith(Skill):
     by the Control plane). Rewards on Blacksmithing skill gain. When the pack
     runs short of metal, fetches a nearby dropped ingot pile (see the module
     docstring) before resuming the MAKE loop — the blacksmith side of the
-    inter-agent trade loop; harmless/inert when no miner ever drops anything
-    nearby (today's solo-blacksmith behaviour: it just keeps trying to craft).
+    inter-agent trade loop; a solo blacksmith with no miner ever dropping
+    anything nearby, or genuinely out of metal with nothing left to fetch,
+    doesn't spin forever either — `step()`'s dead-gump watchdog notices a
+    reshown craft gump isn't producing any outcome and backs off to the
+    ordinary re-open-with-the-tool cadence instead of hammering the same
+    dead buttons every tick.
     """
 
     name = "blacksmith"
@@ -100,6 +110,11 @@ class Blacksmith(Skill):
     #: Consecutive no-progress walking ticks before giving up on one pile
     #: (mirrors `GoTo.stall_limit` / `MineSmeltDeliver.stall_limit`).
     stall_limit: int = 6
+    #: Consecutive gump-answering ticks with zero observable outcome (pack
+    #: ingots, pack daggers, and Blacksmithing base all unchanged) before a
+    #: reshown gump is treated as dead — see `step()`'s watchdog for why this
+    #: exists on top of `stuck_gump`/`proximity_stuck`'s cliloc checks.
+    dead_gump_presses: int = 6
 
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None
@@ -123,6 +138,38 @@ class Blacksmith(Skill):
 
         gump = obs.gumps[0] if obs.gumps else None
         state = ctx.memory.get("bs_state", "open")
+
+        # Cliloc-independent dead-gump watchdog. `stuck_gump`/`proximity_stuck`
+        # below only recognize a reshow by a *specific* baked-in cliloc — a
+        # third variant slips past both (live-caught: a truly-starved MAKE
+        # LAST press with nothing on the ground to fetch reshows a gump whose
+        # layout contains neither `NOT_ENOUGH_METAL_CLILOC` nor
+        # `PROXIMITY_CLILOC`), and the existing state machine has no other way
+        # to notice: `stuck_gump`'s own fetch-and-fail resets `bs_state` to
+        # "open" every tick with nothing to show for it, so it advances
+        # open→item→loop→[fails, reshows]→open→item→... forever — a fresh
+        # gump serial every single tick, never actually giving up. This tracks
+        # the *outcome* that actually matters (pack ingots, pack daggers,
+        # Blacksmithing base) instead of any particular gump's text: once
+        # `dead_gump_presses` consecutive ticks pass with a gump open and none
+        # of the three having moved, the gump is treated as dead regardless of
+        # its layout — `gump` is nulled out here so `stuck_gump`,
+        # `proximity_stuck`, and the button-press block below all run exactly
+        # as if none were open, falling through to the ordinary
+        # re-open-with-the-tool path (paced by `_REOPEN_AFTER`, not every
+        # tick) instead of hammering the same dead buttons.
+        progress = (self._pack_ingots(ctx), self._pack_daggers(ctx), round(base, 1) if base is not None else None)
+        if gump is not None:
+            if ctx.memory.get("bs_progress") == progress:
+                dead = ctx.memory.get("bs_dead_presses", 0) + 1
+                ctx.memory["bs_dead_presses"] = dead
+                if dead >= self.dead_gump_presses:
+                    gump = None
+                    ctx.memory["bs_state"] = state = "open"
+                    ctx.memory["bs_dead_presses"] = 0
+            else:
+                ctx.memory["bs_dead_presses"] = 0
+        ctx.memory["bs_progress"] = progress
 
         # A truly-out-of-metal MAKE LAST press fails *synchronously* (no craft
         # to animate) and CraftGump.cs's `CraftItem` just re-`SendGump`s the
@@ -287,6 +334,19 @@ class Blacksmith(Skill):
         if bp is None:
             return 0
         return sum(i.amount for i in ctx.obs.items if i.graphic in INGOT_GRAPHICS and i.container == bp.serial)
+
+    def _pack_daggers(self, ctx: SkillContext) -> int:
+        """Crafted daggers currently held — one leg of `step()`'s dead-gump
+        watchdog's progress signature (a successful craft moves this, even on
+        a tick where the ingot count alone might look ambiguous mid-stack-
+        merge). Mirrors `BlacksmithMarket._pack_daggers` (market.py); kept
+        separate rather than shared since this class predates that one and
+        has no dependency on it.
+        """
+        bp = self._backpack(ctx)
+        if bp is None:
+            return 0
+        return sum(i.amount for i in ctx.obs.items if i.graphic == DAGGER_GRAPHIC and i.container == bp.serial)
 
     @staticmethod
     def _nearby_ground_ingots(ctx: SkillContext):

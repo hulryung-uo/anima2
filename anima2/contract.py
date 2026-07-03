@@ -174,6 +174,113 @@ class GumpView:
 
 
 @dataclass
+class ShopBuyEntry:
+    """One line of a vendor's BUY window: `(price, name)` in packet order —
+    anima-core matches these to the vendor's for-sale container items by index
+    (mirrors `anima_core::world::ShopBuy.entries`; see `json.rs::shop_buy_json`).
+    """
+
+    price: int
+    name: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ShopBuyEntry:
+        return cls(price=d.get("price", 0), name=d.get("name", ""))
+
+
+@dataclass
+class ShopBuy:
+    """A vendor's BUY window (0x74 OpenBuyWindow). Answer with `BuyItems`."""
+
+    vendor: int
+    container: int
+    entries: list[ShopBuyEntry] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ShopBuy:
+        return cls(
+            vendor=d.get("vendor", 0),
+            container=d.get("container", 0),
+            entries=[ShopBuyEntry.from_dict(e) for e in d.get("entries", [])],
+        )
+
+
+@dataclass
+class ShopSellItem:
+    """One line of a vendor's SELL window (0x9E SellList): an item in our pack
+    the vendor will buy, and the price it pays for it.
+    """
+
+    serial: int
+    graphic: int
+    hue: int
+    amount: int
+    price: int
+    name: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ShopSellItem:
+        return cls(
+            serial=d.get("serial", 0),
+            graphic=d.get("graphic", 0),
+            hue=d.get("hue", 0),
+            amount=d.get("amount", 0),
+            price=d.get("price", 0),
+            name=d.get("name", ""),
+        )
+
+
+@dataclass
+class ShopSell:
+    """A vendor's SELL window (0x9E SellList). Answer with `SellItems`."""
+
+    vendor: int
+    items: list[ShopSellItem] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ShopSell:
+        return cls(vendor=d.get("vendor", 0), items=[ShopSellItem.from_dict(i) for i in d.get("items", [])])
+
+
+@dataclass
+class PopupEntry:
+    """One line of a right-click context menu (0xBF/0x14): `index` is echoed
+    back verbatim in `PopupSelect` to choose it; `cliloc` is the label's
+    localized-string id (resolve via `anima2.cliloc`) — e.g. ServUO's
+    `VendorSellEntry`/`OpenBankEntry` constants are `6104`/`6105`, so a skill
+    can pick an entry by cliloc without ever resolving the text. What actually
+    arrives here depends on which popup-cliloc layout the server negotiates,
+    though: on a shard that negotiates the *legacy* layout, `anima-core`'s
+    `parse_popup` reconstructs the full id as the constant **+3,000,000**
+    (e.g. `3006104`/`3006105`), not the bare constant — live-verified against
+    a real ServUO shard, see `anima2/skills/market.py`'s `SELL_CLILOC`/
+    `BANK_CLILOC` for a worked example of a skill picking entries this way.
+    """
+
+    index: int
+    cliloc: int
+    flags: int = 0
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> PopupEntry:
+        return cls(index=d.get("index", 0), cliloc=d.get("cliloc", 0), flags=d.get("flags", 0))
+
+
+@dataclass
+class PopupMenu:
+    """An open right-click context menu (0xBF/0x14) for `serial`. Answer with
+    `PopupSelect`.
+    """
+
+    serial: int
+    entries: list[PopupEntry] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> PopupMenu:
+        return cls(serial=d.get("serial", 0), entries=[PopupEntry.from_dict(e) for e in d.get("entries", [])])
+
+
+@dataclass
 class Observation:
     """A perception snapshot. ``mobiles`` and ``items`` are sorted by distance."""
 
@@ -185,10 +292,20 @@ class Observation:
     pending_target: TargetCursor | None = None
     skills: list[SkillView] = field(default_factory=list)
     gumps: list[GumpView] = field(default_factory=list)
+    # A vendor's BUY/SELL window, when one is open (0x74/0x9E) — `None` when
+    # neither is open, exactly like `pending_target`. Mirrors anima-net's
+    # `shop_buy`/`shop_sell` observation keys (`json.rs::observation_to_json`).
+    shop_buy: ShopBuy | None = None
+    shop_sell: ShopSell | None = None
+    # An open right-click context menu (0xBF/0x14) — `None` when none is open.
+    popup: PopupMenu | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Observation:
         pt = d.get("pending_target")
+        sb = d.get("shop_buy")
+        ss = d.get("shop_sell")
+        pu = d.get("popup")
         return cls(
             player=PlayerView.from_dict(d.get("player", {})),
             mobiles=[MobileView.from_dict(m) for m in d.get("mobiles", [])],
@@ -197,6 +314,9 @@ class Observation:
             pending_target=TargetCursor.from_dict(pt) if pt else None,
             skills=[SkillView.from_dict(s) for s in d.get("skills", [])],
             gumps=[GumpView.from_dict(g) for g in d.get("gumps", [])],
+            shop_buy=ShopBuy.from_dict(sb) if sb else None,
+            shop_sell=ShopSell.from_dict(ss) if ss else None,
+            popup=PopupMenu.from_dict(pu) if pu else None,
         )
 
 
@@ -365,6 +485,57 @@ class TargetGround(Action):
         return {"type": "TargetGround", "x": self.x, "y": self.y, "z": self.z, "graphic": self.graphic}
 
 
+@dataclass
+class BuyItems(Action):
+    """Answer an open `ShopBuy` window (0x3B) — buy `items` (each `(serial,
+    amount)`, the container item's serial and how many of it to buy) from `vendor`.
+    """
+
+    vendor: int
+    items: list[tuple[int, int]] = field(default_factory=list)
+    type: str = field(default="BuyItems", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "BuyItems", "vendor": self.vendor, "items": [list(i) for i in self.items]}
+
+
+@dataclass
+class SellItems(Action):
+    """Answer an open `ShopSell` window (0x9F) — sell `items` (each `(serial,
+    amount)`, a pack item's serial and how many of its stack to sell) to `vendor`.
+    """
+
+    vendor: int
+    items: list[tuple[int, int]] = field(default_factory=list)
+    type: str = field(default="SellItems", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "SellItems", "vendor": self.vendor, "items": [list(i) for i in self.items]}
+
+
+@dataclass
+class PopupRequest(Action):
+    """Request the right-click context (popup) menu for `serial` (0xBF/0x13)."""
+
+    serial: int
+    type: str = field(default="PopupRequest", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "PopupRequest", "serial": self.serial}
+
+
+@dataclass
+class PopupSelect(Action):
+    """Choose entry `index` from the open context menu for `serial` (0xBF/0x15)."""
+
+    serial: int
+    index: int
+    type: str = field(default="PopupSelect", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "PopupSelect", "serial": self.serial, "index": self.index}
+
+
 def action_from_dict(d: dict[str, Any]) -> Action:
     """Parse an Action from its JSON form (round-trips ``Action.to_dict``)."""
     t = d["type"]
@@ -400,5 +571,13 @@ def action_from_dict(d: dict[str, Any]) -> Action:
             return TargetObject(serial=d["serial"])
         case "TargetGround":
             return TargetGround(x=d["x"], y=d["y"], z=d.get("z", 0), graphic=d.get("graphic", 0))
+        case "BuyItems":
+            return BuyItems(vendor=d["vendor"], items=[tuple(i) for i in d.get("items", [])])
+        case "SellItems":
+            return SellItems(vendor=d["vendor"], items=[tuple(i) for i in d.get("items", [])])
+        case "PopupRequest":
+            return PopupRequest(serial=d["serial"])
+        case "PopupSelect":
+            return PopupSelect(serial=d["serial"], index=d["index"])
         case _:
             raise ValueError(f"unknown action type: {t!r}")
