@@ -68,12 +68,20 @@ discrepancy report (never pushes) when an LLM judge — never trusted with
 *which* page, only *whether* one contradicts — flags a contradiction, guarded
 by a filing circuit breaker; proven live against a disposable, remote-less
 clone of `../uowiki` with a non-vacuous multi-cycle proof (57 judge calls
-collapsing to exactly 2 commits) — see `live_wiki_report.py`. 321 tests
-green.
+collapsing to exactly 2 commits) — see `live_wiki_report.py`. **Phase 4 item
+3 (skill library v0)** adds `skill_library.py::SkillLibrary`: a registry
+over every hand-written skill plus a persisted, cross-process outcome
+ledger (`data/skill_ledger.jsonl`). **Phase 4 item 4 (`deliver_threshold`
+bandit tuning) is live-verified**: `skill_tuning.py::ParamTuner` (UCB1)
+picks a `MineSmeltDeliver.deliver_threshold` per miner and learns from
+item 3's ledger — a live control pair established one value as better on a
+fixed-window reward metric, and an 8-session tuner run concentrated 7/8 of
+its picks on that same value, confirmed by a fresh process reading the
+ledger from disk — see `live_trade.py --tuner`. 388 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 321 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 388 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):

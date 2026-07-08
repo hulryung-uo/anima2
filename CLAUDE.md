@@ -143,13 +143,26 @@ wedge" poisoning an arm, and too few sessions to let UCB1 concentrate over
 four candidates) are documented in full in PHASE4.md item 4, along with an
 open follow-up bug this diagnosis surfaced: `Harvest`/`Mine` can
 intermittently freeze mid-session (root cause unconfirmed) under a long,
-uninterrupted mining phase, independent of `deliver_threshold`'s value. 364
-tests green (up from 351), ruff clean. **Next:** Phase 4 item 5 — automatic
-curriculum (milestone catalog + cadence-gated picker, the last item in this
-phase's work breakdown) — see [`docs/PHASE4.md`](docs/PHASE4.md) for the
-full five-item work breakdown (learning stack: wiki write loop — done,
-cognition cost tiering — done, skill-library registry + ledger — done,
-`deliver_threshold` bandit tuning — done, automatic curriculum).
+uninterrupted mining phase, independent of `deliver_threshold`'s value.
+**Phase 4 item 5 — automatic curriculum — is live-verified** and completes
+the phase: `curriculum.py::CurriculumController` (cadence-gated on its own
+daemon thread, mirroring `ReflectingCognition`) tracks a hand-written
+`MILESTONES` catalog of Observation/EpisodicMemory-derived predicates (so
+they can't be gamed by self-report), records one `Episode(kind="milestone")`
+per achieved-transition into the agent's own memory (idempotent, survives
+restart via `data/milestones.jsonl`), and — when 2+ milestones are eligible
+— asks the tiered `curriculum_pick` client to pick one name off the shown
+list, falling back deterministically on any bad reply. `village.py
+--curriculum` opts it in (observational only: nothing steers behaviour from
+`curriculum_milestone` yet). Live gate (`live_curriculum.py`): the GM boosts
+a miner's Mining past 50 mid-run, the `miner_mining_50` milestone fires
+exactly once (read directly from `EpisodicMemory`), and it STILL fires under
+a pure-garbage LLM — the achievement predicate is deterministic and
+LLM-independent. 388 tests green (up from 351), ruff clean. **Next:** Phase
+5 — see the "Notes carried into Phase 5 / open follow-ups" at the end of
+[`docs/PHASE4.md`](docs/PHASE4.md) (LLM-authored skill DSL with sandboxing,
+independent GM-verified fitness, the `Harvest`/`Mine` intermittent-freeze
+hardening, multi-process ledger concurrency).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

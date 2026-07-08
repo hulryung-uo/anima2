@@ -5,8 +5,8 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-08 · Status: **Phase 4 begun (learning stack) — work
-breakdown written, all five items ⏳; see [`PHASE4.md`](PHASE4.md).** Phase 3
+Last updated: 2026-07-09 · Status: **Phase 4 complete (learning stack) —
+all five items done & live-verified; see [`PHASE4.md`](PHASE4.md).** Phase 3
 complete (economy & interaction loop), all four items done.
 Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
 Python brain drives **live ServUO characters** via the `anima-agent` IPC
@@ -37,13 +37,18 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-321 tests green, ruff clean; the full village, smelting, reflection,
+388 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
-cost routing, and (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
-+ filing circuit breaker, LLM-judged, code-validated) are all live-verified
-against ServUO on :2594 (the wiki write loop specifically against a
-disposable, remote-less clone of `../uowiki`, never the real repo).
+cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
++ filing circuit breaker, LLM-judged, code-validated), and (Phase 4 item 4)
+a UCB1 bandit tuning `MineSmeltDeliver.deliver_threshold` off item 3's
+persisted skill-outcome ledger, and (Phase 4 item 5) an automatic curriculum
+of Observation-derived milestones (`CurriculumController`, GM-forced Mining-50
+crossing firing exactly one milestone `Episode`, still firing under a
+garbage LLM) are all live-verified against ServUO on :2594 (the wiki write
+loop specifically against a disposable, remote-less clone of `../uowiki`,
+never the real repo).
 See [`PHASE2.md`](PHASE2.md) for the Phase 2 close-out status and
 [`PHASE3.md`](PHASE3.md)/[`PHASE4.md`](PHASE4.md) for the Phase 3/4
 breakdowns.
@@ -67,7 +72,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate — all four items live-verified); Phase 4 items 1 (wiki write loop) and 2 (cognition cost tiering) live-verified; 321 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); 388 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only

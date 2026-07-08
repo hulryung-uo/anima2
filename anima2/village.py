@@ -93,7 +93,8 @@ class _CountingClient:
 def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 ticks: int = 60, stagger: float = 4.0, forum: bool = False,
                 chatter: bool = False, llm_tiers: str | None = None,
-                tune_deliver_threshold: bool = False, ledger_path: str | None = None) -> None:
+                tune_deliver_threshold: bool = False, ledger_path: str | None = None,
+                curriculum: bool = False) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -276,8 +277,40 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 chosen_threshold = tuner.choose()
                 miner_skill.deliver_threshold = chosen_threshold
 
+        # PHASE4.md item 5: opt-in automatic curriculum. Wrap whatever
+        # cognition exists (or a no-LLM `HeuristicCognition` when none) in a
+        # `CurriculumController` — cadence-gated, its own daemon thread, never
+        # on the fast loop. `curriculum_milestone` is observational only this
+        # landing (nothing drives behaviour from it yet). The controller
+        # records an achieved-transition `Episode` into its `.episodes`, which
+        # must be the SAME instance as `agent.episodes` — `Agent.__init__`
+        # builds its own, so we rebind right after construction, before the
+        # first tick (nothing reads/writes it before then). Client for the
+        # 2+-eligible LLM pick: the tiered `curriculum_pick` role if wired,
+        # else the chatter client, else a stub (0-1 eligible needs no LLM, and
+        # a bad reply falls back deterministically — so a stub is harmless).
+        curriculum_ctrl = None
+        if curriculum:
+            from .cognition import HeuristicCognition
+            from .curriculum import CurriculumController
+            if tiered_clients is not None:
+                from .llm import ROLE_TIER
+                pick_client = call_counters[ROLE_TIER["curriculum_pick"]]
+            elif chat_client is not None:
+                pick_client = chat_client
+            else:
+                from .llm import StubLLMClient
+                pick_client = StubLLMClient('{"milestone": ""}')
+            curriculum_ctrl = CurriculumController(
+                cognition if cognition is not None else HeuristicCognition(),
+                pick_client, p["persona"].name, p["prof"].key,
+            )  # default milestones_path = data/milestones.jsonl
+            cognition = curriculum_ctrl
+
         agent = Agent(body=p["body"], persona=p["persona"], planner=planner,
                       cognition=cognition, cognition_interval=12)
+        if curriculum_ctrl is not None:
+            curriculum_ctrl.episodes = agent.episodes  # rebind: milestone Episodes land in the agent's own memory
         if p["nodes"]:
             agent.memory["harvest_nodes"] = p["nodes"]  # the grove to work, tree by tree
         if p["smithy_drop"]:
@@ -392,13 +425,20 @@ def main() -> None:
                      help="bandit-tune each miner's deliver_threshold (Phase 4 item 4)")
     ap.add_argument("--ledger-path", default=None,
                      help="override data/skill_ledger.jsonl (mainly for isolated test/live runs)")
+    # Opt-in, unset by default (Phase 4 item 5): zero effect on any currently-
+    # passing roster unless passed. Wraps each agent's cognition in a
+    # `CurriculumController` that picks an Observation-derived milestone and
+    # records an `Episode` when one is achieved (observational only for now).
+    ap.add_argument("--curriculum", action="store_true",
+                     help="automatic curriculum: track/pick milestones (Phase 4 item 5)")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
               + ["townsfolk"] * args.townsfolk + ["hunter"] * args.hunters)
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
                 forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers,
-                tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path)
+                tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path,
+                curriculum=args.curriculum)
 
 
 if __name__ == "__main__":
