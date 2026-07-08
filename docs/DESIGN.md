@@ -5,8 +5,9 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-03 · Status: **Phase 3 complete (economy & interaction
-loop), all four items done.**
+Last updated: 2026-07-08 · Status: **Phase 4 begun (learning stack) — work
+breakdown written, all five items ⏳; see [`PHASE4.md`](PHASE4.md).** Phase 3
+complete (economy & interaction loop), all four items done.
 Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
 Python brain drives **live ServUO characters** via the `anima-agent` IPC
 bridge (perceive→reflexes→planner→skill→act) — from a single agent up to a
@@ -378,10 +379,14 @@ The original analysis, kept as the decision record:
   Migrating `MineSmeltDeliver`'s/`BlacksmithMarket`'s own private greedy
   walkers to `WalkTo` (dropping their manually-curated waypoint routes) is a
   natural follow-up, explicitly out of this item's scope.
-- **Phase 4 — The learning stack** *(redefined — see note below)*: the fuller uowiki
-  loop (semantic-memory lookups **and** filing discrepancy reports, not just reads), a
-  Voyager-style skill library + automatic curriculum, and cognition cost tiering
-  (Haiku/Sonnet/Opus per call, caching, reconsider cadence).
+- **Phase 4 — The learning stack** *(work breakdown written — see
+  [`PHASE4.md`](PHASE4.md) for the itemized status)*: five independently-landable,
+  no-op-by-default items, all ⏳ — the wiki write loop (`Wiki.file_report()` +
+  a ported circuit breaker), cognition cost tiering + prompt caching, a
+  skill-library registry with a persisted outcome ledger, a discrete-grid
+  bandit tuning `MineSmeltDeliver.deliver_threshold`, and an automatic
+  curriculum of hand-written, Observation-derived milestones. No item is
+  expected to touch the Observation/Action contract.
 - **Phase 5 — Eval harness + evolution + society scale-out:** reuse the Foundry GM
   kernel for repeatable episodes + independent fitness; MAP-Elites over agent variants;
   scale the village toward persistent lives, with the uotavern forum as the village's
@@ -421,9 +426,34 @@ Resolved during Phase 3:
   still aren't migrated — noted as a follow-up in PHASE3.md item 4.
 
 Still open:
-- **How much v1 code to port vs reimplement** (per-module, §8).
+- **How much v1 code to port vs reimplement** (per-module, §8). PHASE4.md's
+  work breakdown resolves this per-module for its own scope (`circuit_breaker.py`
+  ported near-verbatim; `tools/wiki_report.py`'s write+commit logic ported;
+  `modes.py`/`strategy.py`/`goals.py`/`skills/base.py`'s `diagnose()` mined for
+  pattern only, not ported) — the general question stays open for later
+  phases' modules.
 - **Cognition cadence / cost controls** (model tier per call, caching, how often to
-  reconsider) — now a **Phase 4** item (cost tiering).
+  reconsider) — design landed in PHASE4.md item 2 (a single auditable
+  `ROLE_TIER` table + `build_tiered_clients()`, with an explicit `degraded`
+  fallback to one shared client when only Replicate is configured); still ⏳
+  to land, and its live cache-hit proof is explicitly gated on an
+  `ANTHROPIC_API_KEY` this environment hasn't confirmed is provisioned.
+- **Skill-ledger reward independence** (opened by PHASE4.md item 3): the
+  planned `data/skill_ledger.jsonl` reward signal is the agent's own computed
+  `SkillResult.reward`, not an independently GM-verified channel — weaker
+  than A6's "agents can't lie" standard, which describes v1 Foundry's
+  wire-level packet-parsed fitness. Flagged for a cheap partial mitigation
+  (an advisory GM gold/skill readback) in PHASE4.md item 3, not solved.
+- **Skill-ledger multi-process concurrency** (opened by PHASE4.md item 3):
+  append-only single-process writes are GIL-safe; a fleet of villages
+  writing the same ledger file simultaneously is untested and needs an
+  explicit file-lock or per-process-path convention before that's real.
+- **LLM-authored, executable skills** (DESIGN.md §6 item 3's fuller
+  ambition): PHASE4.md deliberately does not attempt this — every item
+  composes existing hand-written skills with learned parameters/retrieval/
+  picks. A safe-by-construction composition DSL (never `eval`/`exec`, a
+  whitelist of existing primitives) is flagged in PHASE4.md as the natural
+  next step once item 3's registry/ledger is proven live, not designed here.
 
 ---
 

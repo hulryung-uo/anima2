@@ -75,9 +75,13 @@ froze the MAKE loop, a stale bridge binary, a wrong-distance
 calibration candidates that turned out to already be inhabited, and item 4's
 own "distance must improve" progress-signal bug plus a GM-invisible one-way
 alcove trap).
-256 tests green, ruff clean. **Next:** Phase 4 — the learning stack (fuller
-uowiki loop, Voyager-style skill library + curriculum, cognition cost
-tiering — see DESIGN.md §10).
+256 tests green, ruff clean. **Next:** Phase 4 item 2 — cognition cost
+tiering + prompt caching (PHASE4.md's own dependency-order note: it's
+independent and lands first, so item 1's wiki-judge call and item 5's
+curriculum-picker call are tiered from birth rather than retrofitted) — see
+[`docs/PHASE4.md`](docs/PHASE4.md) for the full five-item work breakdown
+(learning stack: wiki write loop, cognition cost tiering, skill-library
+registry + ledger, `deliver_threshold` bandit tuning, automatic curriculum).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
