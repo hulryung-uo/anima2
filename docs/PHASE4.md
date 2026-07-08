@@ -263,7 +263,7 @@ mcp_server.py::file_report`, `../uowiki/CLAUDE.md` ("Discrepancy reports").
 
 ---
 
-## Item 2 — Cognition cost tiering + prompt caching ⏳
+## Item 2 — Cognition cost tiering + prompt caching ✅
 
 **Make DESIGN.md §7's "tiered Haiku/Sonnet/Opus, cache aggressively" real**,
 without touching the `LLMClient` Protocol or any existing cognition class's
@@ -388,10 +388,187 @@ Two-legged, honest about the one confirmed-live provider:
   Replicate token in `../anima/config.yaml` has been live-verified end to
   end in this repo, per PHASE2.md B1/`live_reflect.py`).
 
+### Done — what landed
+
+- **`anima2/llm.py`** gains `HAIKU_MODEL = "claude-haiku-4-5"`, `OPUS_MODEL =
+  "claude-opus-4-8"`; `DEFAULT_MODEL` moved from `claude-sonnet-4-6` to
+  `claude-sonnet-5` (confirmed via the `claude-api` skill: current, newer than
+  the id this repo had on file — DESIGN.md §7 updated to match, bare aliases
+  throughout, no date suffixes, matching this file's existing style). Model ids
+  drift; re-consult the skill if these look stale later.
+- **`ROLE_TIER: dict[str, str]`** — exactly the table the spec named
+  (`chatter`→cheap, `reflection`/`wiki_judge`/`curriculum_pick`→standard).
+  `wiki_judge`/`curriculum_pick` have no call site yet (items 1/5 land later)
+  but are tiered from birth per this file's own dependency-order note.
+- **`build_tiered_clients(*, provider="auto", usage_log=None) -> TieredClients`**
+  — `TieredClients` is a small `dict` subclass (`clients[tier]` indexing
+  unchanged, `.degraded: bool` as a real attribute — the "wrapper object"
+  option from the open shape decision). `provider` is a second implementation-
+  time decision beyond what the spec asked for: `"auto"` (default) tries
+  `AnthropicClient` for all three tiers, falling back to the degraded
+  single-`ReplicateClient` form silently on any construction failure;
+  `"anthropic"` makes the same attempt but **propagates** a construction
+  failure instead of swallowing it (an explicit ask deserves an explicit
+  answer); `"replicate"` forces the degraded form outright regardless of
+  `ANTHROPIC_API_KEY` (what the live gate's leg (a) uses, so it proves routing
+  without needing a live Anthropic key); `"stub"` is every tier sharing one
+  `StubLLMClient` (fully offline). The degraded fallback (`_replicate_tiers()`)
+  never returns `None` — even with zero Replicate credentials configured it
+  constructs an empty-key `ReplicateClient`, so every caller always gets a
+  real `LLMClient` (a failing `.complete()` call is already tolerated
+  everywhere: `ThreadedCognition`/`ReflectingCognition` catch and fall back to
+  the current goal, `LLMReflection` falls back to `HeuristicReflection`).
+- **`_UsageLoggingClient`** (`data/llm_usage.jsonl`, gitignored, `data/`
+  created lazily on first write) — one JSON line per `complete()` **attempt**
+  (`{ts, role, tier, model, latency_s, ok}`, plus best-effort `prompt_tokens`/
+  `completion_tokens`/`cache_read_input_tokens` on a successful call whose
+  client exposes `last_usage`). `role` is derived once, at wrap time, as the
+  first `ROLE_TIER` entry mapped to that tier — correct for every call site
+  wired today; a future caller needing a second, distinct role on an
+  already-populated tier (`wiki_judge`/`curriculum_pick`, once items 1/5 land,
+  both sharing `standard` with `reflection`) can re-wrap with an explicit
+  `role=` — no new API needed, since it's already a plain constructor arg.
+  **Logs on `finally`, not only on a clean return** — see "Bug found live"
+  below for why that isn't optional.
+- **`AnthropicClient.__init__` gains `cache_system: bool = True`** and a
+  `last_usage` attribute (the SDK response's `usage` object, `None` until the
+  first call). `complete()` sends `system` as a single cache-marked block
+  (`[{"type": "text", "text": ..., "cache_control": {"type": "ephemeral"}}]`)
+  when `cache_system` is on and the system text clears the model's minimum
+  cacheable-prefix size — `_CACHE_MIN_TOKENS` (per-model table from the
+  `claude-api` skill's Prompt Caching reference: Haiku 4.5/Opus 4.8 → 4096
+  tokens; Sonnet 5 isn't in that table yet, so it's approximated at its
+  immediate predecessor Sonnet 4.6's 2048 — documented as an approximation,
+  not a confirmed number, in the code comment). Gate uses a cheap chars/4
+  token estimate (`_approx_tokens`), not a real token count — never billed
+  against, only needs to separate "clearly short" from "clearly long enough."
+- **`village.py`** gets `--llm-tiers {anthropic,replicate,stub}` (unset by
+  default — zero effect on any existing roster). When set, it supersedes
+  `--chatter`: each agent gets `ThreadedCognition(ReflectingCognition(
+  LLMCognition(clients[ROLE_TIER["chatter"]], ...), LLMReflection(
+  clients[ROLE_TIER["reflection"]])))` — the first time `village.py` wires
+  reflection at all (previously chatter-only). A small `_CountingClient`
+  (script-local, not persisted — contrast the persisted `_UsageLoggingClient`
+  underneath it) tallies calls per tier for the live gate's own
+  counter-vs-ledger cross-check, printed at the end of the run.
+
+### Key decisions confirmed or changed from the spec
+
+- **Model ids**: `claude-sonnet-5` (not `claude-sonnet-4-6`) for the
+  `"standard"` tier / `DEFAULT_MODEL` — confirmed newer via the `claude-api`
+  skill at implementation time, per this item's own instruction to consult it.
+- **Prompt-caching minimum for Sonnet 5 is an approximation, not a confirmed
+  number** — the skill's cached Prompt Caching table doesn't list Sonnet 5 yet
+  (only Opus 4.8/4.7/4.6/4.5/Haiku 4.5 at 4096; Fable 5/Sonnet 4.6/Haiku 3.5/3
+  at 2048; Sonnet 4.5/4.1/4/3.7 at 1024). Treated as no more permissive than
+  its immediate predecessor Sonnet 4.6 (2048) — flagged in code and here for a
+  future pass to confirm once the skill's table is updated.
+- **A `provider` argument on `build_tiered_clients()`** beyond the bare
+  auto-fallback the spec described — needed so `village.py --llm-tiers
+  replicate` (leg (a) below) can force the degraded form deterministically
+  rather than depending on whether `ANTHROPIC_API_KEY` happens to be set in
+  the shell that runs it.
+- **`ok: bool` added to the usage-log schema**, beyond the spec's literal
+  `{ts, role, tier, model, latency_s}` — see "Bug found live" below; this
+  wasn't a design preference, a live run surfaced why it's needed.
+
+### Bug found live: usage log silently dropped failed calls
+
+The first version of `_UsageLoggingClient.complete()` called `self._log(...)`
+only after a clean return. Leg (a)'s first live run (`village.py --llm-tiers
+replicate --ticks 600`, one miner) showed a real gap: the script's own
+call-counting wrapper tallied **41 cheap / 7 standard** calls, but
+`data/llm_usage.jsonl` held only **24 cheap / 2 standard** lines. Root cause:
+some Replicate calls raised (an HTTP failure, ~0.3s latency — fast, not the
+90s `urlopen` timeout, and confirmed unrelated to the credentials themselves,
+which a standalone `ReplicateClient.complete()` call succeeded with
+immediately after) and the un-logged exception propagated straight through
+`_UsageLoggingClient` to `ThreadedCognition`/`ReflectingCognition`'s own
+`except Exception` — silently swallowed there by design, but silently
+un-logged here by omission. Fixed by moving the log call into a `finally`
+(logging every *attempt*, `ok: True`/`False`), with `last_usage` only ever
+read on `ok: True` — otherwise a failed call would report the *previous*
+successful call's stale token counts (`last_usage` isn't cleared on failure).
+Two regression tests added (`test_usage_logging_client_logs_a_failed_call_and_
+reraises`, `test_usage_logging_client_does_not_misattribute_stale_usage_on_
+failure`); the exact scenario the live gate's counter-vs-ledger cross-check
+exists to catch, catching a real bug on its very first live run.
+
+### Offline tests
+
+`tests/test_llm.py` (new, 18 tests): `build_tiered_clients()` degrades to a
+real (never `None`) single-`ReplicateClient` form with nothing configured at
+all (no `ANTHROPIC_API_KEY`, no `anthropic` package — `sys.modules["anthropic"]
+= None` forces the same `ImportError` this shell's actual missing package
+produces — no v1 `config.yaml`, no `REPLICATE_API_TOKEN`), with
+`urllib.request.urlopen` monkeypatched to raise if called at all — proving
+no dial-out in that path; a fake key + a stubbed `anthropic` module lands
+three distinct model ids on cheap/standard/heavy with `degraded=False`;
+`provider="replicate"` bypasses Anthropic even when it would otherwise
+succeed; `provider="anthropic"` propagates a construction failure instead of
+degrading; `provider="stub"` is fully offline. `AnthropicClient.complete()`'s
+cache-control shape tested against a stubbed `anthropic.Anthropic` (records
+`messages.create` kwargs): present for a long system prompt, absent for a
+short one, absent when `cache_system=False`. Usage sink: a client with no
+`last_usage` (`StubLLMClient`) still logs a valid line (latency/role/tier
+only); an `AnthropicClient`'s token counts land correctly; a failing client
+still logs (`ok: False`, re-raises) and never misattributes a prior
+successful call's usage to the failed one. 274 tests green (up from 256),
+`ruff check .` clean.
+
+### Live verification gate
+
+**(a) — run, provider-agnostic (Replicate).** `python -m anima2.village
+--miners 1 --lumberjacks 0 --fishers 0 --blacksmiths 0 --townsfolk 0
+--hunters 0 --ticks 600 --llm-tiers replicate` against the live ServUO shard
+(one miner, `cognition_interval=12` chatter cadence, `every_n_reconsiders=5`
+reflection cadence — both defaults, untouched). Two full runs (the second
+after the usage-log fix above); the second run's numbers, cross-checked three
+ways:
+
+```
+llm-tiers (replicate): degraded — one client answers every tier
+...
+day's work done.
+
+— llm tiers — (degraded=True) —
+  cheap: 40 calls
+  standard: 5 calls
+  heavy: 0 calls
+```
+
+- **Role routing, not vacuous:** `cheap:standard` = 40:5 = 8:1 (run 1: 41:7 ≈
+  5.9:1) — both track the cadence difference (chatter every reconsider,
+  reflection every 5th), and `heavy` stayed at exactly 0 both runs (no call
+  site routes there yet — correct, not a bug). A broken router would show a
+  flat or reversed ratio; this cannot pass by luck.
+- **Ledger cross-check, exact match:** `data/llm_usage.jsonl` line counts by
+  tier after the fix — `{"cheap": 40, "standard": 5}` — identical to the
+  script's own in-process tally above, split `{"cheap": 24 ok / 16 failed,
+  "standard": 2 ok / 3 failed}` (qwen3-via-Replicate flakiness, PHASE2.md B1's
+  own documented characteristic — concurrent chatter+reflection calls sharing
+  one Replicate account plausibly explains the failure rate; a standalone call
+  with the same credentials succeeded immediately). Every logged line carries
+  the correct `role`/`tier` (`{"cheap": "chatter"}`, `{"standard":
+  "reflection"}`) — read back from the file, not asserted from memory.
+- **Provenance-real, not staged text:** real in-character chatter reached the
+  transcript from actual qwen3 completions, e.g. *"I reckon the ore's runnin'
+  hot near the lower shaft—third strike's the charm"* — not a canned/stub
+  string.
+
+**(b) — Anthropic, `cache_read_input_tokens` on a second `reconsider()` —
+explicitly deferred, per this item's own instruction.** `ANTHROPIC_API_KEY`
+is not provisioned in this environment (confirmed again at this item's
+landing: the `anthropic` package itself is absent from `.venv`, matching this
+file's original note). Not attempted. The offline cache-control-shape tests
+above are the closest available proof that the *request* is built correctly;
+whether Anthropic's servers actually serve it from cache is unverified and
+flagged as a follow-up, unchanged from the original scope.
+
 ### References
 
 `anima2/llm.py`, `anima2/cognition.py` (`LLMCognition`, `LLMReflection`),
-DESIGN.md §7, `claude-api` skill.
+`anima2/village.py`, `tests/test_llm.py`, DESIGN.md §7, `claude-api` skill.
 
 ---
 

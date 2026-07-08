@@ -17,3 +17,7 @@ venv/
 
 # OS
 .DS_Store
+
+# Runtime-generated state (llm_usage.jsonl, and Phase 4 items 3/5's
+# skill_ledger.jsonl/milestones.jsonl once they land) — never source-controlled.
+data/

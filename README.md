@@ -57,11 +57,16 @@ live-verified too**: `GoTo` now delegates to the bridge's non-blocking route
 driver instead of greedy tile-by-tile stepping — a differential live proof
 shows a forced-greedy control run wedging on a rock-blocked Minoc-ridge
 course a straight line can't cross, while the real `GoTo` crosses it both
-ways (round trip) — see `live_navigate.py`. 256 tests green.
+ways (round trip) — see `live_navigate.py`. **Phase 4 item 2 (cognition cost
+tiering + prompt caching) is live-verified**: `village.py --llm-tiers
+{anthropic,replicate,stub}` routes each cognition role through a cost tier
+(`llm.py::ROLE_TIER`/`build_tiered_clients`), degrading to one reused
+`ReplicateClient` when Anthropic isn't provisioned, and logs every call to
+`data/llm_usage.jsonl`. 274 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 256 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 274 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -79,6 +84,8 @@ python -m anima2.village
 #   add --forum to post each villager's day to uotavern (needs ANIMA_FORUM_API_KEY,
 #     or the forum key in anima v1's config.yaml)
 #   add --hunters N to include the hunter profession (opt-in, default 0)
+#   add --llm-tiers {anthropic,replicate,stub} for role-tiered cognition (chatter +
+#     reflection) via build_tiered_clients — supersedes --chatter when both are given
 
 # Single-skill live proofs (GM stages the scenario, then the brain works it):
 python -m anima2.live_mine      # mines ore, Mining skill rises
@@ -91,8 +98,8 @@ python -m anima2.live_navigate  # differential proof: greedy wedges, WalkTo-dele
 ```
 
 Next: Phase 4 — the learning stack (fuller uowiki loop, Voyager-style skill
-library + curriculum, cognition cost tiering) — see
-[`docs/PHASE3.md`](docs/PHASE3.md) and [`docs/DESIGN.md`](docs/DESIGN.md) §10
+library + curriculum; cognition cost tiering is done) — see
+[`docs/PHASE4.md`](docs/PHASE4.md) and [`docs/DESIGN.md`](docs/DESIGN.md) §10
 for the roadmap.
 
 ## Family

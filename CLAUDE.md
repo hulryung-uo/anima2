@@ -75,12 +75,25 @@ froze the MAKE loop, a stale bridge binary, a wrong-distance
 calibration candidates that turned out to already be inhabited, and item 4's
 own "distance must improve" progress-signal bug plus a GM-invisible one-way
 alcove trap).
-256 tests green, ruff clean. **Next:** Phase 4 item 2 — cognition cost
-tiering + prompt caching (PHASE4.md's own dependency-order note: it's
-independent and lands first, so item 1's wiki-judge call and item 5's
-curriculum-picker call are tiered from birth rather than retrofitted) — see
+274 tests green, ruff clean. **Phase 4 item 2 — cognition cost tiering +
+prompt caching — is live-verified** (`village.py --llm-tiers
+{anthropic,replicate,stub}`): a single auditable `llm.py::ROLE_TIER` table
+routes each cognition role to a cost tier, `build_tiered_clients()` tries
+`AnthropicClient` per tier first and degrades to one reused `ReplicateClient`
+(`degraded=True`) when Anthropic isn't provisioned — this environment's own
+case, confirmed again at this item's landing — and every call is logged to
+`data/llm_usage.jsonl` via `_UsageLoggingClient`. Live leg (a) (`--llm-tiers
+replicate`, provider-agnostic) shows real per-role routing (40 cheap / 5
+standard / 0 heavy calls over one miner's session, tracking the
+`cognition_interval`-vs-`every_n_reconsiders` cadence difference) with the
+usage ledger's line counts matching the script's own call tally exactly —
+catching a real bug live (failed calls were silently un-logged; fixed by
+logging on `finally`, not just on success). Leg (b) (Anthropic,
+`cache_read_input_tokens` on a real cache hit) stays deferred — no
+`ANTHROPIC_API_KEY` provisioned here. **Next:** Phase 4 item 1 — wiki write
+loop (`Wiki.file_report()` + filing circuit breaker) — see
 [`docs/PHASE4.md`](docs/PHASE4.md) for the full five-item work breakdown
-(learning stack: wiki write loop, cognition cost tiering, skill-library
+(learning stack: wiki write loop, cognition cost tiering — done, skill-library
 registry + ledger, `deliver_threshold` bandit tuning, automatic curriculum).
 
 ## Dev

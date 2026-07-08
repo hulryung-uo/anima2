@@ -37,10 +37,10 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-256 tests green, ruff clean; the full village, smelting, reflection,
+274 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
-loop, and A* navigate differential proof are all live-verified against
-ServUO on :2594.
+loop, A* navigate differential proof, and (Phase 4 item 2) role-tiered
+cognition cost routing are all live-verified against ServUO on :2594.
 See [`PHASE2.md`](PHASE2.md) for the Phase 2 close-out status and
 [`PHASE3.md`](PHASE3.md) for the Phase 3 breakdown.
 
@@ -63,7 +63,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate — all four items live-verified); 256 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate — all four items live-verified); Phase 4 item 2 (cognition cost tiering) live-verified; 274 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -221,11 +221,19 @@ Ordered by ROI (do the cheap, fast accelerants first — A4):
 
 - **Abstract the provider** (v1 had `LLMClient` for Ollama/OpenAI-compat) — keep that seam.
 - **Default to the latest Claude family**, tiered to control cost/latency:
-  - **Haiku** (`claude-haiku-4-5-20251001`) — frequent/cheap: quick social replies, routine goal nudges.
-  - **Sonnet** (`claude-sonnet-4-6`) — planning, curriculum proposal, reflection.
+  - **Haiku** (`claude-haiku-4-5`) — frequent/cheap: quick social replies, routine goal nudges.
+  - **Sonnet** (`claude-sonnet-5`) — planning, curriculum proposal, reflection.
   - **Opus** (`claude-opus-4-8`) — hard reasoning, skill synthesis/debugging.
+  - Phase 4 item 2 (`llm.py::ROLE_TIER`/`build_tiered_clients`) makes this real:
+    one auditable role→tier table, `AnthropicClient` tried first per tier and a
+    single reused `ReplicateClient` as the documented degraded fallback
+    (`degraded=True`) when Anthropic isn't provisioned. Ids current as of that
+    item's landing; re-consult the `claude-api` skill if they've drifted since.
 - **Never in the fast loop.** LLM calls are async, batched where possible, and
-  produce advisory state. Cache aggressively (personas, wiki excerpts, skill docs).
+  produce advisory state. Cache aggressively (personas, wiki excerpts, skill docs)
+  — `AnthropicClient`'s `cache_system` flag (on by default) does this for the
+  persona/job system prompt once it's long enough to clear Anthropic's minimum
+  cacheable-prefix size for the model in play.
 - (When implementing, consult the `claude-api` skill for current ids/pricing/tool-use.)
 
 ---

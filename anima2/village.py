@@ -68,9 +68,27 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             status[idx] = line
 
 
+class _CountingClient:
+    """Wraps an `LLMClient`, counting `complete()` calls — scoped to this script's
+    own run, never persisted (contrast `llm.py::_UsageLoggingClient`, which
+    `build_tiered_clients()` already applies underneath and *does* persist to
+    `data/llm_usage.jsonl`). Exists so `--llm-tiers`'s live gate has an
+    independent, in-process tally to cross-check the usage-log line count
+    against — the ledger and this counter must agree, or the routing plumbing
+    (or the ledger itself) is broken."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.calls = 0
+
+    def complete(self, system: str, user: str) -> str:
+        self.calls += 1
+        return self.inner.complete(system, user)
+
+
 def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 ticks: int = 60, stagger: float = 4.0, forum: bool = False,
-                chatter: bool = False) -> None:
+                chatter: bool = False, llm_tiers: str | None = None) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -182,9 +200,23 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
 
     # 4) Run every villager concurrently; print a live snapshot of the village.
     #    With --chatter, each gets an LLM cognition (threaded, off the hot path) so
-    #    they speak in character while they work.
+    #    they speak in character while they work. --llm-tiers supersedes --chatter:
+    #    it builds a role-tiered client set (Phase 4 item 2 — llm.py::ROLE_TIER/
+    #    build_tiered_clients) and, since proving the tiering actually routes by
+    #    role needs a "standard"-tier caller too, also wires reflection (off until
+    #    now — this flag is the first thing in village.py to turn it on).
     chat_client = None
-    if chatter:
+    tiered_clients = None
+    call_counters: dict[str, _CountingClient] = {}
+    if llm_tiers:
+        from .llm import ROLE_TIER, build_tiered_clients
+
+        tiered_clients = build_tiered_clients(provider=llm_tiers)
+        call_counters = {tier: _CountingClient(client) for tier, client in tiered_clients.items()}
+        print(f"llm-tiers ({llm_tiers}):",
+              "degraded — one client answers every tier" if tiered_clients.degraded
+              else "tiered — 3 distinct models")
+    elif chatter:
         from .llm import ReplicateClient
 
         chat_client = ReplicateClient.from_v1_config()
@@ -196,7 +228,13 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     agents: list[tuple[Agent, str]] = []
     for i, p in enumerate(plan):
         cognition = None
-        if chat_client is not None:
+        if tiered_clients is not None:
+            from .cognition import LLMCognition, LLMReflection, ReflectingCognition, ThreadedCognition
+
+            inner = LLMCognition(call_counters[ROLE_TIER["chatter"]], job=p["prof"].key)
+            reflection = LLMReflection(call_counters[ROLE_TIER["reflection"]])
+            cognition = ThreadedCognition(ReflectingCognition(inner, reflection))
+        elif chat_client is not None:
             from .cognition import LLMCognition, ThreadedCognition
 
             cognition = ThreadedCognition(LLMCognition(chat_client, job=p["prof"].key))
@@ -224,6 +262,11 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     for t in threads:
         t.join()
     print("\nday's work done.")
+
+    if call_counters:
+        print(f"\n— llm tiers — (degraded={tiered_clients.degraded}) —")
+        for tier, counter in call_counters.items():
+            print(f"  {tier}: {counter.calls} calls")
 
     # 5) End of day: each villager writes about it on the tavern forum.
     if forum:
@@ -258,12 +301,17 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=2594)
     ap.add_argument("--forum", action="store_true", help="post each villager's day to uotavern")
     ap.add_argument("--chatter", action="store_true", help="LLM cognition: speak in character while working")
+    # Opt-in, unset by default: zero effect on any currently-passing roster unless
+    # passed (Phase 4 item 2). Supersedes --chatter when both are given — it wires
+    # a role-tiered cognition (chatter + reflection) rather than a single client.
+    ap.add_argument("--llm-tiers", choices=["anthropic", "replicate", "stub"], default=None,
+                     help="role-tiered LLM cognition (chatter + reflection) via build_tiered_clients")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
               + ["townsfolk"] * args.townsfolk + ["hunter"] * args.hunters)
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
-                forum=args.forum, chatter=args.chatter)
+                forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers)
 
 
 if __name__ == "__main__":
