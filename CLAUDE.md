@@ -75,7 +75,7 @@ froze the MAKE loop, a stale bridge binary, a wrong-distance
 calibration candidates that turned out to already be inhabited, and item 4's
 own "distance must improve" progress-signal bug plus a GM-invisible one-way
 alcove trap).
-274 tests green, ruff clean. **Phase 4 item 2 — cognition cost tiering +
+**Phase 4 item 2 — cognition cost tiering +
 prompt caching — is live-verified** (`village.py --llm-tiers
 {anthropic,replicate,stub}`): a single auditable `llm.py::ROLE_TIER` table
 routes each cognition role to a cost tier, `build_tiered_clients()` tries
@@ -90,11 +90,36 @@ usage ledger's line counts matching the script's own call tally exactly —
 catching a real bug live (failed calls were silently un-logged; fixed by
 logging on `finally`, not just on success). Leg (b) (Anthropic,
 `cache_read_input_tokens` on a real cache hit) stays deferred — no
-`ANTHROPIC_API_KEY` provisioned here. **Next:** Phase 4 item 1 — wiki write
-loop (`Wiki.file_report()` + filing circuit breaker) — see
+`ANTHROPIC_API_KEY` provisioned here. **Phase 4 item 1 — the wiki write
+loop — is live-verified** (`live_wiki_report.py`, run against a disposable,
+remote-less clone of `../uowiki`, never the real repo): `wiki.py::Wiki`
+gains `file_report()` (write+slugify+`git add`+`git commit` — **never**
+`git push`, a whole-test-file `subprocess.run` argv spy proves it) guarded by
+a ported `circuit_breaker.py` (`Wiki._report_breaker`, keyed on `(page,
+claim_fingerprint)`, repurposed as a filing dedup/cooldown gate rather than a
+reliability breaker), and `cognition.py` gains `LLMWikiReportProducer` — a
+wiki-contradiction judge whose `ReportDraft.page` is always filled in by
+code from the reflection's own wiki search hit, **never** read from the
+model's JSON reply, wired into `ReflectingCognition(..., wiki_reporter=None)`
+as a byte-for-byte no-op when unset. The live gate's multi-cycle proof is
+non-vacuous by a wide margin: 3 identical-claim judge calls collapsed to 1
+commit, then 54 more repeat calls of a second claim collapsed to exactly 1
+more commit (57 judge calls total, 2 commits) — read back and provenance-
+checked against an independent `wiki.search()` call, not the judge's own
+say-so — while a paired differential-inertness run with `wiki_reporter=None`
+wrote zero new files and left the clone's commit count unchanged. Caught one
+live bug (`cognition_interval=1` let chatter re-trigger every tick and
+starve `Mine` entirely — fixed by raising it to `12`, matching
+`live_reflect.py`'s own tuned default) and one offline regression inherited
+from a prior, crashed implementation attempt (a dropped `Counter` import
+silently emptied the whole wiki index — every page's `_weighted_terms` call
+raised, swallowed by a broad per-page `except`). 321 tests green (up from
+274), ruff clean. **Next:** Phase 4 item 3 — skill library v0 (registry,
+keyword retrieval over `_textindex.py`, persisted outcome ledger) — see
 [`docs/PHASE4.md`](docs/PHASE4.md) for the full five-item work breakdown
-(learning stack: wiki write loop, cognition cost tiering — done, skill-library
-registry + ledger, `deliver_threshold` bandit tuning, automatic curriculum).
+(learning stack: wiki write loop — done, cognition cost tiering — done,
+skill-library registry + ledger, `deliver_threshold` bandit tuning, automatic
+curriculum).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

@@ -1,13 +1,18 @@
 """The slow cognition loop: LLM goal parsing, speech queueing, non-blocking wrap."""
 
 import threading
+from pathlib import Path
 
-from anima2.cognition import LLMCognition, ThreadedCognition
+from anima2.cognition import LLMCognition, LLMWikiReportProducer, NullWikiReportProducer, ThreadedCognition
 from anima2.contract import Observation, PlayerView, Position, Say
 from anima2.llm import StubLLMClient
+from anima2.memory import Episode
 from anima2.persona import Persona
 from anima2.skills import SpeakPending
 from anima2.skills.base import Goal, SkillContext
+from anima2.wiki import Wiki
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "wiki"
 
 
 def _ctx(goal=None, memory=None) -> SkillContext:
@@ -103,3 +108,80 @@ def test_threaded_cognition_never_blocks():
             break
         threading.Event().wait(0.01)
     assert got is target_goal
+
+
+# --- LLMWikiReportProducer: the wiki-contradiction judge (PHASE4.md item 1) ----
+
+
+def _skill_episodes() -> list[Episode]:
+    return [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+
+
+def test_llm_wiki_report_producer_fills_page_from_search_hit_ignoring_llm_page_field():
+    """Safety property 2: the LLM's `page` claim (a different, nonexistent
+    page here) must be completely ignored — `ReportDraft.page` always comes
+    from the reflection's own wiki search hit, filled in by code."""
+    client = StubLLMClient(
+        '{"contradiction": true, "page": "totally/different/nonexistent-page", '
+        '"claim": "mining gives 3 ore per swing", "observed": "got 1 ore per swing", '
+        '"expected": "wiki says 3 ore per swing"}'
+    )
+    wiki = Wiki(root=FIXTURE_ROOT)
+    draft = LLMWikiReportProducer(client).maybe_file_report(_skill_episodes(), Persona(name="Grimm"), wiki)
+    assert draft is not None
+    assert draft.page == "skills/mining"  # the search hit's own slug, not the LLM's claim
+    assert draft.claim == "mining gives 3 ore per swing"
+    assert draft.observed == "got 1 ore per swing"
+    assert draft.expected == "wiki says 3 ore per swing"
+    assert "Grimm" in draft.evidence
+
+
+def test_llm_wiki_report_producer_contradiction_false_returns_none():
+    client = StubLLMClient('{"contradiction": false}')
+    wiki = Wiki(root=FIXTURE_ROOT)
+    result = LLMWikiReportProducer(client).maybe_file_report(_skill_episodes(), Persona(name="Grimm"), wiki)
+    assert result is None
+
+
+def test_llm_wiki_report_producer_malformed_json_returns_none():
+    client = StubLLMClient("sorry, I cannot help with that")
+    wiki = Wiki(root=FIXTURE_ROOT)
+    result = LLMWikiReportProducer(client).maybe_file_report(_skill_episodes(), Persona(name="Grimm"), wiki)
+    assert result is None
+
+
+def test_llm_wiki_report_producer_missing_fields_returns_none():
+    client = StubLLMClient('{"contradiction": true, "claim": "x"}')  # observed/expected missing
+    wiki = Wiki(root=FIXTURE_ROOT)
+    result = LLMWikiReportProducer(client).maybe_file_report(_skill_episodes(), Persona(name="Grimm"), wiki)
+    assert result is None
+
+
+def test_llm_wiki_report_producer_no_wiki_configured_makes_zero_complete_calls():
+    client = StubLLMClient('{"contradiction": true, "claim": "x", "observed": "y", "expected": "z"}')
+    result = LLMWikiReportProducer(client).maybe_file_report(_skill_episodes(), Persona(name="Grimm"), None)
+    assert result is None
+    assert client.calls == []  # cost discipline: never dials the LLM with nothing to judge against
+
+
+def test_llm_wiki_report_producer_no_search_hit_makes_zero_complete_calls():
+    client = StubLLMClient('{"contradiction": true, "claim": "x", "observed": "y", "expected": "z"}')
+    wiki = Wiki(root=FIXTURE_ROOT)
+    episodes = [Episode(tick=1, kind="skill", summary="zzz-nonexistent-topic-zzz → success", reward=1.0)]
+    result = LLMWikiReportProducer(client).maybe_file_report(episodes, Persona(name="Grimm"), wiki)
+    assert result is None
+    assert client.calls == []
+
+
+def test_llm_wiki_report_producer_no_episodes_returns_none_zero_calls():
+    client = StubLLMClient('{"contradiction": true, "claim": "x", "observed": "y", "expected": "z"}')
+    wiki = Wiki(root=FIXTURE_ROOT)
+    result = LLMWikiReportProducer(client).maybe_file_report([], Persona(name="Grimm"), wiki)
+    assert result is None
+    assert client.calls == []
+
+
+def test_null_wiki_report_producer_always_returns_none():
+    wiki = Wiki(root=FIXTURE_ROOT)
+    result = NullWikiReportProducer().maybe_file_report(_skill_episodes(), Persona(name="Grimm"), wiki)
+    assert result is None

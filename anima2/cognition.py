@@ -22,6 +22,14 @@ only ever runs from inside `reconsider()`/`reflect()`, and those only run on a
 thread in production, wiki file I/O never touches the fast tick — see
 `wiki.py`'s module docstring for the "lazy, one-time index" design that makes
 this safe regardless of which thread constructs the `Wiki`.
+
+`ReflectingCognition` optionally also takes a `wiki_reporter` (PHASE4.md item
+1, `WikiReportProducer`/`ReportDraft`/`NullWikiReportProducer`/
+`LLMWikiReportProducer` below): once a reflection pass succeeds, an LLM judge
+may propose that reality contradicts a wiki page — `Wiki.file_report()` then
+writes and commits a discrepancy report (never a push; a filing circuit
+breaker suppresses repeats). `wiki_reporter=None` (the default) is a
+byte-for-byte no-op — no existing `ReflectingCognition` caller is affected.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ import json
 import re
 import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .contract import Position
@@ -396,6 +405,125 @@ class LLMReflection:
         return _wiki_line_for(self.wiki, _top_skill_name(episodes), self._wiki_cache)
 
 
+@dataclass(frozen=True)
+class ReportDraft:
+    """A `Wiki.file_report()`-ready discrepancy report, proposed by a
+    `WikiReportProducer`. Every field maps directly onto one of
+    `file_report`'s params (`agent` comes from the `Persona` separately) — see
+    `LLMWikiReportProducer.maybe_file_report` for how each is filled in.
+    """
+
+    page: str
+    claim: str
+    observed: str
+    expected: str
+    evidence: str
+
+
+class WikiReportProducer(Protocol):
+    """Judges whether recent episodes contradict a wiki page and, if so,
+    proposes a `ReportDraft` for `Wiki.file_report()` to write. Mirrors
+    `ReflectionProducer`'s shape (heuristic/LLM pair): `NullWikiReportProducer`
+    is the offline default (always `None`), `LLMWikiReportProducer` the
+    LLM-backed judge.
+    """
+
+    def maybe_file_report(
+        self, episodes: list[Episode], persona: Persona, wiki: Wiki | None
+    ) -> ReportDraft | None:
+        """Return a `ReportDraft` if `episodes` plausibly contradict a wiki
+        page, else `None` — never raises."""
+        ...
+
+
+class NullWikiReportProducer:
+    """No-op default: never proposes a report. Offline-safe; costs nothing."""
+
+    def maybe_file_report(
+        self, episodes: list[Episode], persona: Persona, wiki: Wiki | None
+    ) -> ReportDraft | None:
+        return None
+
+
+class LLMWikiReportProducer:
+    """LLM-backed wiki-contradiction judge (PHASE4.md item 1).
+
+    Reuses the same deterministic wiki search hit `LLMReflection._wiki_line`
+    resolves for the reflection prompt (`_top_skill_name` -> `wiki.search(...,
+    k=1)`, both memoized inside `Wiki` itself — a repeat query within the same
+    process costs no extra file I/O). The LLM is asked only a yes/no judgment
+    plus the claim/observed/expected text — never which page to file against:
+    **`ReportDraft.page` is always the search hit's own `slug`, filled in by
+    code, never read from the model's JSON reply.** This is
+    `../anima/anima/planner/strategy.py::StrategySelector._is_strategy_viable`'s
+    "the LLM proposes, code validates/fills ground truth" pattern, taken one
+    step further — there is no invalid `page` value the model could even
+    produce for `file_report` to reject, because that field of its reply is
+    never read at all.
+
+    A malformed reply, `contradiction: false`, no wiki hit, or any exception
+    is a silent `None` — same discipline as every other JSON ask in this file.
+    `wiki=None` (or no search hit) short-circuits before any LLM call — zero
+    `LLMClient.complete` calls when there's nothing to judge against.
+    """
+
+    def __init__(self, client: LLMClient) -> None:
+        self.client = client
+
+    def maybe_file_report(
+        self, episodes: list[Episode], persona: Persona, wiki: Wiki | None
+    ) -> ReportDraft | None:
+        if not episodes or wiki is None:
+            return None
+        query = _top_skill_name(episodes)
+        if not query:
+            return None
+        hits = wiki.search(query, k=1)
+        if not hits:
+            return None
+        page_hit = hits[0]
+        excerpt = wiki.excerpt(page_hit, limit=280)
+        try:
+            raw = self.client.complete(self._system(), self._situation(episodes, page_hit, excerpt))
+        except Exception:  # noqa: BLE001 — a flaky LLM must not break reflection
+            return None
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        data = _parse_json(raw)
+        if not data or not data.get("contradiction"):
+            return None
+        claim = _clean_model_line(str(data.get("claim") or ""))
+        observed = _clean_model_line(str(data.get("observed") or ""))
+        expected = _clean_model_line(str(data.get("expected") or ""))
+        if not claim or not observed or not expected:
+            return None
+        evidence = f"{persona.name}, reflecting on ticks {episodes[0].tick}-{episodes[-1].tick}"
+        # `page_hit.slug` — code-computed ground truth — not `data.get("page")`,
+        # which is never even read. See class docstring.
+        return ReportDraft(page=page_hit.slug, claim=claim, observed=observed,
+                            expected=expected, evidence=evidence)
+
+    def _system(self) -> str:
+        return (
+            "You are quietly reviewing whether recent first-hand experience "
+            "contradicts a specific wiki page's claims about Ultima Online. "
+            "Only flag a genuine, concrete factual mismatch (numbers, mechanics) "
+            "— not vibes, not something the page simply doesn't mention. "
+            'Reply with ONLY a JSON object: {"contradiction": true/false, '
+            '"claim": "<short claim the page makes>", '
+            '"observed": "<what actually happened>", '
+            '"expected": "<what the page says>"}. '
+            'If nothing contradicts, reply {"contradiction": false}.'
+        )
+
+    def _situation(self, episodes: list[Episode], page_hit: Any, excerpt: str) -> str:
+        recent = "\n".join(str(e) for e in episodes)
+        return (
+            f"What just happened:\n{recent}\n\n"
+            f"Wiki page \"{page_hit.title}\": {excerpt}\n\n"
+            "Does what happened contradict this page?"
+        )
+
+
 class ReflectingCognition:
     """Wraps a `Cognition`; periodically distills recent episodes into short
     `Insight`s that persist and feed back into later goal/speech decisions
@@ -438,6 +566,7 @@ class ReflectingCognition:
         min_new_episodes: int = 6,
         episode_window: int = 20,
         insights: ReflectionMemory | None = None,
+        wiki_reporter: WikiReportProducer | None = None,
     ) -> None:
         self.inner = inner
         self.reflection = reflection
@@ -445,6 +574,9 @@ class ReflectingCognition:
         self.min_new_episodes = min_new_episodes
         self.episode_window = episode_window
         self.insights = insights if insights is not None else ReflectionMemory()
+        #: `None` (default) is a byte-for-byte no-op — see module docstring and
+        #: `_reflect_bg`, which only ever consults this when it's not `None`.
+        self.wiki_reporter = wiki_reporter
         self._reconsiders_since = 0
         self._episode_count_at_last = 0
         # Non-overlap guard for the background reflection thread (`_reflecting`,
@@ -508,6 +640,17 @@ class ReflectingCognition:
                         episode_count=len(window),
                     )
                 )
+            # Right after reflection succeeds (PHASE4.md item 1): reuse the same
+            # `wiki` the reflection producer already consults (`LLMReflection.wiki`
+            # — the same instance `_wiki_line` searched), so `LLMWikiReportProducer`
+            # asks its judge against the identical, already-memoized search hit.
+            # `wiki_reporter=None` (the default) never reaches this branch at all.
+            if self.wiki_reporter is not None:
+                wiki = getattr(self.reflection, "wiki", None)
+                draft = self.wiki_reporter.maybe_file_report(window, persona, wiki)
+                if draft is not None and wiki is not None:
+                    wiki.file_report(persona.name, draft.page, draft.claim,
+                                      draft.observed, draft.expected, draft.evidence)
         except Exception:  # noqa: BLE001 — a flaky producer must not wedge or kill cognition
             pass
         finally:

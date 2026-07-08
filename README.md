@@ -62,11 +62,18 @@ tiering + prompt caching) is live-verified**: `village.py --llm-tiers
 {anthropic,replicate,stub}` routes each cognition role through a cost tier
 (`llm.py::ROLE_TIER`/`build_tiered_clients`), degrading to one reused
 `ReplicateClient` when Anthropic isn't provisioned, and logs every call to
-`data/llm_usage.jsonl`. 274 tests green.
+`data/llm_usage.jsonl`. **Phase 4 item 1 (the wiki write loop) is
+live-verified too**: `wiki.py::Wiki.file_report()` writes and commits a
+discrepancy report (never pushes) when an LLM judge — never trusted with
+*which* page, only *whether* one contradicts — flags a contradiction, guarded
+by a filing circuit breaker; proven live against a disposable, remote-less
+clone of `../uowiki` with a non-vacuous multi-cycle proof (57 judge calls
+collapsing to exactly 2 commits) — see `live_wiki_report.py`. 321 tests
+green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 274 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 321 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):

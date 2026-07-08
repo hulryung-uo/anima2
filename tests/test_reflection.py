@@ -8,12 +8,16 @@ first in isolation, then through a real `Agent` run.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 from anima2.agent import Agent
 from anima2.cognition import (
     HeuristicCognition,
     HeuristicReflection,
     LLMCognition,
     LLMReflection,
+    LLMWikiReportProducer,
     ReflectingCognition,
     ThreadedCognition,
 )
@@ -24,6 +28,9 @@ from anima2.mock_body import MockBody
 from anima2.persona import Persona
 from anima2.planner import Planner
 from anima2.skills.base import Skill, SkillContext, SkillResult, Status
+from anima2.wiki import Wiki
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "wiki"
 
 
 def _ctx(*, episodes=None, episode_count: int = 0, goal=None) -> SkillContext:
@@ -343,3 +350,113 @@ def test_agent_loop_episode_window_reaches_reflection_beyond_eight():
 
     assert reflection.calls == [12]  # all 12 accumulated episodes reached the
     # producer in one window — not capped at the old hardcoded 8.
+
+
+# --- wiki write loop wiring (PHASE4.md item 1) ---------------------------------
+#
+# `ReflectingCognition(..., wiki_reporter=...)`: right after a reflection pass
+# succeeds, an optional `WikiReportProducer` may propose a `ReportDraft`, which
+# `_reflect_bg` hands to `Wiki.file_report()`. `wiki_reporter=None` (the
+# default, exercised everywhere above this section) must stay a byte-for-byte
+# no-op — these tests cover the opt-in path specifically.
+
+
+def _git_wiki(tmp_path: Path, *, cooldown_s: float = 3600.0) -> Wiki:
+    """A `Wiki` reading the shared fixture pages (a real `skills/mining` page)
+    but writing/committing into a fresh, disposable git repo under `tmp_path`
+    — the two independent `root`/`repo_root` knobs PHASE4.md item 1 adds."""
+    repo = tmp_path / "wikirepo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    return Wiki(root=FIXTURE_ROOT, repo_root=repo, report_cooldown_s=cooldown_s)
+
+
+def _open_reports(wiki: Wiki) -> list[Path]:
+    open_dir = wiki.repo_root / "reports" / "open"
+    return sorted(open_dir.glob("*.md")) if open_dir.exists() else []
+
+
+def test_reflecting_cognition_wiki_reporter_none_is_byte_for_byte_noop(tmp_path, monkeypatch):
+    """`wiki_reporter=None` (the default) must never touch `Wiki.file_report`
+    at all, and reflection itself must proceed exactly as before."""
+    calls = []
+    monkeypatch.setattr(Wiki, "file_report", lambda self, *a, **kw: calls.append((a, kw)) or None)
+    wiki = _git_wiki(tmp_path)
+    reflection = LLMReflection(StubLLMClient('["A quiet day."]'), wiki=wiki)
+    reflecting = ReflectingCognition(HeuristicCognition(), reflection, every_n_reconsiders=1)
+    # wiki_reporter defaults to None — not passed at all.
+    ep = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+
+    reflecting.reconsider(_ctx(episodes=ep, episode_count=1))
+    assert reflecting.wait_idle(timeout=2.0)
+
+    assert calls == []  # file_report never called
+    assert len(reflecting.insights) == 1  # reflection itself still ran normally
+    assert _open_reports(wiki) == []
+
+
+def test_reflecting_cognition_files_report_via_wiki_reporter_after_reflection(tmp_path):
+    """The opt-in path, end to end: a wiki-grounded reflection + an
+    LLM judge that says "yes, contradiction" produces exactly one committed
+    report, whose `page` matches the reflection's own wiki search hit."""
+    wiki = _git_wiki(tmp_path)
+    reflection = LLMReflection(StubLLMClient('["A quiet day."]'), wiki=wiki)
+    judge = StubLLMClient(
+        '{"contradiction": true, "claim": "mining gives 3 ore per swing", '
+        '"observed": "got 1 ore per swing", "expected": "wiki says 3 ore per swing"}'
+    )
+    reflecting = ReflectingCognition(
+        HeuristicCognition(), reflection, every_n_reconsiders=1,
+        wiki_reporter=LLMWikiReportProducer(judge),
+    )
+    ep = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+
+    reflecting.reconsider(_ctx(episodes=ep, episode_count=1))
+    assert reflecting.wait_idle(timeout=2.0)
+
+    files = _open_reports(wiki)
+    assert len(files) == 1
+    text = files[0].read_text()
+    assert "- page: skills/mining" in text
+    assert "- observed: got 1 ore per swing" in text
+    assert "- expected-per-wiki: wiki says 3 ore per swing" in text
+
+
+def test_reflecting_cognition_negative_control_multi_tick_zero_reports_when_llm_says_no(tmp_path):
+    """Negative control (PHASE4.md item 1): a judge that always answers
+    `contradiction: false` across a MULTI-TICK reflection loop (not just one
+    call) must file zero reports — proves a producer that only "passes" when
+    never actually exercised by the failing input can't sneak through."""
+    wiki = _git_wiki(tmp_path)
+    reflection = LLMReflection(StubLLMClient('["Nothing unusual."]'), wiki=wiki)
+    judge = StubLLMClient('{"contradiction": false}')
+    reflecting = ReflectingCognition(
+        HeuristicCognition(), reflection, every_n_reconsiders=1, min_new_episodes=1,
+        wiki_reporter=LLMWikiReportProducer(judge),
+    )
+
+    for i in range(1, 6):
+        ep = [Episode(tick=t, kind="skill", summary="mine → success", reward=1.0) for t in range(1, i + 1)]
+        reflecting.reconsider(_ctx(episodes=ep, episode_count=i))
+        assert reflecting.wait_idle(timeout=2.0)
+
+    assert _open_reports(wiki) == []
+
+
+def test_reflecting_cognition_no_wiki_configured_makes_zero_wiki_judge_calls(tmp_path):
+    """The no-wiki-configured case: a reflection producer with `wiki=None`
+    means `_reflect_bg` hands `None` through to the reporter, which — per
+    `LLMWikiReportProducer`'s own contract — must make zero `LLMClient.complete`
+    calls (cost discipline, same idiom as item 2's tiering tests)."""
+    reflection = LLMReflection(StubLLMClient('["A quiet day."]'))  # no wiki=
+    judge = StubLLMClient('{"contradiction": true, "claim": "x", "observed": "y", "expected": "z"}')
+    reflecting = ReflectingCognition(
+        HeuristicCognition(), reflection, every_n_reconsiders=1,
+        wiki_reporter=LLMWikiReportProducer(judge),
+    )
+    ep = [Episode(tick=1, kind="skill", summary="mine → success", reward=1.0)]
+
+    reflecting.reconsider(_ctx(episodes=ep, episode_count=1))
+    assert reflecting.wait_idle(timeout=2.0)
+
+    assert judge.calls == []

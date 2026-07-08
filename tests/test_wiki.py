@@ -9,6 +9,9 @@ decoy, a `templates/` build-preset decoy) instead of the real, possibly-absent
 
 from __future__ import annotations
 
+import datetime as dt
+import subprocess
+import time as _time
 from pathlib import Path
 
 import pytest
@@ -19,7 +22,7 @@ from anima2.llm import StubLLMClient
 from anima2.memory import Episode
 from anima2.persona import Persona
 from anima2.skills.base import SkillContext
-from anima2.wiki import Wiki, _DEFAULT_ROOT, _stem
+from anima2.wiki import Wiki, _DEFAULT_ROOT, _default_repo_root, _stem
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "wiki"
 
@@ -305,3 +308,191 @@ def test_llm_cognition_wiki_cache_avoids_a_second_search_for_the_same_query():
     cog.reconsider(_ctx(episodes=episodes))  # identical derived query ("mine miner")
 
     assert counting.search_calls == 1
+
+
+# --- file_report: writing a discrepancy report (PHASE4.md item 1) --------------
+#
+# A module-level list, appended to by every test below via an autouse spy, so
+# the final test in this module can prove `"push"` never appears in ANY argv
+# any test in this file ever invoked — not just the ones that call
+# `file_report` directly. Keep `test_file_report_never_pushes_across_this_
+# whole_test_file` as the LAST function in this module (pytest runs a
+# module's tests in definition order) so it sees everything.
+_ALL_INVOKED_ARGVS: list[list[str]] = []
+
+
+@pytest.fixture(autouse=True)
+def _spy_subprocess_run(monkeypatch):
+    real_run = subprocess.run
+
+    def spy(argv, *a, **kw):
+        _ALL_INVOKED_ARGVS.append(list(argv))
+        return real_run(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+
+
+def _init_git_repo(repo_dir: Path) -> None:
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
+
+
+def _wiki_repo(tmp_path: Path, *, cooldown_s: float = 3600.0) -> Wiki:
+    """A disposable `tmp_path` git repo with one real page (`skills/mining`)
+    for `file_report`'s existence check, `repo_root` = the git repo itself —
+    a fresh fixture per test, never touching a real repo."""
+    repo = tmp_path / "wikirepo"
+    docs = repo / "docs"
+    (docs / "skills").mkdir(parents=True)
+    (docs / "skills" / "mining.md").write_text(
+        "---\ntitle: Mining\ndescription: Digging ore.\n---\nBody about mining ore.\n",
+        encoding="utf-8",
+    )
+    _init_git_repo(repo)
+    return Wiki(root=docs, repo_root=repo, report_cooldown_s=cooldown_s)
+
+
+def _git_log_lines(repo_root: Path) -> list[str]:
+    log = subprocess.run(["git", "-C", str(repo_root), "log", "--oneline"],
+                          capture_output=True, text=True, check=True)
+    return log.stdout.strip().splitlines()
+
+
+def test_file_report_writes_exact_five_line_template_and_commits(tmp_path):
+    wiki = _wiki_repo(tmp_path)
+    dest = wiki.file_report(
+        "grimm", "skills/mining", "mining gives 3 ore per swing",
+        "got 1 ore per swing across 10 tries", "wiki says 3 ore per swing",
+        "grimm 2026-07-08",
+    )
+    assert dest is not None and dest.is_file()
+    assert dest.read_text() == (
+        "# mining gives 3 ore per swing\n"
+        "- page: skills/mining\n"
+        "- observed: got 1 ore per swing across 10 tries\n"
+        "- expected-per-wiki: wiki says 3 ore per swing\n"
+        "- evidence: grimm 2026-07-08\n"
+    )
+    assert len(_git_log_lines(wiki.repo_root)) == 1  # exactly one commit
+    show = subprocess.run(
+        ["git", "-C", str(wiki.repo_root), "show", "--stat", "--format=", "HEAD"],
+        capture_output=True, text=True, check=True,
+    )
+    assert dest.relative_to(wiki.repo_root).as_posix() in show.stdout
+    assert "1 file changed" in show.stdout  # the commit touches only the new file
+
+
+def test_file_report_refuses_without_force_on_nonexistent_page(tmp_path):
+    wiki = _wiki_repo(tmp_path)
+    result = wiki.file_report("grimm", "skills/nonexistent", "claim", "x", "y", "z")
+    assert result is None
+    assert not (wiki.repo_root / "reports").exists()
+
+
+def test_file_report_force_files_against_a_missing_page(tmp_path):
+    wiki = _wiki_repo(tmp_path)
+    dest = wiki.file_report("grimm", "skills/nonexistent", "claim", "x", "y", "z", force=True)
+    assert dest is not None and dest.is_file()
+    assert "- page: skills/nonexistent" in dest.read_text()
+
+
+def test_file_report_collision_suffix_on_stem_clash(tmp_path):
+    """Two DIFFERENT reports (a prior, unrelated filing already on disk) that
+    happen to slugify to the same day+agent+claim stem get a `-2` suffix —
+    distinct from the circuit breaker below, which suppresses a REPEAT of the
+    SAME claim entirely (no second file at all)."""
+    wiki = _wiki_repo(tmp_path)
+    open_dir = wiki.repo_root / "reports" / "open"
+    open_dir.mkdir(parents=True)
+    today = dt.date.today().isoformat()
+    (open_dir / f"{today}-grimm-mining-gives-3-ore-per-swing.md").write_text("existing", encoding="utf-8")
+
+    dest = wiki.file_report("grimm", "skills/mining", "mining gives 3 ore per swing", "x", "y", "z")
+    assert dest is not None
+    assert dest.name == f"{today}-grimm-mining-gives-3-ore-per-swing-2.md"
+
+
+# --- file_report: circuit breaker (dedup/cooldown, PHASE4.md item 1) -----------
+
+
+def test_file_report_circuit_breaker_suppresses_repeat_claim_one_commit_not_two(tmp_path):
+    wiki = _wiki_repo(tmp_path, cooldown_s=3600.0)
+    first = wiki.file_report("grimm", "skills/mining", "same claim", "x", "y", "z")
+    second = wiki.file_report("grimm", "skills/mining", "same claim", "x2", "y2", "z2")
+    assert first is not None
+    assert second is None
+    assert len(_git_log_lines(wiki.repo_root)) == 1
+
+
+def test_file_report_circuit_breaker_different_claim_same_page_files_second_commit(tmp_path):
+    wiki = _wiki_repo(tmp_path, cooldown_s=3600.0)
+    first = wiki.file_report("grimm", "skills/mining", "claim one", "x", "y", "z")
+    second = wiki.file_report("grimm", "skills/mining", "claim two, unrelated", "x", "y", "z")
+    assert first is not None
+    assert second is not None
+    assert len(_git_log_lines(wiki.repo_root)) == 2
+
+
+def test_file_report_circuit_breaker_expired_cooldown_reopens_filing(tmp_path):
+    wiki = _wiki_repo(tmp_path, cooldown_s=0.05)
+    first = wiki.file_report("grimm", "skills/mining", "same claim", "x", "y", "z")
+    second = wiki.file_report("grimm", "skills/mining", "same claim", "x", "y", "z")
+    assert first is not None
+    assert second is None
+    _time.sleep(0.08)
+    third = wiki.file_report("grimm", "skills/mining", "same claim", "x", "y", "z")
+    assert third is not None
+    assert len(_git_log_lines(wiki.repo_root)) == 2
+
+
+# --- file_report: two independent knobs (root vs repo_root) --------------------
+
+
+def test_file_report_repo_root_independent_of_read_root_via_env_vars(tmp_path, monkeypatch):
+    read_root = tmp_path / "docs_only"
+    (read_root / "skills").mkdir(parents=True)
+    (read_root / "skills" / "mining.md").write_text(
+        "---\ntitle: Mining\ndescription: Digging ore.\n---\nBody about mining ore.\n",
+        encoding="utf-8",
+    )
+    repo_root = tmp_path / "repo_only"
+    _init_git_repo(repo_root)
+
+    monkeypatch.setenv("ANIMA2_WIKI_ROOT", str(read_root))
+    monkeypatch.setenv("ANIMA2_WIKI_REPO_ROOT", str(repo_root))
+    wiki = Wiki()  # no explicit root=/repo_root= — both resolved purely from env
+
+    assert wiki.root == read_root
+    assert wiki.repo_root == repo_root
+    hits = wiki.search("mining ore")
+    assert hits and hits[0].slug == "skills/mining"
+
+    dest = wiki.file_report("grimm", "skills/mining", "claim", "x", "y", "z")
+    assert dest is not None
+    assert dest.is_relative_to(repo_root)
+    assert not dest.is_relative_to(read_root)  # the two trees never implied each other
+
+
+def test_default_repo_root_guarded_against_short_relative_root():
+    # Real filesystem tmp_path fixtures are always deep enough that
+    # `.parents[2]` never actually raises in practice — exercise the guard
+    # directly against a synthetic shallow path instead of hoping cwd is
+    # shallow enough for a real IndexError to occur.
+    shallow = Path("/a/b")  # only 2 parents (/a, /) — too few for parents[2]
+    assert _default_repo_root(shallow) == shallow  # degrades to itself, never raises
+    deep = Path("/a/b/c/d/e")
+    assert _default_repo_root(deep) == Path("/a/b")  # parents[2] of a 5-segment path
+
+
+def test_wiki_repo_root_defaults_without_raising_on_fixture_root():
+    wiki = Wiki(root=FIXTURE_ROOT)
+    assert isinstance(wiki.repo_root, Path)  # constructing it never raises
+
+
+def test_file_report_never_pushes_across_this_whole_test_file():
+    """Safety property 1 (PHASE4.md item 1): `file_report` must never invoke
+    `git push` — the autouse spy above has recorded every `subprocess.run`
+    argv any test in this module has made by the time this (last-defined)
+    test runs; none of them may contain `"push"`."""
+    assert _ALL_INVOKED_ARGVS  # sanity: the spy actually captured invocations
+    assert not any("push" in argv for argv in _ALL_INVOKED_ARGVS)

@@ -35,18 +35,33 @@ Design notes:
 - **A missing root degrades to empty results, never raises.** Offline dev boxes
   and CI don't have `../uowiki` checked out next to anima2; `search()` then just
   returns `[]` and the cognition wiki line is silently omitted.
+- **Read root and write root are two independent knobs (PHASE4.md item 1).**
+  `search()`/`excerpt()` read from `self.root` (`root=`/`ANIMA2_WIKI_ROOT`, the
+  *docs* tree). `file_report()`'s git operations — new in this item, closing
+  DESIGN.md §6 item 1's write half — run against a separate `repo_root`
+  (`repo_root=`/`ANIMA2_WIKI_REPO_ROOT`, falling back to `self.root.parents[2]`,
+  the repo root implied by the standard `<repo>/src/content/docs` layout,
+  guarded against a short/relative `self.root`). Neither implies the other —
+  a test or a live script can point reads and writes at two independently
+  chosen fixture trees.
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import os
 import re
+import subprocess
 import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+from ._textindex import _STOPWORDS, _stem, _terms, _WORD_RE, score_terms, weighted_terms  # noqa: F401 — _stem/_terms/_WORD_RE/_STOPWORDS re-exported: tests and other modules (see _textindex.py's own docstring) import them from `anima2.wiki`, not just `anima2._textindex`
+from .circuit_breaker import CircuitBreaker
 
 #: Default root resolves `../uowiki/src/content/docs` relative to this repo
 #: (`anima2/anima2/wiki.py` → `anima2/` (repo root) → its sibling `uowiki/`);
@@ -57,6 +72,10 @@ _DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "uowiki" / "src" / "conten
 #: Top-level directories under the docs root left out of the index — see the
 #: module docstring ("Locale dirs excluded" / "templates/essays excluded too").
 _EXCLUDED_TOP_DIRS = frozenset({"ja", "ko", "templates", "essays"})
+
+#: `file_report`'s duplicate-filing cooldown default — PHASE4.md item 1's own
+#: "(e.g. 24h wall-clock)" figure. Tests override via `report_cooldown_s=`.
+_REPORT_COOLDOWN_S = 86400.0
 
 #: Title dominates deliberately (and heavily): on the real ~2.4k-page corpus, a
 #: long page that mentions a topic often in passing (e.g. `world/minoc.md`,
@@ -72,23 +91,15 @@ _WEIGHT_HEADING = 3
 _WEIGHT_BODY = 1
 #: Bonus added when a page contains every query term (on top of the summed
 #: per-term weighted counts) — nudges a page matching the whole query above one
-#: that only matches part of it via a single very-repeated term.
-_ALL_TERMS_BONUS = 5
-
-#: Suffixes stripped (longest first) by `_stem` before its trailing e/y pass.
-_SUFFIXES = ("ing", "ers", "er", "ed", "es", "s")
+#: that only matches part of it via a single very-repeated term. Reuses
+#: `_textindex.ALL_TERMS_BONUS` as-is (single source of truth); no local copy.
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
-_WORD_RE = re.compile(r"[a-z0-9]+")
 
-#: Small stopword list — just enough to keep near-universal function words from
-#: adding equal-ish noise to every page's score (not a linguistic stemmer).
-_STOPWORDS = frozenset({
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "if",
-    "in", "into", "is", "it", "its", "not", "of", "on", "or", "per", "that",
-    "the", "this", "to", "up", "was", "were", "with", "you", "your",
-})
+#: Characters `_slugify` keeps from a claim before joining its first few words
+#: with hyphens — mirrors `../anima/tools/wiki_report.py::slugify` exactly.
+_SLUG_STRIP_RE = re.compile(r"[^a-z0-9\s-]")
 
 
 @dataclass(frozen=True)
@@ -100,47 +111,6 @@ class WikiPage:
     description: str
     body: str  # markdown body with frontmatter stripped, otherwise raw
     status: str = ""
-
-
-def _stem(tok: str) -> str:
-    """Small suffix-stripping stem — not a real stemmer, just enough to collapse
-    a skill name / job title and the wiki-prose word forms actually used for it
-    into the same bucket: "mine"/"miner"/"mining"/"miners" -> "min",
-    "fish"/"fisher"/"fishing" -> "fish", "blacksmith"/"blacksmithy" ->
-    "blacksmith", "lumberjack"/"lumberjacking" -> "lumberjack", "smelt"/
-    "smelting"/"smelter" -> "smelt". Strips one inflectional suffix (longest
-    match first, so "miners" loses "ers" not just "s"), then collapses a
-    trailing doubled consonant left behind by that strip (e.g. "chopping" ->
-    "chopp" -> "chop", matching the un-suffixed "chop" a query would use —
-    the classic stemmer undoubling rule, skipped for l/s/z so "press"/"pass"-
-    shaped words don't get chopped down to "pres"/"pas"), then strips a
-    trailing silent e or y, each only when the token is long enough that
-    little of substance is left (avoids mangling short words like "ore" or
-    "ash"). Deliberately not a blind prefix-truncation stemmer: an earlier
-    version of this collapsed "miner"/"mining" *and* "Minoc" (the mining town)
-    to the same 3-letter prefix, which then let a page about the town
-    out-rank the page about the skill for a "miner" query — this
-    suffix-aware version keeps "minoc" intact (it never matches any suffix
-    in `_SUFFIXES`, so it never enters the doubled-consonant path either).
-    """
-    stripped = False
-    for suf in _SUFFIXES:
-        if len(tok) > len(suf) + 2 and tok.endswith(suf):
-            tok = tok[: -len(suf)]
-            stripped = True
-            break
-    if stripped and len(tok) > 3 and tok[-1] == tok[-2] and tok[-1] not in "aeioulsz":
-        tok = tok[:-1]
-    if tok.endswith("e") and len(tok) > 3:
-        tok = tok[:-1]
-    elif tok.endswith("y") and len(tok) > 4:
-        tok = tok[:-1]
-    return tok
-
-
-def _terms(text: str) -> list[str]:
-    """Lowercased, stopword-filtered, stemmed word tokens from `text`."""
-    return [_stem(t) for t in _WORD_RE.findall(text.lower()) if t not in _STOPWORDS]
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
@@ -196,6 +166,49 @@ def _excerpt_from(description: str, body: str, limit: int) -> str:
     return clean[:limit].rstrip() + "…"
 
 
+def _default_repo_root(root: Path) -> Path:
+    """`root.parents[2]` — the wiki repo root implied by the standard
+    `<repo>/src/content/docs` layout `root` normally points at — guarded
+    against a short/relative `root` (e.g. a two-level-deep `tmp_path`
+    fixture) that doesn't have 3 parents: degrades to `root` itself rather
+    than raising `IndexError`. `ANIMA2_WIKI_REPO_ROOT`/`repo_root=` exist
+    precisely so a test or script can sidestep this default outright when
+    the fixture layout doesn't match the real depth."""
+    resolved = root.expanduser().resolve()
+    parents = resolved.parents
+    return parents[2] if len(parents) > 2 else resolved
+
+
+def _slugify(text: str, max_words: int = 6) -> str:
+    """Turn a claim into a kebab-case slug (first few words) — near-verbatim
+    port of `../anima/tools/wiki_report.py::slugify`."""
+    words = _SLUG_STRIP_RE.sub("", text.lower()).split()
+    return "-".join(words[:max_words]) or "report"
+
+
+def _unique_path(directory: Path, stem: str) -> Path:
+    """`<stem>.md` in `directory`, appending `-2`, `-3`, ... if already taken —
+    the exact collision-avoidance algorithm both v1 sources this ports from
+    (`wiki_report.py`/`mcp_server.py::file_report`) already use."""
+    path = directory / f"{stem}.md"
+    counter = 2
+    while path.exists():
+        path = directory / f"{stem}-{counter}.md"
+        counter += 1
+    return path
+
+
+def _claim_fingerprint(claim: str) -> str:
+    """A stable hash of the normalized claim text — half of `_report_breaker`'s
+    `(page, claim_fingerprint)` key, so two different phrasings of the exact
+    same underlying claim aren't required to match verbatim... within reason:
+    this only normalizes case/whitespace (not a paraphrase detector), matching
+    the deliberately narrow "only exact repeats are suppressed" design note in
+    PHASE4.md item 1."""
+    normalized = " ".join(claim.lower().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 class Wiki:
     """Read-only semantic memory over a local wiki docs tree.
 
@@ -206,10 +219,22 @@ class Wiki:
     aggressively ... wiki excerpts").
     """
 
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        *,
+        repo_root: str | Path | None = None,
+        report_cooldown_s: float = _REPORT_COOLDOWN_S,
+    ) -> None:
         if root is None:
             root = os.environ.get("ANIMA2_WIKI_ROOT") or _DEFAULT_ROOT
         self.root = Path(root).expanduser()
+        if repo_root is None:
+            repo_root = os.environ.get("ANIMA2_WIKI_REPO_ROOT")
+        #: `file_report()`'s git-operations root — independent of `self.root`
+        #: (the *read* docs tree). See module docstring "Read root and write
+        #: root are two independent knobs."
+        self.repo_root = Path(repo_root).expanduser() if repo_root else _default_repo_root(self.root)
         self._lock = threading.Lock()
         #: The built index, published as a single `(pages, terms)` tuple — see
         #: `_ensure_index` for why it's one attribute and not two.
@@ -219,6 +244,14 @@ class Wiki:
         #: index (and thus every file read) happens exactly once, no matter how
         #: many `search()` calls follow (see `test_wiki.py`'s cache tests).
         self.files_read = 0
+        #: Filing circuit breaker, keyed on `(page, claim_fingerprint)` — see
+        #: `file_report`. `max_failures=1`: this breaker isn't a reliability
+        #: retry-backoff (the usual `CircuitBreaker` use, PHASE4.md item 1's own
+        #: `circuit_breaker.py` docstring example); it's a dedup/cooldown gate —
+        #: a *single* successful filing (via `trip()`, not the failure-counting
+        #: path) immediately opens it for `report_cooldown_s`, suppressing any
+        #: repeat of that exact `(page, claim)` until the cooldown lapses.
+        self._report_breaker = CircuitBreaker(max_failures=1, cooldown_s=report_cooldown_s)
 
     @property
     def available(self) -> bool:
@@ -247,6 +280,84 @@ class Wiki:
         """A bounded, markdown-stripped snippet for `page` — a few hundred
         characters at most, safe to splice into an LLM prompt line."""
         return _excerpt_from(page.description, page.body, limit)
+
+    # -- write half: filing a discrepancy report (PHASE4.md item 1) ---------
+
+    def file_report(
+        self,
+        agent: str,
+        page: str,
+        claim: str,
+        observed: str,
+        expected: str,
+        evidence: str,
+        *,
+        force: bool = False,
+    ) -> Path | None:
+        """File a discrepancy report into `<repo_root>/reports/open/` and
+        `git add` + `git commit` it — **never** `git push` (both v1 sources
+        this ports from, `../anima/tools/wiki_report.py` and
+        `../uowiki/tools/mcp_server.py::file_report`, already omit it).
+
+        Refuses (returns `None`) if `page` doesn't resolve to a real page
+        under `self.root` unless `force=True` — mirrors `wiki_report.py`'s own
+        `--force` flag ("to propose a new page"). Also returns `None`, with
+        zero filesystem/git side effects, when `_report_breaker` reports the
+        `(page, claim)` pair still cooling down from a prior successful filing
+        (see `__init__`'s `_report_breaker` note) — a silent no-op, not an
+        error, by design: a live reflection loop calling this every cadence
+        tick must not flood `reports/open/` with repeats of the same claim.
+
+        Any failure past that point (git not installed, `repo_root` not a git
+        repo, a filesystem error) is caught, counted against the breaker
+        (`record_failure`, which — at `max_failures=1` — also opens it, so a
+        broken git repo doesn't get hammered once per reflection tick either),
+        and returns `None`; never raises.
+        """
+        page = page.strip().strip("/")
+        if not force and self._resolve_page(page) is None:
+            return None
+        key = (page, _claim_fingerprint(claim))
+        if self._report_breaker.is_open(key):
+            return None
+        try:
+            open_dir = self.repo_root / "reports" / "open"
+            open_dir.mkdir(parents=True, exist_ok=True)
+            today = dt.date.today().isoformat()
+            stem = f"{today}-{agent}-{_slugify(claim)}"
+            dest = _unique_path(open_dir, stem)
+            dest.write_text(
+                f"# {claim}\n"
+                f"- page: {page}\n"
+                f"- observed: {observed}\n"
+                f"- expected-per-wiki: {expected}\n"
+                f"- evidence: {evidence}\n",
+                encoding="utf-8",
+            )
+            rel = str(dest.relative_to(self.repo_root))
+            subprocess.run(
+                ["git", "-C", str(self.repo_root), "add", rel],
+                check=True, capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(self.repo_root), "commit", "-m", f"report({agent}): {claim}", "--", rel],
+                check=True, capture_output=True, text=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            self._report_breaker.record_failure(key)
+            return None
+        self._report_breaker.trip(key)  # dedup gate, not a failure-count trip — see __init__
+        return dest
+
+    def _resolve_page(self, page: str) -> Path | None:
+        """`self.root / f"{page}.md"` or `.mdx` — `None` if neither exists.
+        `page` is expected to be a slug (`WikiPage.slug` shape, e.g.
+        "skills/mining"), the same form `search()` hands back."""
+        for suffix in (".md", ".mdx"):
+            candidate = self.root / f"{page}{suffix}"
+            if candidate.is_file():
+                return candidate
+        return None
 
     # -- indexing -----------------------------------------------------------
 
@@ -306,17 +417,13 @@ class Wiki:
 
     @staticmethod
     def _weighted_terms(title: str, description: str, body: str) -> Counter[str]:
-        counts: Counter[str] = Counter()
-        for tok in _terms(title):
-            counts[tok] += _WEIGHT_TITLE
-        for tok in _terms(description):
-            counts[tok] += _WEIGHT_DESCRIPTION
-        for heading in _HEADING_RE.findall(body):
-            for tok in _terms(heading):
-                counts[tok] += _WEIGHT_HEADING
-        for tok in _terms(body):
-            counts[tok] += _WEIGHT_BODY
-        return counts
+        headings = " ".join(_HEADING_RE.findall(body))
+        return weighted_terms(
+            (title, _WEIGHT_TITLE),
+            (description, _WEIGHT_DESCRIPTION),
+            (headings, _WEIGHT_HEADING),
+            (body, _WEIGHT_BODY),
+        )
 
     def _rank(self, query: str) -> list[WikiPage]:
         pages, terms = self._ensure_index()
@@ -325,11 +432,9 @@ class Wiki:
             return []
         scored: list[tuple[int, str, WikiPage]] = []
         for page, counts in zip(pages, terms):
-            score = sum(counts.get(t, 0) for t in query_terms)
+            score = score_terms(query_terms, counts)
             if not score:
                 continue
-            if all(counts.get(t, 0) > 0 for t in query_terms):
-                score += _ALL_TERMS_BONUS * len(query_terms)
             scored.append((-score, page.slug, page))  # stable, deterministic order
         scored.sort(key=lambda s: (s[0], s[1]))
         return [p for _, _, p in scored]

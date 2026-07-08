@@ -37,12 +37,16 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-274 tests green, ruff clean; the full village, smelting, reflection,
+321 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
-loop, A* navigate differential proof, and (Phase 4 item 2) role-tiered
-cognition cost routing are all live-verified against ServUO on :2594.
+loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
+cost routing, and (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
++ filing circuit breaker, LLM-judged, code-validated) are all live-verified
+against ServUO on :2594 (the wiki write loop specifically against a
+disposable, remote-less clone of `../uowiki`, never the real repo).
 See [`PHASE2.md`](PHASE2.md) for the Phase 2 close-out status and
-[`PHASE3.md`](PHASE3.md) for the Phase 3 breakdown.
+[`PHASE3.md`](PHASE3.md)/[`PHASE4.md`](PHASE4.md) for the Phase 3/4
+breakdowns.
 
 ---
 
@@ -63,7 +67,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate — all four items live-verified); Phase 4 item 2 (cognition cost tiering) live-verified; 274 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate — all four items live-verified); Phase 4 items 1 (wiki write loop) and 2 (cognition cost tiering) live-verified; 321 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -389,12 +393,13 @@ The original analysis, kept as the decision record:
   natural follow-up, explicitly out of this item's scope.
 - **Phase 4 — The learning stack** *(work breakdown written — see
   [`PHASE4.md`](PHASE4.md) for the itemized status)*: five independently-landable,
-  no-op-by-default items, all ⏳ — the wiki write loop (`Wiki.file_report()` +
-  a ported circuit breaker), cognition cost tiering + prompt caching, a
-  skill-library registry with a persisted outcome ledger, a discrete-grid
-  bandit tuning `MineSmeltDeliver.deliver_threshold`, and an automatic
-  curriculum of hand-written, Observation-derived milestones. No item is
-  expected to touch the Observation/Action contract.
+  no-op-by-default items — the wiki write loop (`Wiki.file_report()` + a
+  ported circuit breaker, ✅ live-verified) and cognition cost tiering +
+  prompt caching (✅ live-verified) are done; a skill-library registry with a
+  persisted outcome ledger, a discrete-grid bandit tuning
+  `MineSmeltDeliver.deliver_threshold`, and an automatic curriculum of
+  hand-written, Observation-derived milestones remain ⏳. No item is expected
+  to touch the Observation/Action contract.
 - **Phase 5 — Eval harness + evolution + society scale-out:** reuse the Foundry GM
   kernel for repeatable episodes + independent fitness; MAP-Elites over agent variants;
   scale the village toward persistent lives, with the uotavern forum as the village's

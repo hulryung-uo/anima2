@@ -76,7 +76,7 @@ Status legend: ✅ done · 🚧 in progress · ⏳ todo
 
 ---
 
-## Item 1 — Wiki write loop: `Wiki.file_report()` + filing circuit breaker ⏳
+## Item 1 — Wiki write loop: `Wiki.file_report()` + filing circuit breaker ✅
 
 **Close DESIGN.md §6 item 1's write half** (the read half — `wiki.py::Wiki.
 search()`/`excerpt()` — has been live-verified since PHASE2.md B1). An
@@ -253,13 +253,243 @@ repo.
   course — and zero filesystem writes under `reports/open/` — proving the
   opt-out path really is inert, not just "untested."
 
+### Done — what landed
+
+- **Extraction regression fixed first, per this item's own instruction.** A
+  prior implementer's partial work (`_textindex.py`/`circuit_breaker.py`
+  extracted, `wiki.py` half-migrated) died to an API error leaving `wiki.py`
+  broken: it imported `_stem`/`_terms`/`_WORD_RE`/`_STOPWORDS` from
+  `_textindex.py` **and** kept its own now-duplicate local copies of the same
+  four names, which — being defined later in the file — silently shadowed the
+  import. The actual crash, though, was one level deeper: the pre-extraction
+  `from collections import Counter` import had been dropped (no longer needed
+  for the duplicated `_terms`/`_stem`, but still needed for `_weighted_terms`'s
+  `counts: Counter[str] = Counter()` constructor call), so every single page's
+  indexing raised `NameError: name 'Counter' is not defined` inside
+  `_build_index`'s broad per-page `except Exception: continue` — silently
+  skipping every page and leaving the index permanently empty, so
+  `Wiki.search()` returned `[]` for anything (9 failing tests, exactly as the
+  handoff note described). Fixed by making `_textindex.py` the single source
+  of truth (deleted the shadowing local `_stem`/`_terms`/`_WORD_RE`/
+  `_STOPWORDS`/`_SUFFIXES`, kept `_stem`/`_terms`/`_WORD_RE`/`_STOPWORDS`
+  imported and re-exported from `wiki.py` — `test_wiki.py` and other modules
+  import them from there, not `_textindex` directly), routing
+  `Wiki._weighted_terms`/`Wiki._rank` entirely through `_textindex.py`'s
+  `weighted_terms`/`score_terms`, and restoring the `Counter` import (now used
+  only for type annotations, since scoring itself lives in `_textindex.py`).
+  Verified byte-identical scoring behavior against `git show 3900266:anima2/
+  wiki.py` (the pre-extraction reference) — all 26 `test_wiki.py` tests (later
+  37) passed unchanged.
+- **`anima2/wiki.py` gains `Wiki.file_report(agent, page, claim, observed,
+  expected, evidence, *, force=False) -> Path | None`** — the exact 5-line
+  template, `unique_path`'s `-2`/`-3` collision suffix, `git add` + `git
+  commit` via `subprocess.run` (**never** `git push`), refusing (`None`)
+  without `force=True` when `page` doesn't resolve under `self.root`. A new,
+  independent `repo_root` knob (`repo_root=`/`ANIMA2_WIKI_REPO_ROOT`,
+  `_default_repo_root()` falling back to `self.root.parents[2]` guarded by a
+  `len(parents) > 2` check — degrades to `root` itself instead of raising
+  `IndexError` on a short/relative root) — `ANIMA2_WIKI_ROOT` still governs
+  reads, untouched.
+- **`anima2/circuit_breaker.py`** — verified against `../anima/anima/
+  planner/circuit_breaker.py` (near-verbatim port, already landed by the
+  prior implementer) and wired into `Wiki._report_breaker`, keyed on `(page,
+  claim_fingerprint)` (`_claim_fingerprint`: a SHA-256 of the
+  whitespace/case-normalized claim text). **Repurposed as a dedup/cooldown
+  gate, not the usual reliability breaker**: `file_report` calls
+  `_report_breaker.trip(key)` on a *successful* filing (immediately opening
+  it for `report_cooldown_s`), not `record_success` (which would clear the
+  counter and defeat the dedup entirely) — `record_failure` is reserved for
+  genuine git/filesystem errors. See "Key decisions" below for why the spec's
+  "record_success/record_failure bracket every attempt" line doesn't apply
+  literally here.
+- **`anima2/cognition.py`** gains `ReportDraft` (`page`, `claim`, `observed`,
+  `expected`, `evidence`), the `WikiReportProducer` Protocol,
+  `NullWikiReportProducer` (always `None`), and `LLMWikiReportProducer` — the
+  LLM is asked only `{"contradiction", "claim", "observed", "expected"}`;
+  `ReportDraft.page` is always the wiki search hit's own `slug`, filled in by
+  code (`_top_skill_name` → `wiki.search(..., k=1)`, the same derivation
+  `LLMReflection._wiki_line` already uses) — the model's JSON reply is never
+  even read for a `page` key. `wiki=None` or no search hit short-circuits
+  before any `LLMClient.complete` call.
+- **`ReflectingCognition.__init__(..., wiki_reporter=None)`**, consulted from
+  `_reflect_bg` right after `self.reflection.reflect(...)` returns: `wiki =
+  getattr(self.reflection, "wiki", None)` (reusing `LLMReflection`'s own
+  `.wiki`, not a new constructor arg — see "Key decisions"), then
+  `wiki_reporter.maybe_file_report(window, persona, wiki)`, and if a
+  `ReportDraft` comes back, `wiki.file_report(persona.name, draft.page, ...)`.
+  `wiki_reporter=None` never reaches this branch — byte-for-byte no-op,
+  proven by `test_reflecting_cognition_wiki_reporter_none_is_byte_for_byte_
+  noop` (offline) and the live differential-inertness leg below.
+- **`anima2/live_wiki_report.py`** (new) — mirrors `live_reflect.py`'s
+  wiring, adding a `_CyclingJudgeClient` (forces the circuit-breaker's
+  multi-cycle proof deterministically) and running entirely against a
+  disposable, remote-less clone (`_assert_no_remote`, checked before any
+  filesystem write).
+
+### Key decisions confirmed or changed from the spec
+
+- **The breaker's success path uses `trip()`, not `record_success()`.** The
+  spec's "`record_success`/`record_failure` bracket every attempt" describes
+  `circuit_breaker.py`'s own generic usage docstring (a *reliability*
+  breaker: keep attempting until N failures, then cool down) — but a filing
+  dedup gate needs the *opposite* polarity: a successful filing is exactly
+  the event that should suppress the next identical one. Calling
+  `record_success` on a hit would clear the counter and never suppress
+  anything. `trip(key)` (skip the counter, open immediately) on success is
+  the correct primitive already in `circuit_breaker.py` for this — proven
+  live (cycles 1-3 → 1 commit) and offline (`test_file_report_circuit_
+  breaker_suppresses_repeat_claim_one_commit_not_two`).
+- **`ReportDraft.evidence` is also code-generated, not LLM-sourced** — the
+  spec's JSON ask lists only `contradiction`/`claim`/`observed`/`expected`;
+  `evidence` (`"<persona>, reflecting on ticks X-Y"`) is synthesized in code,
+  extending the "the one field that could do real damage is never sourced
+  from the model" principle to a second field, for free, since the model was
+  never asked for it in the first place.
+- **No new `wiki=` constructor arg on `ReflectingCognition`.** `_reflect_bg`
+  reads `getattr(self.reflection, "wiki", None)` — reusing `LLMReflection`'s
+  existing `.wiki` attribute rather than adding redundant plumbing. This is
+  what "reuses `LLMReflection`'s own already-computed wiki search hit" means
+  in practice: the same `Wiki` instance (and its memoized search cache), not
+  a literal object hand-off between two separately-constructed producers.
+- **Test file split, not the spec's literal single file.** The spec named
+  `tests/test_cognition.py` for everything; landed as `test_cognition.py`
+  (the standalone `LLMWikiReportProducer` unit tests — 7 new) +
+  `tests/test_reflection.py` (the `ReflectingCognition(..., wiki_reporter=
+  ...)` wiring/negative-control tests — 5 new), matching where every other
+  `ReflectingCognition` test in this repo already lives, rather than the
+  letter of the spec's file name.
+- **`live_wiki_report.py` scripts *both* LLM-shaped roles**, not just the
+  wiki judge the spec called out — a `_ScriptedGoalClient` for goal-cognition
+  too, so the differential-inertness leg's trace comparison (`wiki_reporter`
+  on vs off) is meaningful rather than lost in live-LLM/RNG variance: both
+  legs decide the identical `goal=None` every reconsider (the canned reply
+  always says `"goal": "idle"`), so any divergence really would indicate
+  `wiki_reporter` leaking into the goal path — a stronger, reproducible
+  version of the spec's own "forced ... LLM answer" idea.
+
+### Bug found live: `cognition_interval=1` starves `Mine` entirely
+
+The live gate's first run (`--ticks 700`, default `--cognition-interval 1`
+inherited from an early draft of this script) showed `episodes` growing
+**1:1 with ticks** and `reward` stuck at `0.0` — every recorded episode was
+`speak_pending → success (+0.0)`, never a single `mine` episode. Root cause:
+with `cognition_interval=1`, `ThreadedCognition` re-triggers a background
+`reconsider()` pass essentially every tick, and the scripted goal client
+resolves instantly (no real network latency) — so `ctx.memory["pending_say"]`
+gets refilled on almost every tick. `SpeakPending` sits first in the planner
+(`Planner([SpeakPending(), GoTo(), Mine()])`, the same order `live_reflect.py`
+uses) and drains it as soon as it's non-empty, so it pre-empted `Mine`
+essentially every single tick — the miner never got a real turn to swing.
+Fixed by raising the default `--cognition-interval` to `12` (matching
+`live_reflect.py`'s own tuned default), which gives `Mine` ~11 ticks between
+each chatter interruption — the rerun immediately showed real mining
+episodes (`reward=2.2` over 97 episodes, 57 judge calls) alongside the
+circuit-breaker proof. Not a bug in any item-1 code path itself (`wiki.py`/
+`cognition.py`), but a live-script tuning mistake this run caught before it
+could produce a misleadingly reward-free "proof."
+
+### Offline tests
+
+`tests/test_wiki.py` (extended, 26 → 37): the exact 5-line template, one
+commit whose diff touches only the new file (`git show --stat`), collision
+suffix on a stem clash (a pre-existing *different* report, not a breaker
+case), refuses without `force` / files with it, circuit breaker (repeat
+claim → 1 commit, different claim → 2nd commit, expired cooldown re-opens),
+`ANIMA2_WIKI_REPO_ROOT` independently redirecting writes while
+`ANIMA2_WIKI_ROOT` still governs reads, `_default_repo_root`'s
+short/relative-path guard, and a whole-module `subprocess.run` argv spy
+(`_spy_subprocess_run`, autouse) whose accumulated argv list the LAST test in
+the file (`test_file_report_never_pushes_across_this_whole_test_file`)
+asserts never contains `"push"` — safety property 1.
+
+`tests/test_cognition.py` (extended, 9 → 16): `LLMWikiReportProducer` —
+well-formed JSON with contradiction → `ReportDraft`, proven by rigging the
+stub to also claim a *different, nonexistent* `"page"` in the same JSON reply
+and asserting `ReportDraft.page` still equals the wiki search hit's slug —
+safety property 2; `contradiction: false` / malformed JSON / missing fields →
+`None`; `wiki=None` and "no search hit" cases → `None` **and zero
+`LLMClient.complete` calls** (cost discipline); `NullWikiReportProducer`
+always `None`.
+
+`tests/test_reflection.py` (extended, 17 → 22): `wiki_reporter=None` never
+touches `Wiki.file_report` (a monkeypatched spy proves zero calls) and
+reflection itself still runs unaffected; the opt-in path end-to-end (a
+wiki-grounded reflection + a judge saying "yes" → exactly one committed
+report, `- page:` matching the search hit); the **negative control** — a
+judge that always answers `contradiction: false` across a **multi-tick
+loop** (5 reflection cycles, not a single call) → zero reports; the
+no-wiki-configured case (`LLMReflection` built without `wiki=`) → zero
+`LLMClient.complete` calls on the judge.
+
+`tests/test_circuit_breaker.py` (already landed, verified unchanged, 24
+tests): failure-threshold open/half-open/closed transitions, `prune_expired`
+bounding memory, `snapshot()`/`open_targets()` purity.
+
+**321 tests green (up from 274), `ruff check .` clean**, 3x-repeated stable.
+
+### Live verification gate
+
+Ran against a disposable clone (`git clone --no-hardlinks ../uowiki
+/tmp/.../uowiki-test && git -C .../uowiki-test remote remove origin`),
+verified remote-less and non-real before any write. Both legs staged the
+same `animatest` miner (Mining 35, Minoc ridge, via `GmControl.setup_miner`)
+and used fully **scripted** (not live-network) clients for reproducibility —
+see "Key decisions" above.
+
+- **Safety refusals proven first, against the REAL `../uowiki`:**
+  `live_wiki_report.py --wiki-repo-root ../uowiki` refused outright
+  (`_assert_no_remote` printed the real `origin` remote and exited before any
+  filesystem write); a non-git directory was refused too. `git -C ../uowiki
+  status` confirmed clean immediately after — the refusal path never touches
+  the filesystem at all.
+- **Multi-cycle, non-vacuous circuit-breaker proof (on-leg, `--ticks 900`):**
+  cycles 1-3 (identical claim, `CLAIM_A`) → **exactly 1 commit**; cycles 4
+  **through 57** (a different, identical-to-itself claim, `CLAIM_B`) → **one
+  more commit and no more** — a far stronger, longer-running version of the
+  spec's "cycle 4 → 2nd commit" ask, since the breaker held steady across 54
+  repeat calls of `CLAIM_B`, not just one. Decisive transcript lines:
+  ```
+  done. episodes=97 reward=2.2 goal_calls=75 judge_calls=57
+  filed reports under .../uowiki-test/reports/open: 2 total, 2 NEW this run
+  disposable clone commits (git log --oneline | wc -l): 198
+    9834f6a report(Grimm): smelting always requires a forge within 2 tiles of the miner
+    58d4569 report(Grimm): mining yields exactly 3 ore per successful swing
+  ```
+  `git -C uowiki-test log --oneline cb02d17..HEAD` (the clone point) showed
+  **exactly** those 2 commits — nothing else — confirmed independently of the
+  script's own printout.
+- **Provenance-aware, independently verified:** both reports' `- page:` line
+  read back from the committed file and compared against a *fresh*
+  `wiki.search("mine miner", k=1)` call (not against what the judge said,
+  which was never even read for `page`): `filed-page='skills/mining'
+  independent-search='skills/mining' [OK]` for both.
+- **Differential-inertness leg (off-leg, `--ticks 400`, same clone, same
+  scripted clients):** `judge_calls=0` throughout; `filed reports ...: 2
+  total, 0 NEW this run`; the disposable clone's commit count stayed at
+  exactly 198 (unchanged) after this leg — confirmed independently via `git
+  log --oneline | wc -l`, not just the script's own printout. Both legs'
+  `goal_calls` cadence tracked `cognition_interval=12` (75/900 ≈ 34/400 ticks
+  ≈ 1 per 12 ticks) and `agent.goal` was `None` at every tick in both (the
+  scripted client's canned `"goal": "idle"` reply never varies) — the
+  wiki-write machinery genuinely never reaches the goal-cognition path.
+- **Real `../uowiki` verified clean at the end**, same `HEAD` (`cb02d17`) as
+  before this item's entire live gate:
+  ```
+  $ git -C ../uowiki status
+  On branch main
+  Your branch is up to date with 'origin/main'.
+  nothing to commit, working tree clean
+  ```
+
 ### References
 
 `anima2/wiki.py`, `anima2/cognition.py` (`ReflectingCognition`,
-`LLMReflection`, `_wiki_line_for`), `../anima/tools/wiki_report.py`,
-`../anima/anima/planner/circuit_breaker.py`, `../anima/anima/planner/
-strategy.py::StrategySelector._is_strategy_viable`, `../uowiki/tools/
-mcp_server.py::file_report`, `../uowiki/CLAUDE.md` ("Discrepancy reports").
+`LLMReflection`, `_wiki_line_for`), `anima2/circuit_breaker.py`,
+`anima2/_textindex.py`, `anima2/live_wiki_report.py`, `../anima/tools/
+wiki_report.py`, `../anima/anima/planner/circuit_breaker.py`, `../anima/
+anima/planner/strategy.py::StrategySelector._is_strategy_viable`,
+`../uowiki/tools/mcp_server.py::file_report`, `../uowiki/CLAUDE.md`
+("Discrepancy reports").
 
 ---
 
