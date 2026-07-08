@@ -232,6 +232,18 @@ class Hunt(Combat):
             or ctx.memory.get("hunt_phase") == "loot"
         )
 
+    def diagnose(self, ctx: SkillContext) -> str | None:
+        """`None` iff `can_run`; else which of `can_run`'s own conditions
+        failed (a pacifist persona, vs. genuinely nothing to fight or loot —
+        e.g. an empty `hunt_queue` with no hostile in range) — a more useful
+        distinction than the ABC default's generic fallback for item 5's
+        eligibility reasoning."""
+        if ctx.persona.combat_disposition == "pacifist":
+            return "pacifist — will not engage"
+        if self.can_run(ctx):
+            return None
+        return "no hostile creatures nearby to engage, and nothing queued to loot"
+
     def step(self, ctx: SkillContext) -> SkillResult:
         obs = ctx.obs
         tick = ctx.memory["hunt_tick"] = ctx.memory.get("hunt_tick", 0) + 1

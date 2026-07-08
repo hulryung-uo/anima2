@@ -198,6 +198,23 @@ class MineSmeltDeliver(MineAndSmelt):
     #: up (mirrors `GoTo.stall_limit` — the greedy mover has no A*).
     stall_limit: int = 6
 
+    def diagnose(self, ctx: SkillContext) -> str | None:
+        """`None` iff `can_run` (inherited from `Harvest`: a pickaxe or a
+        visible backpack) — else that reason; plus a second, richer
+        diagnostic *on top of* `can_run` (mirrors `Blacksmith.diagnose`'s own
+        reasoning for why this layers on rather than narrows `can_run`
+        itself): a delivery leg that gave up mid-haul (`deliver_giveup_
+        ingots`, set by `_walk_toward` on a wedge — see `step()`) still has a
+        full pack of ingots it couldn't drop off, which is worth surfacing
+        even though the skill remains technically runnable (it just resumes
+        mining).
+        """
+        if not self.can_run(ctx):
+            return "no pickaxe and no backpack visible — cannot mine"
+        if ctx.memory.get("smithy_drop") is not None and ctx.memory.get("deliver_giveup_ingots") is not None:
+            return "delivery route blocked — gave up hauling ingots to the smithy last attempt"
+        return None
+
     def step(self, ctx: SkillContext) -> SkillResult:
         smithy = ctx.memory.get("smithy_drop")
         if smithy is None:

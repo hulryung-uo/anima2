@@ -18,6 +18,7 @@ from .memory import Episode, EpisodicMemory
 from .persona import Persona
 from .planner import Planner
 from .reflexes import Reflexes
+from .skill_library import SkillLibrary
 from .skills.base import Goal, SkillContext, Status
 
 
@@ -48,6 +49,8 @@ class Agent:
         goal: Goal | None = None,
         cognition_interval: int = 20,
         episodes_window: int = 20,
+        skill_library: SkillLibrary | None = None,
+        profession: str = "",
     ) -> None:
         self.body = body
         self.persona = persona
@@ -56,6 +59,19 @@ class Agent:
         self.cognition = cognition or NullCognition()
         self.goal = goal
         self.cognition_interval = cognition_interval
+        #: Optional collaborator (PHASE4.md item 3, `skill_library.py`) — `None`
+        #: (the default) makes `tick()`'s outcome-ledger call below a byte-for-
+        #: byte no-op, so every existing caller is unaffected (see
+        #: `test_agent_skill_library_none_is_byte_for_byte_noop`).
+        self.skill_library = skill_library
+        #: The profession key (`profession.py::Profession.key`, e.g. "hunter",
+        #: "miner") this agent is playing — `Agent` itself has no other notion
+        #: of "job" today (`Persona` carries identity/voice, not a profession
+        #: string). Only consulted by the `skill_library` ledger call below, as
+        #: half of its `(skill_name, profession)` key — the same pairing
+        #: `SkillLibrary.stats()` looks up by. Defaults to `""` (an explicit,
+        #: harmless "unset" key) so passing `skill_library=` alone still works.
+        self.profession = profession
         #: How many recent episodes `SkillContext.episodes` carries each tick. This
         #: is the ceiling every cognition layer sees — notably `ReflectingCognition`,
         #: whose own `episode_window` can never look further back than this (it
@@ -110,6 +126,12 @@ class Agent:
                     pos=(obs.player.pos.x, obs.player.pos.y),
                 )
             )
+            # PHASE4.md item 3: the exact same filter as the episodic record
+            # above (not a separate, looser one) — a skill_library=None agent
+            # never reaches this branch at all, and one wired in only ever
+            # ledgers what episodic memory itself would have kept.
+            if self.skill_library is not None:
+                self.skill_library.record_outcome(skill.name, self.profession, result.reward, result.status)
 
         # A goal-serving skill (e.g. GoTo) that reached a terminal state — arrived
         # (SUCCESS) or got wedged (FAILURE) — has consumed the goal: clear it so the

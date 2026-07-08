@@ -74,6 +74,23 @@ class Skill(ABC):
         """Whether this skill is applicable right now. Default: always."""
         return True
 
+    def diagnose(self, ctx: SkillContext) -> str | None:
+        """A short, one-line reason this skill can't run right now, or `None`
+        when it can (`can_run(ctx)` is `True`). Feeds item 5's curriculum
+        eligibility reasoning without an LLM guessing why a skill is idle
+        (PHASE4.md item 3) — mines the *idea* from v1's `../anima/anima/
+        skills/base.py` `can_execute`/`diagnose` precondition pattern, not
+        its async plumbing.
+
+        Default: a generic fallback whenever `can_run` is `False` — every
+        un-overridden skill gets this for free. `Blacksmith`/`Hunt`/
+        `MineSmeltDeliver` override with a more specific one-liner drawn from
+        their own preconditions (see each class's own `diagnose`).
+        """
+        if self.can_run(ctx):
+            return None
+        return f"{self.name}: preconditions not met"
+
     @abstractmethod
     def step(self, ctx: SkillContext) -> SkillResult:
         """Produce the next action toward this skill's objective."""

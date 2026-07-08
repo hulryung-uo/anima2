@@ -1,10 +1,13 @@
 """The fast loop must make a persona perceive → decide → act against a Body."""
 
+import json
+
 from anima2.agent import Agent, NullCognition
 from anima2.contract import Position
 from anima2.mock_body import MockBody
 from anima2.persona import Persona
 from anima2.planner import Planner
+from anima2.skill_library import SkillLibrary
 from anima2.skills import GoTo, Wander
 from anima2.skills.base import Goal
 
@@ -135,3 +138,72 @@ def test_say_is_recorded():
     # And it shows up in the next observation's journal.
     obs = body.observe()
     assert any(j.text == "hail" for j in obs.new_journal)
+
+
+# --- skill_library=None optional collaborator (PHASE4.md item 3) ---------------
+
+
+def _goto_scenario(**agent_kwargs) -> tuple[list[tuple[int, int]], list[str], float]:
+    body = MockBody()
+    body.player.pos = Position(100, 100, 0)
+    target = Position(105, 103, 0)
+    agent = Agent(body=body, persona=Persona(name="Test"), planner=Planner([GoTo(), Wander()]),
+                 cognition=NullCognition(), goal=Goal(kind="goto", params={"target": target}),
+                 cognition_interval=1, **agent_kwargs)
+    positions = []
+    for _ in range(40):
+        agent.tick()
+        positions.append((body.player.pos.x, body.player.pos.y))
+    return positions, [e.summary for e in agent.episodes.recent(1000)], agent.episodes.total_reward()
+
+
+def test_agent_skill_library_none_is_byte_for_byte_noop():
+    """`Agent(skill_library=None)` — the default — must behave identically to
+    every existing call site that doesn't pass `skill_library` at all: same
+    trajectory, same episodic record. Proves the new guarded ledger call in
+    `tick()` never fires unless a real `SkillLibrary` is wired in."""
+    omitted = _goto_scenario()
+    explicit_none = _goto_scenario(skill_library=None)
+    assert omitted == explicit_none
+
+
+def test_agent_skill_library_negative_control_idle_writes_zero_ledger_lines(tmp_path):
+    """A `Wander`-only agent (always `Status.RUNNING`, `reward=0.0` — the
+    exact case the episodic-recording filter already excludes) must write
+    **zero** ledger lines across many ticks, proving the hook doesn't
+    over-record — not just that the happy path writes correctly."""
+    ledger = tmp_path / "skill_ledger.jsonl"
+    lib = SkillLibrary(ledger_path=ledger)
+    body = MockBody()
+    body.player.pos = Position(100, 100, 0)
+    agent = Agent(body=body, persona=Persona(name="Idle"), planner=Planner([Wander()]),
+                 cognition=NullCognition(), cognition_interval=1,
+                 skill_library=lib, profession="townsfolk")
+    for _ in range(50):
+        agent.tick()
+    assert agent.episodes.total_recorded == 0  # sanity: the filter really excluded every tick
+    assert not ledger.exists()
+
+
+def test_agent_skill_library_records_rewarded_outcomes_matching_episodic_memory(tmp_path):
+    """The positive-path counterpart: a rewarded/terminal skill result is
+    ledgered exactly once per episodic record — same filter, same count."""
+    ledger = tmp_path / "skill_ledger.jsonl"
+    lib = SkillLibrary(ledger_path=ledger)
+    body = MockBody()
+    body.player.pos = Position(100, 100, 0)
+    target = Position(105, 103, 0)  # matches test_goto_reaches_target_in_open_terrain's own budget
+    agent = Agent(body=body, persona=Persona(name="T"), planner=Planner([GoTo(), Wander()]),
+                 cognition=NullCognition(), goal=Goal(kind="goto", params={"target": target}),
+                 cognition_interval=1, skill_library=lib, profession="townsfolk")
+    # No early break: GoTo only returns Status.SUCCESS (the terminal, rewarded
+    # result this test is after) on the tick *after* the position already
+    # matches the target (see GoTo.step's own `here == target` check) — one
+    # extra tick beyond "arrived" is needed for that to actually fire.
+    for _ in range(60):
+        agent.tick()
+    assert agent.episodes.total_recorded > 0
+    lines = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert len(lines) == agent.episodes.total_recorded
+    assert all(line["profession"] == "townsfolk" for line in lines)
+    assert lib.stats("goto", "townsfolk").count == agent.episodes.total_recorded

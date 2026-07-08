@@ -77,6 +77,30 @@ class GmControl:
         self.body.observe()
         return True
 
+    def get_property(self, prop: str, serial: int, *, pumps: int = 6) -> str | None:
+        """Run `[Get <prop>` targeting `serial` and return the resulting
+        self-directed journal text (or `None` if nothing new arrived within
+        `pumps` observations) — the same `[` + `TargetObject` mechanism
+        `command_on` already uses (`stage()`'s own `[Set` commands go through
+        it), except this command's answer is a journal line, not a property
+        write, so the caller reads it back afterward.
+
+        Advisory-only plumbing (PHASE4.md item 3's own measurement-
+        independence caveat: the skill ledger's reward is the agent's own
+        computed value, not an independently GM-verified channel) — the
+        reply's exact format isn't parsed here, just handed back raw for the
+        caller to eyeball/best-effort-parse. Never a hard pass/fail signal.
+        """
+        self.body.act(Say(text=f"[Get {prop}"))
+        if not self._await_cursor():
+            return None
+        self.body.act(TargetObject(serial=serial))
+        for _ in range(pumps):
+            obs = self.body.observe()
+            if obs.new_journal:
+                return " | ".join(j.text for j in obs.new_journal)
+        return None
+
     def command_area(self, command: str, x1: int, y1: int, x2: int, y2: int, z: int) -> bool:
         """Run an area `[` command (e.g. `[WipeNPCs`) — two ground corners."""
         self.body.act(Say(text=command))

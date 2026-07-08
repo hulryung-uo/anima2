@@ -119,6 +119,26 @@ class Blacksmith(Skill):
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None
 
+    def diagnose(self, ctx: SkillContext) -> str | None:
+        """`None` iff `can_run`; else a one-liner explaining *why* — richer
+        than the ABC default's generic fallback. A missing tool is the only
+        thing `can_run` itself gates on (see above — narrowing it further to
+        also cover ingot starvation would stop the planner from ever
+        selecting `Blacksmith` while starved, breaking the live-verified
+        starvation-fetch loop in `step()`/`_fetch_step`, which needs to run
+        *precisely* in that state to go find a dropped pile). So this adds a
+        second, richer diagnostic *on top of* `can_run` rather than folding
+        it in: even when `can_run` is `True` (tool present), a starved smith
+        with nothing in reach to fetch is effectively stuck — worth
+        surfacing to item 5's eligibility reasoning even though the skill
+        remains technically runnable.
+        """
+        if self._tool(ctx) is None:
+            return "no smithing tool (hammer/tongs) in pack"
+        if self._pack_ingots(ctx) < MIN_INGOTS and self._nearby_ground_ingots(ctx) is None:
+            return "starved of ingots, no pile in range"
+        return None
+
     def step(self, ctx: SkillContext) -> SkillResult:
         obs = ctx.obs
 
