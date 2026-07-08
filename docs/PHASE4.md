@@ -951,7 +951,7 @@ pattern).
 
 ---
 
-## Item 4 — Skill parameter tuning: discrete-grid bandit over an existing skill constant ⏳
+## Item 4 — Skill parameter tuning: discrete-grid bandit over an existing skill constant ✅
 
 **Genuinely close DESIGN.md A3's "bandit/Q-learning later" seam** — scoped
 down to the one place today's one-work-skill-per-profession architecture
@@ -1038,11 +1038,210 @@ scenario:
   learner finds it" shape PHASE3.md item 4's greedy-vs-`WalkTo` differential
   already uses.
 
+### Done — what landed
+
+- **`anima2/skill_tuning.py`** (new) — `ParamSpec(name, candidates:
+  tuple[float, ...])` (raises on an empty grid); `ParamTuner` — UCB1 over
+  `spec.candidates` for one `(skill_name, spec.name)` pair, backed by a
+  `dict[value, _Arm(count, total_reward)]` (a small mutable dataclass, the
+  same shape choice `skill_library.py::_Accum` already made for the
+  identical reason). `choose()` forces one pull per candidate before ever
+  exploiting (deterministic order, not random — an offline test asserts the
+  exact sequence), then returns the highest-UCB1-score candidate.
+  `load_from_ledger(path, skill_name, param_name, spec)` reconstructs a
+  tuner's counts/totals by replaying every matching `skill_ledger.jsonl`
+  line through `update()` — reuses `SkillLibrary`'s own `_read_ledger()`
+  (module-private, shared cross-module by this codebase's own established
+  convention — see `_textindex.py`'s identical reuse) rather than
+  reimplementing "skip a corrupted line, tolerate a missing file" a second
+  time. `DELIVER_THRESHOLD_CANDIDATES = (5, 8, 12, 20)` is the real,
+  deployed default grid (`village.py`'s own wiring uses it unchanged); the
+  live gate below narrows it for its own proof only — see "Key decisions
+  changed."
+- **Wiring — `village.py` gains `--tune-deliver-threshold`** (opt-in, unset
+  by default): one shared `ParamTuner`, seeded via `load_from_ledger` at
+  construction time (restart-survives, matching item 3/5's own convention),
+  picks a `deliver_threshold` per miner by locating the `MineSmeltDeliver`
+  instance in that miner's freshly-built `Planner.skills` list
+  (`next(s for s in planner.skills if isinstance(s, MineSmeltDeliver))` —
+  exactly the seam the spec named) and setting the attribute before the
+  agent starts ticking. At session end, records `(chosen, reward)` via
+  `SkillLibrary.record_outcome(..., param="deliver_threshold",
+  param_value=chosen)` — skipping (not poisoning) any miner whose session
+  recorded zero episodes (see "Bug found live" below).
+- **`anima2/live_trade.py`** gains `--tuner --sessions N --tuner-ticks N
+  --candidates "v1,v2,..."` (opt-in; the plain single-run default path is
+  unaffected). The original single-run script body was extracted into
+  `_run_session(...)` (mirrors `live_hunt.py::_run_one_hunter`'s own
+  refactor) so both the control-pair legs and the tuner's repeated sessions
+  reuse one staging + evidence-tracking implementation instead of forking
+  it. `_run_tuner` clears `data/skill_ledger.jsonl` first (disposable, item
+  3's own data), runs `args.sessions` sessions choosing `deliver_threshold`
+  via `ParamTuner.choose()` each time, and ends with a **fresh subprocess**
+  (`_cross_process_readback`, mirroring `live_hunt.py`'s identical pattern)
+  that reconstructs an independent `ParamTuner` from the ledger on disk and
+  prints its own `pulls()` — never trusting the live process's own
+  in-memory tuner as the proof.
+
+### Key decisions changed from the spec (live-caught)
+
+The first live-gate attempt (6 sessions, all four candidates, the metric the
+spec's prose implied) **failed its own non-vacuous bar**: pulls landed
+`{5: 2, 8: 2, 12: 1, 20: 1}` — indistinguishable from a broken/no-op tuner —
+and what little concentration existed pointed at a *different* value than
+the control pair's own winner. Root-caused to three compounding problems,
+each fixed and now covered by this section's live evidence:
+
+1. **`session_mean_reward` (mean reward per recorded episode) is not a
+   stable, comparable-across-candidates objective.** `_run_session`
+   originally stopped the tick loop the instant the trade loop was
+   demonstrated once (great for a standalone demo, since PHASE3.md — see
+   that script's own long-standing default behavior). Under that rule a
+   lower `deliver_threshold` reaches the milestone sooner and gets a
+   *shorter* session; even holding session length fixed, a higher threshold
+   still triggers fewer, larger delivery events, so it accrues episodes at a
+   different rate than a lower one — either way, dividing by episode count
+   isn't dividing by a constant. **Fix:** `_run_session` gained
+   `stop_on_full_loop` (default `True`, preserving the original script's own
+   behavior for a bare demo run); every PHASE4.md item 4 caller — the
+   control-pair legs (`--no-early-stop`) and every `--tuner` session (always)
+   — sets it `False`, so every session runs the identical fixed tick window
+   and the recorded reward is the session's raw `episodes.total_reward()`
+   over that fixed window, not a mean. (`skill_tuning.py::session_mean_reward`
+   itself wasn't removed — kept as a documented diagnostic, its own docstring
+   now explains exactly why it's the wrong choice here.)
+2. **A session with zero recorded episodes is a live wedge, not a "this
+   value is bad" signal.** One control-pair run (see "Bug found live" below)
+   sat at 0 pack ingots — and, on a separate occasion, exactly 0 recorded
+   episodes — for an entire fixed window; recording that as a legitimate
+   `0.0` reward permanently sinks whichever candidate happened to draw it,
+   independent of its real value. **Fix:** `_run_tuner` retries a
+   zero-episode session (fresh account, bounded at 3 attempts) and skips
+   recording anything if every attempt wedges — `village.py`'s wiring gained
+   the identical guard.
+3. **6 sessions across 4 candidates cannot demonstrate concentration.**
+   UCB1's mandatory "pull every candidate once" sweep alone consumes 4 of
+   the 6 sessions, leaving 2 exploitation pulls — structurally incapable of
+   showing a clearly concentrated distribution regardless of whether the
+   tuner works correctly. **Fix (live-gate-only):** `live_trade.py --tuner`
+   gained `--candidates`, narrowing the live gate's own proof to exactly the
+   two values the control pair already compared (`5,20`) with `--sessions 8`
+   (6 exploitation pulls after the 2-candidate sweep) — the spec's own
+   offered alternative to raising `--sessions` against the full 4-candidate
+   grid. `village.py`'s real wiring and the module's exported default
+   (`DELIVER_THRESHOLD_CANDIDATES`) keep the full `(5, 8, 12, 20)` grid the
+   spec named — only this one live-gate invocation narrows it, and the
+   offline bandit-convergence test (`test_bandit_converges_to_the_better_
+   candidate`) still proves 4-candidate convergence, on a clean synthetic
+   signal where none of the three live confounds above apply.
+
+### Bug found live: `Mine`/`Harvest` intermittently freezes under a long,
+uninterrupted mining phase
+
+Diagnosing the failed first live-gate attempt surfaced a real, reproducible
+(if intermittent) issue independent of `deliver_threshold`'s own value:
+across repeated fixed-350-tick, no-early-stop control-pair runs, roughly a
+third of sessions for **both** candidates got permanently stuck mining —
+pack ore/ingots frozen for the rest of the window, sometimes after a normal
+start (one `deliver_threshold=20` run reached 2 ingots by tick 50, then sat
+there for the remaining 300 ticks) and once with **zero** recorded episodes
+across a full 450-tick window (the original team-lead-caught case, a
+`deliver_threshold=12` session that never gained Mining base even once). A
+focused diagnostic (a fresh, short, unfiltered-journal session at the exact
+same calibrated spot, run immediately after two such freezes) mined
+normally end to end (Mining 35.0 → 35.6 in 60 ticks, ordinary "You dig some
+iron ore"/"You loosen some rocks but fail" alternation) — ruling out
+permanent local ore-vein exhaustion from the day's cumulative testing
+pressure as the sole explanation, and a live mobile/item sweep near the
+trade spot at the time found no leftover characters occupying probe tiles
+either. The freeze's exact trigger inside `Harvest.step()`'s cursor-handling
+state machine (`skills/harvest.py`) remains **unconfirmed** — flagged here
+as a genuine open follow-up, not silently worked around. What *is*
+confirmed, from three repeated attempts at the same `deliver_threshold=20`
+control leg (rewards 2.8, 0.0, then a clean 55.9) and one repeat of
+`deliver_threshold=5` (68.7, 0.0, then a clean 49.2): the freeze rate looks
+similar for both candidates, consistent with a rate-independent, sustained-
+session hazard rather than a `deliver_threshold`-specific defect — which is
+exactly why fix 2 above (retry-bounded, never-record-a-poisoning-zero) is
+the correct mitigation at this item's layer, rather than a deeper
+`Harvest`/`Mine` change this item did not set out to make.
+
+### Offline tests
+
+`tests/test_skill_tuning.py` (new, 13 tests, seeded RNG where randomness is
+involved): `choose()`'s deterministic initial sweep (exact candidate order,
+not asserted-random), post-sweep exploitation once one candidate's mean
+clearly leads, the classic bandit-convergence test (a fixed reward gap plus
+Gaussian noise — candidate 8 always pays more — concentrates `pulls()` on it
+after 300 rounds), `total_pulls`/`pulls()` correctly excluding an off-grid
+`update()` value (a stale-ledger replay case) from `choose()`'s own
+exploration term, `load_from_ledger` reconstructing identical counts/totals
+from a hand-written fixture JSONL as an equivalent direct `update()`
+sequence (ignoring a plain item-3 per-tick record, a different skill, and a
+different param name in the same file), a missing/empty ledger initializing
+every candidate at zero pulls without crashing, a corrupted trailing ledger
+line skipped not fatal, and `session_mean_reward`'s own zero/non-zero cases.
+351 → 364 tests green, `ruff check .` clean, 3x-repeated stable.
+
+### Live verification gate
+
+**Positive/negative control pair** (`live_trade.py --no-early-stop --ticks
+350`, fixed window, three repeats per candidate to average out the freeze
+above — a single sample per candidate proved unreliable, per "Bug found
+live"): fresh accounts and a GM wipe of the trade spot before every run.
+
+```
+deliver_threshold=5:  miner_reward (fixed-window total) = 68.7, 0.0, 49.2   mean = 39.30
+deliver_threshold=20: miner_reward (fixed-window total) =  2.8, 0.0, 55.9   mean = 19.57
+```
+
+`deliver_threshold=5` is the better value on this scenario under this
+metric — the ground truth the tuner needs to find.
+
+**Tuner-driven** (`live_trade.py --tuner --sessions 8 --tuner-ticks 200
+--candidates 5,20`, fixed 200-tick sessions, same wipe-per-session
+discipline, the zero-episode retry guard live 3 times — sessions 3 and 6
+each wedged twice before a third attempt succeeded, sessions never skipped
+outright):
+
+```
+session 1: deliver_threshold= 5  miner_reward=31.40  episodes=30  [recorded]
+session 2: deliver_threshold=20  miner_reward= 7.30  episodes= 4  [recorded]
+session 3: deliver_threshold= 5  miner_reward= 1.10  episodes=11  [recorded, after 2 wedge retries]
+session 4: deliver_threshold= 5  miner_reward=60.70  episodes=27  [recorded]
+session 5: deliver_threshold= 5  miner_reward=17.20  episodes=12  [recorded]
+session 6: deliver_threshold= 5  miner_reward=36.70  episodes=12  [recorded, after 2 wedge retries]
+session 7: deliver_threshold= 5  miner_reward=86.30  episodes=27  [recorded]
+session 8: deliver_threshold= 5  miner_reward=24.50  episodes= 6  [recorded]
+
+tuner in-process pull distribution: {5: 7, 20: 1}   mean rewards: {5: 36.84, 20: 7.30}
+```
+
+**Cross-process ledger readback** (a fresh `python -c` subprocess,
+`ParamTuner.load_from_ledger` reading `data/skill_ledger.jsonl` from disk,
+never the live process's own in-memory tuner):
+
+```
+{'pulls': {'5': 7, '20': 1}, 'mean_rewards': {'5': 36.84, '20': 7.30}, 'total_pulls': 8}
+cross-process pull distribution concentrates on deliver_threshold=5 (7/8 pulls)
+```
+
+The tuner concentrates 7 of 8 pulls on `deliver_threshold=5` — the exact
+value the independently-run control pair established as better on the same
+fixed-window total-reward metric, confirmed by a process that never touched
+the live run's own memory. Not a flat/uniform split (which a broken or
+no-op tuner would produce): UCB1's mandatory two-candidate sweep (sessions 1
+and 2) is the only reason `20` was ever pulled at all, and every subsequent
+choice — sessions 3 through 8 — went to `5` once its higher mean reward was
+observed, exactly the exploit behavior a working bandit should show. 364
+tests green, `ruff check .` clean, 3x-repeated stable.
+
 ### References
 
 `anima2/skill_tuning.py`, `anima2/skills/smelt.py` (`MineSmeltDeliver.
-deliver_threshold`), `anima2/live_trade.py`, `anima2/skill_library.py`
-(item 3), DESIGN.md A3.
+deliver_threshold`), `anima2/skills/harvest.py` (`Harvest.step`, the
+intermittent-freeze site), `anima2/live_trade.py`, `anima2/village.py`,
+`anima2/skill_library.py` (item 3), DESIGN.md A3.
 
 ---
 

@@ -34,6 +34,10 @@ from .profession import (
     VENDOR_SPOT,
     Profession,
 )
+from .skill_library import SkillLibrary
+from .skill_tuning import DELIVER_THRESHOLD_CANDIDATES, ParamSpec, ParamTuner
+from .skills import MineSmeltDeliver
+from .skills.base import Status
 from .uomap import find_tree_clusters
 
 # Minoc-area woods (map 1), near the mining camp — keeps the village compact.
@@ -88,7 +92,8 @@ class _CountingClient:
 
 def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 ticks: int = 60, stagger: float = 4.0, forum: bool = False,
-                chatter: bool = False, llm_tiers: str | None = None) -> None:
+                chatter: bool = False, llm_tiers: str | None = None,
+                tune_deliver_threshold: bool = False, ledger_path: str | None = None) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -222,10 +227,28 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         chat_client = ReplicateClient.from_v1_config()
         print("chatter:", "LLM cognition on" if chat_client else "no LLM configured")
 
+    # Phase 4 item 4 — deliver_threshold bandit tuning: one shared ParamTuner
+    # for the whole roster (miners pull from the same candidate grid), seeded
+    # from whatever `data/skill_ledger.jsonl` already has on disk (item 3's
+    # own "read at construction time" convention — a process restart doesn't
+    # throw away prior sessions' pulls). `skill_lib` is only constructed when
+    # the flag is on — zero effect otherwise, matching every other opt-in
+    # collaborator in this file.
+    skill_lib: SkillLibrary | None = None
+    tuner: ParamTuner | None = None
+    if tune_deliver_threshold:
+        skill_lib = SkillLibrary(ledger_path=ledger_path)
+        deliver_spec = ParamSpec("deliver_threshold", DELIVER_THRESHOLD_CANDIDATES)
+        tuner = ParamTuner.load_from_ledger(
+            skill_lib.ledger_path, "mine_smelt_deliver", "deliver_threshold", deliver_spec,
+        )
+        print(f"deliver_threshold tuning: ON — ledger at {skill_lib.ledger_path.resolve()} "
+              f"(seeded pulls: {tuner.pulls()})")
+
     status: dict[int, str] = {}
     lock = threading.Lock()
     threads = []
-    agents: list[tuple[Agent, str]] = []
+    agents: list[tuple[Agent, str, float | None]] = []
     for i, p in enumerate(plan):
         cognition = None
         if tiered_clients is not None:
@@ -238,7 +261,22 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             from .cognition import LLMCognition, ThreadedCognition
 
             cognition = ThreadedCognition(LLMCognition(chat_client, job=p["prof"].key))
-        agent = Agent(body=p["body"], persona=p["persona"], planner=p["prof"].planner(),
+        planner = p["prof"].planner()
+
+        # PHASE4.md item 4: pick a deliver_threshold once per miner, at
+        # construction time (session granularity — held fixed for the whole
+        # session, never re-tuned mid-run). `Profession.planner()` doesn't
+        # hand back the constructed work-skill instance directly, so it's
+        # located after the fact — the exact seam PHASE4.md item 4's own
+        # Scope names.
+        chosen_threshold: float | None = None
+        if tuner is not None and p["prof"].key == "miner":
+            miner_skill = next((s for s in planner.skills if isinstance(s, MineSmeltDeliver)), None)
+            if miner_skill is not None:
+                chosen_threshold = tuner.choose()
+                miner_skill.deliver_threshold = chosen_threshold
+
+        agent = Agent(body=p["body"], persona=p["persona"], planner=planner,
                       cognition=cognition, cognition_interval=12)
         if p["nodes"]:
             agent.memory["harvest_nodes"] = p["nodes"]  # the grove to work, tree by tree
@@ -248,7 +286,9 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             agent.memory["vendor_spot"] = p["vendor_spot"]  # blacksmith's sell route (trade pairing)
         if p["banker_spot"]:
             agent.memory["banker_spot"] = p["banker_spot"]  # blacksmith's bank route (trade pairing)
-        agents.append((agent, p["prof"].key))
+        if chosen_threshold is not None:
+            print(f"  {p['persona'].name}: deliver_threshold={chosen_threshold} (tuner-chosen)")
+        agents.append((agent, p["prof"].key, chosen_threshold))
         t = threading.Thread(target=_run_worker,
                              args=(agent, ticks, i, status, lock, p["prof"].key), daemon=True)
         threads.append(t)
@@ -262,6 +302,44 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     for t in threads:
         t.join()
     print("\nday's work done.")
+
+    # PHASE4.md item 4: at session end, record (value, reward) for every
+    # miner the tuner picked a value for — through the exact same
+    # `SkillLibrary.record_outcome` ledger item 3 already established, tagged
+    # via `param`/`param_value` so `ParamTuner.load_from_ledger` can pick
+    # these lines back out from item 3's own per-tick (param=None) records.
+    #
+    # The recorded reward is the miner's raw `episodes.total_reward()` over
+    # this run's fixed `--ticks` window — NOT `session_mean_reward` (a mean
+    # per recorded episode). Every miner here already runs the same fixed
+    # tick count (`_run_worker` has no early-stop), but a mean-per-episode
+    # still isn't a fair cross-candidate objective: a higher deliver_threshold
+    # triggers fewer, larger delivery events, so it accrues episodes at a
+    # different rate than a lower one, which skews a per-episode mean even
+    # when the session length itself is held fixed — the same live-caught
+    # class of bug `live_trade.py::_run_session`'s own docstring documents in
+    # detail (that live gate is where it was actually caught).
+    #
+    # A miner whose session recorded ZERO episodes is a live wedge (no
+    # confirmed mining/delivery progress at all), not a genuine "this value
+    # is bad" signal — skip recording rather than poison that arm with a
+    # false 0.0 (mirrors `live_trade.py::_run_tuner`'s own guard).
+    if tuner is not None and skill_lib is not None:
+        print(f"\n— deliver_threshold tuning ({skill_lib.ledger_path}) —")
+        for agent, job, chosen in agents:
+            if chosen is None:
+                continue
+            if agent.episodes.total_recorded == 0:
+                print(f"  {agent.persona.name} ({job}): deliver_threshold={chosen} — "
+                      f"0 episodes recorded (live wedge) — SKIPPED, no ledger record")
+                continue
+            reward = agent.episodes.total_reward()
+            tuner.update(chosen, reward)
+            skill_lib.record_outcome("mine_smelt_deliver", "miner", reward, Status.SUCCESS,
+                                     param="deliver_threshold", param_value=chosen)
+            print(f"  {agent.persona.name} ({job}): deliver_threshold={chosen} "
+                  f"reward(fixed-window total)={reward:.3f}")
+        print(f"  cumulative pulls (this process, seeded + this session): {tuner.pulls()}")
 
     if call_counters:
         print(f"\n— llm tiers — (degraded={tiered_clients.degraded}) —")
@@ -279,7 +357,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         else:
             llm = ReplicateClient.from_v1_config()  # in-character prose if available
             print(f"\n— the tavern board —{' (LLM-written)' if llm else ' (heuristic)'}")
-            for agent, job in agents:
+            for agent, job, _chosen_threshold in agents:
                 res = post_day(agent, job=job, client=client, llm=llm)
                 print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
 
@@ -306,12 +384,21 @@ def main() -> None:
     # a role-tiered cognition (chatter + reflection) rather than a single client.
     ap.add_argument("--llm-tiers", choices=["anthropic", "replicate", "stub"], default=None,
                      help="role-tiered LLM cognition (chatter + reflection) via build_tiered_clients")
+    # Opt-in, unset by default (Phase 4 item 4): zero effect on any currently-
+    # passing roster unless passed. Each miner picks a `MineSmeltDeliver.
+    # deliver_threshold` via `ParamTuner.choose()` at construction time and
+    # records the session's outcome back to `data/skill_ledger.jsonl`.
+    ap.add_argument("--tune-deliver-threshold", action="store_true",
+                     help="bandit-tune each miner's deliver_threshold (Phase 4 item 4)")
+    ap.add_argument("--ledger-path", default=None,
+                     help="override data/skill_ledger.jsonl (mainly for isolated test/live runs)")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
               + ["townsfolk"] * args.townsfolk + ["hunter"] * args.hunters)
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
-                forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers)
+                forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers,
+                tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path)
 
 
 if __name__ == "__main__":

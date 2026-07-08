@@ -114,12 +114,42 @@ starve `Mine` entirely — fixed by raising it to `12`, matching
 from a prior, crashed implementation attempt (a dropped `Counter` import
 silently emptied the whole wiki index — every page's `_weighted_terms` call
 raised, swallowed by a broad per-page `except`). 321 tests green (up from
-274), ruff clean. **Next:** Phase 4 item 3 — skill library v0 (registry,
-keyword retrieval over `_textindex.py`, persisted outcome ledger) — see
-[`docs/PHASE4.md`](docs/PHASE4.md) for the full five-item work breakdown
-(learning stack: wiki write loop — done, cognition cost tiering — done,
-skill-library registry + ledger, `deliver_threshold` bandit tuning, automatic
-curriculum).
+274), ruff clean. **Phase 4 item 3 — skill library v0** adds
+`skill_library.py::SkillLibrary`: a static `REGISTRY` covering every
+exported `Skill` subclass, `retrieve()` (natural-language keyword ranking
+over name+description, reusing `_textindex.py`'s scoring), and a persisted,
+cross-process-readable `data/skill_ledger.jsonl` outcome ledger
+(`record_outcome()`/`stats()`) — `Agent` gains an optional `skill_library=`
+collaborator (byte-for-byte no-op when unset) and every `Skill` gains
+`diagnose()` (a one-line reason it can't run right now). **Phase 4 item 4 —
+`deliver_threshold` bandit tuning — is live-verified** (`live_trade.py
+--tuner`): `skill_tuning.py::ParamTuner` is a UCB1 bandit over
+`MineSmeltDeliver.deliver_threshold`'s discrete candidate grid, persisted
+through item 3's own ledger (`param`/`param_value` fields) so a tuner's
+pull counts survive a process restart; `village.py --tune-deliver-threshold`
+picks a value per miner at agent-construction time and records the
+session's outcome. The live gate is a **positive/negative control pair**
+(`--deliver-threshold 5` vs `20` on a fixed, non-early-stopped tick window —
+established `5` as better on this scenario, mean reward 39.3 vs 19.57 across
+three repeats each) followed by an 8-session **tuner-driven** run
+(`--tuner --sessions 8 --candidates 5,20`) whose pull distribution
+concentrated 7-of-8 on `deliver_threshold=5` — the control pair's own
+winner — confirmed by a **fresh subprocess** reading the ledger from disk,
+never the live process's own memory. The gate's first attempt failed
+honestly (a flat `{5:2, 8:2, 12:1, 20:1}` pull distribution pointing away
+from the control pair) — the fix and the live-caught root causes (an
+unstable per-episode-mean reward metric, an unrecorded zero-episode "live
+wedge" poisoning an arm, and too few sessions to let UCB1 concentrate over
+four candidates) are documented in full in PHASE4.md item 4, along with an
+open follow-up bug this diagnosis surfaced: `Harvest`/`Mine` can
+intermittently freeze mid-session (root cause unconfirmed) under a long,
+uninterrupted mining phase, independent of `deliver_threshold`'s value. 364
+tests green (up from 351), ruff clean. **Next:** Phase 4 item 5 — automatic
+curriculum (milestone catalog + cadence-gated picker, the last item in this
+phase's work breakdown) — see [`docs/PHASE4.md`](docs/PHASE4.md) for the
+full five-item work breakdown (learning stack: wiki write loop — done,
+cognition cost tiering — done, skill-library registry + ledger — done,
+`deliver_threshold` bandit tuning — done, automatic curriculum).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
