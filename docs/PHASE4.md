@@ -802,7 +802,7 @@ flagged as a follow-up, unchanged from the original scope.
 
 ---
 
-## Item 3 — Skill library v0: registry, keyword retrieval, persisted outcome ledger ⏳
+## Item 3 — Skill library v0: registry, keyword retrieval, persisted outcome ledger ✅
 
 **A registry-plus-ledger, not a code-generation system.** Wraps the
 existing hand-written `Skill` subclasses — no new executable code is ever
@@ -941,6 +941,22 @@ in the repo), extended with an opt-in `--skill-library` flag (mirrors the
   `GmControl` helper) and logs whether it's the same order of magnitude as
   the ledger's summed reward for that hunter — see the measurement-
   independence caveat above; not a hard gate.
+
+### As landed (live-verified) — commit `d0826e6`
+
+Shipped as specced (`skill_library.py::SkillLibrary` + registry drift-guard,
+`_textindex.py`-backed `retrieve`, `data/skill_ledger.jsonl` with
+`record_outcome`/`stats`, `Agent(skill_library=None)`, `Skill.diagnose`).
+Live-verified via `live_hunt.py --skill-library`: **differential parity** —
+hunter A wired `Hunt()` directly, hunter B built from
+`SkillLibrary.retrieve("hunt weak creatures")` with the class name `Hunt`
+never in B's construction path, `isinstance(retrieved, Hunt)=True`, both
+completing corpse-tied loot cycles; **cross-process readback** — a fresh
+Python process reading `skill_ledger.jsonl` from disk reported `count`
+matching the combined in-process episodic count exactly (4==4). **Advisory
+GM `[Get Gold` readback returned empty** — the `get_property` helper needs
+hardening; advisory-only, did not gate (Phase 5 item 1 hardens it, since the
+independent-fitness channel depends on a working stat readback). 351 tests.
 
 ### References
 

@@ -405,10 +405,16 @@ The original analysis, kept as the decision record:
   `MineSmeltDeliver.deliver_threshold`, and an automatic curriculum of
   hand-written, Observation-derived milestones remain ⏳. No item is expected
   to touch the Observation/Action contract.
-- **Phase 5 — Eval harness + evolution + society scale-out:** reuse the Foundry GM
-  kernel for repeatable episodes + independent fitness; MAP-Elites over agent variants;
-  scale the village toward persistent lives, with the uotavern forum as the village's
-  chronicle.
+- **Phase 5 — Independent measurement + evolution** *(work breakdown written —
+  see [`PHASE5.md`](PHASE5.md); all four items ⏳)*: an **independent fitness
+  oracle** (ground truth the agent's own code can never write — closes A6's
+  "agents can't lie" gap Phase 4 left open), a **repeatable eval harness** on the
+  Control plane (fixed-window, multi-seed, kernel-integrity-guarded), a
+  **MAP-Elites archive** over agent *configs* (no LLM-authored code), and an
+  **evolution loop** that improves the population — reusing v1's human-owned
+  `foundry/kernel/` (signal source swapped from raw-packet parsing to GM-read +
+  observation-tap). Society scale-out (persistent lives, the forum as village
+  chronicle) is split into a Phase 6 note.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane
