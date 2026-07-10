@@ -202,9 +202,15 @@ honest, driven by Mining's real per-swing gain-chance randomness and a
 (b) ordering held decisively (a real miner at 60.98 vs a no-pickaxe agent
 that provably cannot mine at 2.4243, a ~25x gap dwarfing both sides' own
 stdev), both cross-process-verified from a fresh `python -c` reading
-`data/eval_results.jsonl`. 470 tests green, ruff clean. **Next:** Phase 5
-item 3 — the behavior descriptor + MAP-Elites archive (see
-[`docs/PHASE5.md`](docs/PHASE5.md)).
+`data/eval_results.jsonl`. **Phase 5 item 3 — the behavior descriptor +
+MAP-Elites archive — is landed offline** (its live proof folds into item
+4's evolution gate, per the spec): `foundry/descriptor.py` +
+`foundry/archive.py` port v1's cell key and the reliability-discounted
+promotion rule (`mean − λ·pstdev`, the optimizer's-curse guard) verbatim,
+with Genome as four named config fields (never code) and an append-only
+replayed `data/archive.jsonl`. 505 tests green, ruff clean. **Next:**
+Phase 5 item 4 — the evolution loop (see
+[`docs/PHASE5.md`](docs/PHASE5.md)) — the last Phase 5 item.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

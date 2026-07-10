@@ -82,12 +82,12 @@ measurement + evolution) is underway** — see [`docs/PHASE5.md`](docs/PHASE5.md
 item 1 (an independent fitness oracle — a separate GM connection's `[Get`
 reads, so the agent's own self-reported reward can't game it) and item 2
 (a repeatable eval harness — `foundry/eval.py::run_eval`/`run_eval_multi`,
-fixed-window/no-early-stop/multi-seed) are both live-verified. 470 tests
+fixed-window/no-early-stop/multi-seed) are both live-verified. 505 tests
 green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 470 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 505 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):

@@ -484,7 +484,7 @@ multi-seed / no-early-stop lessons this harness bakes in).
 
 ---
 
-## Item 3 — Behavior descriptor + MAP-Elites archive ⏳
+## Item 3 — Behavior descriptor + MAP-Elites archive ✅ (offline; live proof folds into item 4)
 
 **The quality-diversity grid: keep the best agent OF EACH KIND, not just the
 single best.** Ports v1 `../anima/foundry/kernel/descriptor.py` and `archive.py`.
@@ -543,6 +543,31 @@ driving it has nothing live to prove beyond the offline grid mechanics) — the
 live gate is: real evaluated genomes land in sensible cells and the archive's
 per-cell elite is the highest-fitness genome actually seen for that cell,
 cross-checked from a fresh process reading `archive.jsonl`.
+
+### As landed (offline — built in an isolated worktree, adversarially reviewed)
+
+`anima2/foundry/descriptor.py` (compute_descriptor: profession_focus x
+sociability active cell key, aggression/mobility computed-not-keyed, bin
+edges ported verbatim from v1 and locked) and `anima2/foundry/archive.py`
+(`Genome` as four NAMED config fields — profession/sociability/
+deliver_threshold/cognition_tier — making "never code" a schema fact;
+`reliability_score = mean − PROMOTION_LAMBDA·pstdev` ported verbatim with
+the g_00070 provenance; `Archive` promoting strictly on reliability_score;
+persisted as an append-only, corrupt-tolerant `data/archive.jsonl` whose
+grid is rebuilt by REPLAYING every line through the promotion rule — no
+separate grid file to drift). 35 offline tests, including: the optimizer's-
+curse case with hand-verified numbers (mean-40/rel-1.06 lucky genome
+rejected against mean-39/rel-37.37 incumbent); a mutant-killing test that
+distinguishes reliability-vs-reliability from reliability-vs-raw-mean
+promotion (incumbent mean 40/rel 30 vs challenger mean 35/rel 35 —
+displaces under the correct rule, rejected under the mutant); a
+replay-vs-last-line-wins reload test (a rejected genome persisted AFTER the
+elite must not be crowned on reload); and an end-to-end negative control
+(compute_descriptor on an all-zero trajectory derives the NONE cell, and
+Archive.add keeps it away from a real worker elite). Deviations from v1 are
+declared in the module docstrings (named Genome fields; jsonl-replay
+persistence; aggression sourced from the action tap instead of v1's
+packet counter). Review: 9 findings, 0 must-fix; all nits applied.
 
 ### References
 

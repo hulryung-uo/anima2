@@ -40,7 +40,7 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-470 tests green, ruff clean; the full village, smelting, reflection,
+505 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -76,7 +76,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 item 1
-(independent fitness oracle) and item 2 (repeatable eval harness) both live-verified; 470 tests green |
+(independent fitness oracle) and item 2 (repeatable eval harness) both live-verified; 505 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
