@@ -16,6 +16,7 @@ import argparse
 from .agent import Agent
 from .control import GmControl
 from .ipc_body import IpcBody
+from .live_common import RecordingBody
 from .persona import Persona
 from .planner import Planner
 from .skills import Mine
@@ -44,11 +45,19 @@ def main() -> None:
         print(f"agent now at {obs.player.pos}; pickaxes seen={len(tools)}; "
               f"Mining={mining.base if mining else '?'}")
 
+        # Cache each tick's own Observation (live_common.RecordingBody) so
+        # mining_base() below reads it back instead of paying for a second
+        # observe() pump — the same consolidation `live_trade.py`'s original
+        # `_RecordingBody` already established, applied here for the first
+        # time (Phase 5 item 2's consolidation rider).
+        body = RecordingBody(agent_body)
+
         def mining_base() -> float:
-            s = next((s for s in agent_body.observe().skills if s.id == 45), None)
+            obs = body.last_obs if body.last_obs is not None else body.observe()
+            s = next((s for s in obs.skills if s.id == 45), None)
             return s.base if s else 0.0
 
-        agent = Agent(body=agent_body, persona=Persona(name="Grimm"), planner=Planner([Mine()]))
+        agent = Agent(body=body, persona=Persona(name="Grimm"), planner=Planner([Mine()]))
         start_skill = mining_base()
         for t in range(args.ticks):
             agent.tick()

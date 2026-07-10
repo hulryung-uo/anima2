@@ -41,7 +41,6 @@ import argparse
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 from .agent import Agent
@@ -49,6 +48,7 @@ from .cliloc import resolve_entry
 from .contract import Observation
 from .control import GmControl
 from .ipc_body import IpcBody
+from .live_common import RecordingBody, login_throttle, wipe_bounds
 from .persona import Persona
 from .planner import Planner
 from .profession import TRADE_MINE_SPOT, TRADE_SMITH_SPOT
@@ -68,28 +68,6 @@ BLACKSMITHING_SKILL_ID = 7
 #: clear of any other calibrated spot on the map (mirrors `live_hunt.py`'s
 #: own `POCKET_RADIUS`).
 WIPE_RADIUS = 10
-
-
-class _RecordingBody:
-    """Wraps a `Body`, caching the last `Observation` (see `live_smelt.py`) so the
-    driver loop below can inspect it without paying for a second `observe()` pump
-    on top of the one `Agent.tick()` already does — with *two* agents ticking
-    every loop iteration, that doubling matters for wall-clock time."""
-
-    def __init__(self, inner: IpcBody) -> None:
-        self._inner = inner
-        self.last_obs: Observation | None = None
-
-    def observe(self) -> Observation:
-        self.last_obs = self._inner.observe()
-        return self.last_obs
-
-    def act(self, action) -> None:
-        self._inner.act(action)
-
-    @property
-    def connected(self) -> bool:
-        return self._inner.connected
 
 
 def _backpack_serial(obs: Observation) -> int | None:
@@ -161,7 +139,7 @@ def _run_session(
     with IpcBody.spawn(args.host, args.port, miner_account, miner_account, pump_ms=400) as miner_ipc:
         miner_serial = miner_ipc.ready["player"]["serial"]
         print(f"miner: {miner_account} serial={miner_serial}")
-        time.sleep(args.stagger)  # dodge the ServUO login throttle
+        login_throttle(args.stagger)  # dodge the ServUO login throttle
 
         with IpcBody.spawn(args.host, args.port, smith_account, smith_account,
                            pump_ms=400) as smith_ipc:
@@ -177,8 +155,7 @@ def _run_session(
                 # `--tuner`.
                 x1, y1 = min(mx, sx) - WIPE_RADIUS, min(my, sy) - WIPE_RADIUS
                 x2, y2 = max(mx, sx) + WIPE_RADIUS, max(my, sy) + WIPE_RADIUS
-                gm.command_area("[WipeItems", x1, y1, x2, y2, 20)
-                gm.command_area("[WipeNPCs", x1, y1, x2, y2, 20)
+                wipe_bounds(gm, x1, y1, x2, y2)
 
                 mgx, mgy, mgz = gm.stage(miner_serial, mx, my, skills={"Mining": 35},
                                         items=["Pickaxe", "Pickaxe"])
@@ -196,8 +173,8 @@ def _run_session(
                 print(f"GM staged blacksmith at ({sgx},{sgy},{sgz}) + forge/anvil, "
                       f"{args.smith_ingots} starting ingots")
 
-            miner_body = _RecordingBody(miner_ipc)
-            smith_body = _RecordingBody(smith_ipc)
+            miner_body = RecordingBody(miner_ipc)
+            smith_body = RecordingBody(smith_ipc)
 
             # Let the teleports + pack grants + structure spawns settle.
             miner_body.observe()

@@ -211,7 +211,14 @@ def test_tapped_body_infers_confirmed_and_denied_walk_steps():
 def test_tapped_body_credits_only_the_amount_delta_into_pack():
     """Mirrors v1's own pack-credit discipline: crediting every observed
     amount (not just growth) let a pickup/drop bounce mint produce score
-    from one pile — see `trajectory.py`'s `tap_observation`."""
+    from one pile — see `trajectory.py`'s `tap_observation`. The pack
+    already holds `ore1` (amount=5) on the FIRST observation — the tick
+    `tap_observation` identifies the backpack for the first time — so that
+    5 is the window's baseline (see
+    `test_tapped_body_does_not_credit_pre_existing_pack_contents_as_a_gain`
+    for the dedicated regression), never a gain; only the later 5->8 growth
+    (a genuine mid-window pickup) is credited, and the 8->8 bounce credits
+    nothing."""
     bp = ItemView(serial=0x2, graphic=0x15, amount=0, pos=Position(0, 0, 0), container=0x1, layer=0x15, distance=0)
     ore1 = ItemView(serial=0x3, graphic=0x19B7, amount=5, pos=Position(0, 0, 0), container=0x2, layer=0, distance=0)
     ore2 = ItemView(serial=0x3, graphic=0x19B7, amount=8, pos=Position(0, 0, 0), container=0x2, layer=0, distance=0)
@@ -225,7 +232,39 @@ def test_tapped_body_credits_only_the_amount_delta_into_pack():
     tapped.observe()
 
     entries = [(graphic, amount) for graphic, amount, _ts in rec.summary.items_into_pack]
-    assert entries == [(0x19B7, 5), (0x19B7, 3)]
+    assert entries == [(0x19B7, 3)]
+
+
+def test_tapped_body_does_not_credit_pre_existing_pack_contents_as_a_gain():
+    """PHASE5.md item 2's live gate caught this live: every eval variant,
+    including one staged with NO pickaxe at all (so it provably never mines
+    anything), showed an identical, large `produce_term` "floor" — traced to
+    this exact bug. The FIRST observation `tap_observation` ever sees already
+    has 1000 starting gold in the pack (a fresh ServUO character's own
+    starting capital, or anything the Control plane's `stage()` granted
+    before `recorder.start()` — both predate the scored window). That must
+    be the window's zero-point, not a "produced" 1000 gold. A genuinely new
+    item serial appearing on a LATER tick (simulated here as a second ore
+    pile arriving after the baseline tick) still credits its full amount —
+    the fix only special-cases the tick that first identifies the backpack.
+    """
+    bp = ItemView(serial=0x2, graphic=0x15, amount=0, pos=Position(0, 0, 0), container=0x1, layer=0x15, distance=0)
+    gold = ItemView(serial=0x9, graphic=0x0EED, amount=1000, pos=Position(0, 0, 0), container=0x2, layer=0, distance=0)
+    ore_new = ItemView(serial=0x4, graphic=0x19B7, amount=6, pos=Position(0, 0, 0), container=0x2, layer=0, distance=0)
+
+    inner = _FakeInnerBody([
+        _obs(0, 0, items=[bp, gold]),           # baseline tick — 1000 starting gold, not a gain
+        _obs(0, 0, items=[bp, gold]),           # unchanged — still not a gain
+        _obs(0, 0, items=[bp, gold, ore_new]),  # a genuinely NEW item after the baseline — IS a gain
+    ])
+    rec = TrajectoryRecorder(_FakeGm({}), subject_serial=1)
+    tapped = TappedBody(inner, rec)
+    tapped.observe()
+    tapped.observe()
+    tapped.observe()
+
+    entries = [(graphic, amount) for graphic, amount, _ts in rec.summary.items_into_pack]
+    assert entries == [(0x19B7, 6)]  # the starting gold never appears here
 
 
 def test_tapped_body_counts_speech_sent_and_received():

@@ -228,7 +228,7 @@ safety.py` (kernel-integrity intent), DESIGN.md A6/§6.5-6.6.
 
 ---
 
-## Item 2 — Repeatable eval harness ⏳
+## Item 2 — Repeatable eval harness ✅
 
 **One command → one agent variant, one staged scenario, one independent fitness
 number** — the unit of measurement everything above needs. Ports v1
@@ -292,10 +292,192 @@ is exercised by the live gate, not offline (it needs a shard).
   gap surviving the seed averaging. Cross-process readback of
   `eval_results.jsonl` confirms the numbers from a fresh process.
 
+### As landed (live-verified)
+
+`anima2/foundry/eval.py` — `EvalConfig`/`EvalResult`/`Scenario`/`SCENARIOS`
+(`"mining"`: Mining 35 + 2 pickaxes; `"mining_50"`: the same, Mining 50 —
+both a bare `Mine()` on a viable `MINING_SPOTS` entry), `run_eval`,
+`run_eval_multi` (mean/stdev over per-seed fitness, a `spot_pool=` rotation
+so back-to-back mining seeds don't share one thinning `HarvestBank`), and
+`assert_kernel_clean` (a runtime `git diff --quiet` + `git status
+--porcelain` check on `anima2/foundry`, ported from v1 `safety.py`'s intent
+— raises `KernelTamperedError` on any uncommitted/untracked change).
+`data/eval_results.jsonl` is the kernel-owned, gitignored, append-only,
+corrupt-line-tolerant ledger (`write_eval_result`/`read_eval_results`,
+mirroring `skill_library.py`'s ledger convention exactly).
+
+**Consolidation rider — `anima2/live_common.py`:** `RecordingBody` (was six
+near-identical `_RecordingBody` copies across `live_trade.py`,
+`live_hunt.py`, `live_market.py`, `live_navigate.py`, `live_smelt.py`,
+`live_curriculum.py`), `wipe_bounds`/`wipe_area`, `login_throttle` +
+`LOGIN_THROTTLE_S`/`LOGIN_BURST_COOLDOWN_S`, `GM_RELOGIN_COOLDOWN_S` (a
+longer, dedicated cooldown for the single ALWAYS-reused GM account
+`hulryung` — live-caught: a shorter gap left a stale prior GM session that
+closed the new one mid-`[Get`-sequence a few calls in, `foundry/eval.py`'s
+own `run_eval` hits this every eval since it reconnects `hulryung` fresh
+each time), `fresh_suffix`, and `print_gate_verdict`. **Migrated to use it:**
+`live_fitness_gate.py`, `live_mine.py`, `live_trade.py`, and
+`foundry/eval.py`/`live_eval_gate.py` (built on it from the start — zero
+behavior change to the three migrated scripts' own gates, re-verified by
+the full offline suite plus this item's own live gate). **Not yet
+migrated** (still carry their own copy — a follow-up, not urgent, each
+works as-is): `live_hunt.py`, `live_market.py`, `live_navigate.py`,
+`live_smelt.py`, `live_curriculum.py`. `anima2/live_eval_gate.py` is the
+live gate script below. 470 tests (up from 443 at item 1), ruff clean.
+
+**A live-caught bug, found and fixed by this item's own live gate — not a
+pre-existing defect that shipped silently:** a 30-tick smoke test run ahead
+of the real gate showed something wrong: `foundry/trajectory.py::
+TappedBody.tap_observation` credited whatever was ALREADY in the subject's
+backpack the instant it first identified that backpack (a fresh character's
+starting gold, or anything `stage()` granted before `recorder.start()`) as
+`items_into_pack` — i.e. counted it as "produced during the scored window."
+The smoke test made this undeniable: **every** variant, including one
+staged with **no pickaxe at all** (so it provably touches no ore, ever),
+showed an identical ~610-630 `produce_term` floor, nearly swamping the real
+`skill_term` signal underneath it (a no-pickaxe agent scored 463.95 vs a
+real miner's 475.35 — within 2.4%). Fixed: the tick that first identifies
+the backpack now seeds `_pack_amounts` from current contents WITHOUT
+emitting an `items_into_pack` delta (a true baseline); a genuinely new item
+serial on any later tick still credits its full amount, unchanged — proven
+by a new regression test
+(`test_tapped_body_does_not_credit_pre_existing_pack_contents_as_a_gain`).
+One existing test had encoded the buggy behavior as its own expected output
+(`test_tapped_body_credits_only_the_amount_delta_into_pack`) and was
+corrected. Post-fix, the same scenario's decomposition is clean: a
+20-tick live spot-check showed WITH-pickaxe at skill_term=6.0/produce_term
+=6.0/total=9.0 vs NO-pickaxe at skill_term=0/produce_term=0/total=4.5
+(behavior_bonus only) — real signal, no shared phantom baseline. This is
+exactly what a repeatable eval harness's own live gate is supposed to catch
+— a bug in the *scorer* — and it was the harness's own honest per-variant
+fitness *decomposition* (not just the scalar total) that made it visible.
+
+**Key decisions confirmed or changed:**
+- **Leg (b)'s pairing changed from the originally-scoped `mining_50` vs
+  `mining` to the documented no-pickaxe fallback**, per this item's own
+  contingency note. A dedicated 80-tick, single-seed manual probe (run
+  ahead of the live gate) found Mining 35 gains skill **faster** than
+  Mining 50 on iron ore — 48.0/hr vs 24.0/hr — the classic UO gain-curve
+  inversion (gain chance falls as skill approaches a resource's ceiling)
+  the spec flagged as a real risk. `mining` (Mining 35, WITH a pickaxe) vs
+  the same scenario staged with `item_overrides=()` (NO pickaxe —
+  `Harvest.step()`'s own "open the pack, find nothing, repeat" branch,
+  live-confirmed to produce a flat, near-zero-variance score) is the
+  pairing actually used below. `live_eval_gate.py` still ships an
+  in-script probe (`--pairing auto`, the default) plus a `--pairing
+  {mining_50,no_pickaxe}` override to skip it — worth having, since even a
+  100-tick single-seed probe is one noisy roll: an independently-run
+  10-tick smoke-test probe picked the OPPOSITE pairing by chance, which is
+  exactly why the override (backed by the more reliable 80-tick manual
+  probe) was used for the real gate rather than trusting the in-script
+  probe's own roll.
+- **A retry wrapper (`_run_eval_with_retry`) was added to `run_eval_multi`
+  mid-item, live-forced, not speculative:** the real gate hit `IpcError`
+  ("connection reset by peer" / "broken pipe") three separate times across
+  twelve evals — the same transient class PHASE5.md item 1's own live gate
+  honestly logged ("a bridge broken-pipe at one session's tail"). Up to 3
+  attempts per seed, a fresh account/connection each retry (never trusting
+  a half-finished window — mirrors `live_trade.py --tuner`'s "a live
+  wedge, not a real signal" discipline), catching only
+  `IpcError`/`ConnectionError`/`OSError` (a real assertion/logic error
+  still propagates immediately, uncaught). All three transient failures in
+  the live gate below were caught and silently recovered — without this,
+  the run would not have completed.
+- **The kernel-integrity guard's live exercise is deliberately deferred to
+  offline tests**, matching the spec's own "Offline tests" placement:
+  `anima2/foundry/eval.py` is itself mid-development and necessarily
+  uncommitted at gate time (per the team's standing "do not commit" rule
+  for this item), so `assert_kernel_clean` would refuse EVERY eval if
+  wired in live right now — that refusal would be correct behavior, not a
+  bug, but it would also make the live gate unrunnable before landing.
+  Every real caller of `run_eval`/`run_eval_multi` leaves
+  `kernel_repo_root="."` (the default) and gets the real check; the live
+  gate below passes `--skip-kernel-guard` (`kernel_repo_root=None`) purely
+  for this reason, honestly flagged in its own CLI help text. The guard's
+  actual refusal logic is proven by 5 dedicated offline tests
+  (`tests/test_foundry_eval.py`, subprocess-stubbed `git`): a clean tree
+  passes; a tracked edit, an untracked file, an unavailable `git`, and an
+  unexpected `git diff` exit code all raise `KernelTamperedError`.
+
+### Live verification gate — PASSED
+
+`python -m anima2.live_eval_gate --ticks 260 --pairing no_pickaxe --suffix
+realgate2`, fresh accounts, `MINING_SPOTS[0..3]` rotated per seed via
+`run_eval_multi`'s `spot_pool=`.
+
+**Leg (a) — repeatability.** The `mining` variant (Mining 35, 2 pickaxes),
+`run_eval_multi(seeds=3)` twice:
+
+```
+run1: per_seed=[2.420, 80.327, 94.896]  mean=59.2142  stdev=40.5976
+run2: per_seed=[3.226, 16.987, 51.113]  mean=23.7752  stdev=20.1302
+tolerance band = 2 x pooled per-seed stdev = 2 x 30.3639 = 60.7278
+|mean1 - mean2| = 35.4390 -> within band: True
+```
+
+**PASSED, but honestly: the band is wide relative to the means, and that's
+real variance, not harness noise.** Per-seed fitness for an identically
+staged `Mine()` session swings from ~2 to ~95 because Mining's skill-GAIN
+chance is itself probabilistic per swing (the same UO mechanic leg (b)'s
+own probe exploited) and because this gate's 4-spot pool got reused across
+all twelve evals inside roughly nine live minutes — well under the
+~10-20 minute `HarvestBank` respawn window the `anima2-live-verification`
+memory note already flags, so some seeds landed on a spot another eval in
+this same run had just thinned. `evala_r2` seed 0 (total=3.226) shows this
+precisely: `viability_gate=1.000` (fully alive, fully live, zero loop
+penalty — nothing wrong with the agent itself) but `skill_gain_total=0.00`
+(zero successful digs in 260 ticks — the immediate ore ring was empty).
+This is exactly the case `run_eval_multi`'s "average repeats, never trust
+one sample" design exists for, and it held: neither run's mean got zeroed
+out by one unlucky seed, and the two means still landed within a band
+derived from THIS run's own observed spread, not a re-guessed constant.
+Tightening this (a larger or less-contended spot pool) is task #19's own
+already-tracked follow-up (MINING_SPOTS recalibration), not a new problem
+this item introduces.
+
+**Leg (b) — ordering (differential).** `mining` (Mining 35, WITH pickaxe)
+vs the same scenario staged with NO pickaxe, `run_eval_multi(seeds=3)` per
+side:
+
+```
+[mining, NO pickaxe (provably can't mine)]: per_seed=[2.424, 2.425, 2.424]  mean=2.4243  stdev=0.0003
+[mining (Mining 35, WITH pickaxe)]:         per_seed=[85.261, 46.209, 51.465]  mean=60.9786  stdev=17.3042
+gap (higher - lower) = 58.5543; ordering holds (higher mean > lower mean): True
+```
+
+Clean and decisive: the with-pickaxe mean is ~25x the no-pickaxe mean, and
+the gap (58.55) dwarfs both sides' own stdev (17.30 and 0.0003) — the
+ordering survives seed averaging by a wide margin, not a whisker. The
+no-pickaxe control's near-zero variance is itself corroborating evidence:
+same spot pool, same window, only the skill/produce axis differs between
+the two sides, and that's exactly the axis that moved.
+
+**Cross-process readback** — a fresh `python -c` subprocess (never this
+process's own in-memory `MultiEvalResult`s) reads `data/eval_results.jsonl`
+from disk and reproduces both verdicts exactly:
+
+```
+cross-process leg (a): mean1=59.2142 mean2=23.7752 diff=35.4390 (band=60.7278) -> repeatable=True
+cross-process leg (b): mean_lower=2.4243 mean_higher=60.9786 -> ordering_holds=True
+```
+
+```
+[FLAG] leg_a_repeatable_in_process = True
+[FLAG] leg_a_repeatable_cross_process = True
+[FLAG] leg_b_ordering_holds_in_process = True
+[FLAG] leg_b_ordering_holds_cross_process = True
+[FLAG] GATE PASSED: pairing=no_pickaxe leg_a_diff=35.4390/band=60.7278 leg_b_gap=58.5543
+```
+
+Also honestly noted: the three transient `IpcError`s (connection
+reset/broken pipe) mentioned above under "Key decisions" all happened
+during this exact run, all silently recovered by `_run_eval_with_retry`.
+
 ### References
 
 `anima2/foundry/eval.py`, `anima2/foundry/fitness.py`,
-`anima2/foundry/trajectory.py`, `anima2/control.py`, `anima2/profession.py`
+`anima2/foundry/trajectory.py`, `anima2/live_common.py`,
+`anima2/live_eval_gate.py`, `anima2/control.py`, `anima2/profession.py`
 (calibrated scenario spots), `../anima/foundry/kernel/eval.py`,
 `../anima/foundry/kernel/safety.py`, PHASE4.md item 4 (the fixed-window /
 multi-seed / no-early-stop lessons this harness bakes in).

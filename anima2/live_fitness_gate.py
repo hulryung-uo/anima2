@@ -42,7 +42,6 @@ Usage: python -m anima2.live_fitness_gate [--ticks N] [--suffix TAG]
 from __future__ import annotations
 
 import argparse
-import time
 
 from .agent import Agent
 from .contract import Say, Walk
@@ -50,6 +49,7 @@ from .control import GmControl
 from .foundry.fitness import compute_fitness
 from .foundry.trajectory import TrajectoryRecorder, TappedBody
 from .ipc_body import IpcBody
+from .live_common import LOGIN_BURST_COOLDOWN_S, fresh_suffix, login_throttle, print_gate_verdict, wipe_area
 from .persona import Persona
 from .planner import Planner
 from .profession import MINING_SPOTS
@@ -100,9 +100,7 @@ def _run_agent(
 ) -> dict:
     x, y = spot
     print(f"\n=== staging {label} at {spot} ===")
-    x1, y1, x2, y2 = x - WIPE_RADIUS, y - WIPE_RADIUS, x + WIPE_RADIUS, y + WIPE_RADIUS
-    gm.command_area("[WipeItems", x1, y1, x2, y2, 20)
-    gm.command_area("[WipeNPCs", x1, y1, x2, y2, 20)
+    wipe_area(gm, x, y, WIPE_RADIUS)
 
     # Body lifetime is owned by main() so the post-run cross-check can
     # still `[Get` the subject — a logged-out mobile can't be read, which
@@ -164,7 +162,7 @@ def main() -> None:
     ap.add_argument("--ledger-path", default=None)
     args = ap.parse_args()
 
-    suffix = args.suffix or str(int(time.time()) % 1_000_000)
+    suffix = args.suffix or fresh_suffix()
     account_a = f"fitgatea{suffix}"
     account_b = f"fitgateb{suffix}"
 
@@ -177,9 +175,9 @@ def main() -> None:
     # The shard has exactly one GM account, so the fresh cross-check
     # connection is opened only AFTER the run's own GM logs out.
     with IpcBody.spawn(args.host, args.port, account_a, account_a, pump_ms=400) as ipc_a:
-        time.sleep(4)  # ServUO login throttle
+        login_throttle()  # ServUO login throttle
         with IpcBody.spawn(args.host, args.port, account_b, account_b, pump_ms=400) as ipc_b:
-            time.sleep(4)
+            login_throttle()
             with GmControl.spawn(args.host, args.port) as gm:
                 gm.hide()
                 result_a = _run_agent(
@@ -193,7 +191,7 @@ def main() -> None:
             # Run GM logged out; subjects still online. Keep them pumped so the
             # server keeps their sessions alive, then read them back through a
             # FRESH GM connection (the independent post-run channel).
-            time.sleep(8)  # let the GM account clear the login throttle
+            login_throttle(LOGIN_BURST_COOLDOWN_S)  # let the GM account clear the login throttle
             ipc_a.observe()
             ipc_b.observe()
             print("\n=== post-run cross-check: FRESH GmControl connection (subjects still online) ===")
@@ -249,12 +247,15 @@ def main() -> None:
     print(f"channel-(a)-only fitness ranks A > B: {channel_a_only_ranks_a_above_b}")
 
     print("\n=== GATE VERDICT ===")
-    print(f"[FLAG] self_report_ranks_b_above_a = {self_report_ranks_b_above_a}")
-    print(f"[FLAG] independent_fitness_ranks_a_above_b = {independent_ranks_a_above_b}")
-    print(f"[FLAG] channel_a_only_ranks_a_above_b = {channel_a_only_ranks_a_above_b}")
-    passed = self_report_ranks_b_above_a and independent_ranks_a_above_b and channel_a_only_ranks_a_above_b
-    print(f"[FLAG] GATE {'PASSED' if passed else 'FAILED'}: divergence between self-report and "
-          f"independent fitness, surviving channel-(b) exclusion: {passed}")
+    print_gate_verdict(
+        {
+            "self_report_ranks_b_above_a": self_report_ranks_b_above_a,
+            "independent_fitness_ranks_a_above_b": independent_ranks_a_above_b,
+            "channel_a_only_ranks_a_above_b": channel_a_only_ranks_a_above_b,
+        },
+        label="GATE",
+        detail="divergence between self-report and independent fitness, surviving channel-(b) exclusion",
+    )
 
 
 if __name__ == "__main__":

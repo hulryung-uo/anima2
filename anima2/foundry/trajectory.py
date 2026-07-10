@@ -29,6 +29,13 @@ does not require). Populates `items_into_pack`, `action_counts`,
 `steps_confirmed`/`steps_denied`, `speech_sent`/`speech_recv`,
 `damage_dealt`/`damage_taken` (see the class docstring — currently always 0,
 an honestly-flagged gap, not silently faked), `positions`, and `hp_samples`.
+**`items_into_pack` baseline fix (PHASE5.md item 2's live gate):** the tick
+where `tap_observation` first identifies the subject's own backpack seeds
+`items_into_pack`'s bookkeeping from whatever's already in it (starting
+gold, `stage()`-granted tools) WITHOUT crediting that as a gain — see
+`tap_observation`'s own inline comment for the live-caught symptom (a
+~$610-630 `produce_term` "floor" that showed up on every variant this item's
+gate ran, including one staged with no pickaxe at all).
 
 **Adaptations from v1, stated plainly (not glossed over):**
  - v1 decodes ~15 raw packet types across a whole session and discovers every
@@ -306,6 +313,7 @@ class TrajectoryRecorder:
         self.summary.positions.append((ts, p.pos.x, p.pos.y))
         self.summary.hp_samples.append((ts, p.hits))
 
+        just_found_backpack = False
         if self._owned_backpack is None:
             bp = next(
                 (i for i in obs.items if i.layer == uoconst.LAYER_BACKPACK and i.container == p.serial),
@@ -313,9 +321,29 @@ class TrajectoryRecorder:
             )
             if bp is not None:
                 self._owned_backpack = bp.serial
+                just_found_backpack = True
         if self._owned_backpack is not None:
             for it in obs.items:
                 if it.container != self._owned_backpack:
+                    continue
+                if just_found_backpack:
+                    # BASELINE tick, not a gain: whatever's already in the
+                    # pack the moment we first identify it (starting gold a
+                    # fresh character spawns with, tools/ingots the Control
+                    # plane's own `stage()` granted before `recorder.start()`
+                    # — both happen before the scored window) was there
+                    # BEFORE this window, not produced during it. Seed the
+                    # amount without emitting a delta; live-caught by
+                    # PHASE5.md item 2's own live gate — every variant,
+                    # including one staged with NO pickaxe at all (so it
+                    # provably never mines anything), showed an identical
+                    # ~610-630 produce_term "baseline" that turned out to be
+                    # exactly this: a fresh account's starting gold minted as
+                    # "items_into_pack" on tick one. A genuinely new item
+                    # serial appearing on any LATER tick still credits its
+                    # full amount (the `prev = ... .get(it.serial, 0)` below,
+                    # unchanged) — that case is a real mid-window pickup.
+                    self._pack_amounts[it.serial] = it.amount
                     continue
                 prev = self._pack_amounts.get(it.serial, 0)
                 if it.amount > prev:

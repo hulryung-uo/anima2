@@ -177,8 +177,34 @@ gamer first, the independent fitness ranks the honest worker first (277.5 vs
 0.0; the rigged agent's 225 denied moves zero its viability gate), and the
 ranking is unchanged with the in-process channel (b) excluded — plus a
 post-run cross-check from a FRESH GM connection while the subjects are still
-online. 443 tests green, ruff clean. **Next:** Phase 5 item 2 — the
-repeatable eval harness (see [`docs/PHASE5.md`](docs/PHASE5.md)).
+online. **Phase 5 item 2 — the repeatable eval harness — is live-verified**
+(`live_eval_gate.py`): `foundry/eval.py` adds `EvalConfig`/`EvalResult`/
+`run_eval`/`run_eval_multi` (fixed-window, no-early-stop, multi-seed
+mean/stdev, a `spot_pool=` rotation across `MINING_SPOTS[0..3]` so
+back-to-back mining seeds don't share one thinning `HarvestBank`) and a
+runtime `assert_kernel_clean` git-diff guard (proven by 5 offline,
+subprocess-stubbed tests; deferred live since the harness itself is
+mid-development and uncommitted — every real caller still gets the check).
+`anima2/live_common.py` consolidates the six copy-pasted `_RecordingBody`s
+plus the wipe/login-throttle/gate-verdict conventions every live script had
+grown independently (`live_fitness_gate.py`/`live_mine.py`/`live_trade.py`
+migrated; five more scripts still carry their own copy, a follow-up). The
+live gate's own dress rehearsal caught a real bug: `TappedBody.tap_observation`
+was crediting a fresh character's starting gold as "produced during the
+window," a phantom `produce_term` floor identical across every variant —
+including one staged with no pickaxe at all — fixed by seeding the
+backpack's baseline amounts without emitting a delta on the tick the
+backpack is first identified. Live gate: leg (a) repeatability held (two
+`run_eval_multi(seeds=3)` runs of the same variant, 59.21 vs 23.78,
+within a 60.73 tolerance band derived from the runs' own spread — wide but
+honest, driven by Mining's real per-swing gain-chance randomness and a
+4-spot pool reused across 12 evals in ~9 minutes, not harness noise); leg
+(b) ordering held decisively (a real miner at 60.98 vs a no-pickaxe agent
+that provably cannot mine at 2.4243, a ~25x gap dwarfing both sides' own
+stdev), both cross-process-verified from a fresh `python -c` reading
+`data/eval_results.jsonl`. 470 tests green, ruff clean. **Next:** Phase 5
+item 3 — the behavior descriptor + MAP-Elites archive (see
+[`docs/PHASE5.md`](docs/PHASE5.md)).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

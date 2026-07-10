@@ -5,8 +5,9 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-10 · Status: **Phase 5 begun (independent measurement +
-evolution) — item 1 (the independent fitness oracle) live-verified; see
+Last updated: 2026-07-11 · Status: **Phase 5 underway (independent measurement +
+evolution) — item 1 (the independent fitness oracle) and item 2 (the
+repeatable eval harness) both live-verified; see
 [`PHASE5.md`](PHASE5.md).** Phase 4 complete (learning stack, all five items —
 [`PHASE4.md`](PHASE4.md)); Phase 3 complete (economy & interaction loop), all
 four items done.
@@ -39,7 +40,7 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-443 tests green, ruff clean; the full village, smelting, reflection,
+470 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -74,7 +75,8 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); 443 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 item 1
+(independent fitness oracle) and item 2 (repeatable eval harness) both live-verified; 470 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -408,15 +410,16 @@ The original analysis, kept as the decision record:
   hand-written, Observation-derived milestones remain ⏳. No item is expected
   to touch the Observation/Action contract.
 - **Phase 5 — Independent measurement + evolution** *(work breakdown written —
-  see [`PHASE5.md`](PHASE5.md); all four items ⏳)*: an **independent fitness
-  oracle** (ground truth the agent's own code can never write — closes A6's
-  "agents can't lie" gap Phase 4 left open), a **repeatable eval harness** on the
-  Control plane (fixed-window, multi-seed, kernel-integrity-guarded), a
-  **MAP-Elites archive** over agent *configs* (no LLM-authored code), and an
-  **evolution loop** that improves the population — reusing v1's human-owned
-  `foundry/kernel/` (signal source swapped from raw-packet parsing to GM-read +
-  observation-tap). Society scale-out (persistent lives, the forum as village
-  chronicle) is split into a Phase 6 note.
+  see [`PHASE5.md`](PHASE5.md); items 1-2 ✅ live-verified, items 3-4 ⏳)*: an
+  **independent fitness oracle** (ground truth the agent's own code can never
+  write — closes A6's "agents can't lie" gap Phase 4 left open, ✅), a
+  **repeatable eval harness** on the Control plane (fixed-window, multi-seed,
+  kernel-integrity-guarded, ✅), a **MAP-Elites archive** over agent *configs*
+  (no LLM-authored code), and an **evolution loop** that improves the
+  population — reusing v1's human-owned `foundry/kernel/` (signal source
+  swapped from raw-packet parsing to GM-read + observation-tap). Society
+  scale-out (persistent lives, the forum as village chronicle) is split into a
+  Phase 6 note.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane

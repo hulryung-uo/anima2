@@ -77,11 +77,17 @@ picks a `MineSmeltDeliver.deliver_threshold` per miner and learns from
 item 3's ledger — a live control pair established one value as better on a
 fixed-window reward metric, and an 8-session tuner run concentrated 7/8 of
 its picks on that same value, confirmed by a fresh process reading the
-ledger from disk — see `live_trade.py --tuner`. 443 tests green.
+ledger from disk — see `live_trade.py --tuner`. **Phase 5 (independent
+measurement + evolution) is underway** — see [`docs/PHASE5.md`](docs/PHASE5.md):
+item 1 (an independent fitness oracle — a separate GM connection's `[Get`
+reads, so the agent's own self-reported reward can't game it) and item 2
+(a repeatable eval harness — `foundry/eval.py::run_eval`/`run_eval_multi`,
+fixed-window/no-early-stop/multi-seed) are both live-verified. 470 tests
+green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 443 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 470 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
