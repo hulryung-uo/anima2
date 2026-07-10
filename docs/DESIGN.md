@@ -5,9 +5,11 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-09 · Status: **Phase 4 complete (learning stack) —
-all five items done & live-verified; see [`PHASE4.md`](PHASE4.md).** Phase 3
-complete (economy & interaction loop), all four items done.
+Last updated: 2026-07-10 · Status: **Phase 5 begun (independent measurement +
+evolution) — item 1 (the independent fitness oracle) live-verified; see
+[`PHASE5.md`](PHASE5.md).** Phase 4 complete (learning stack, all five items —
+[`PHASE4.md`](PHASE4.md)); Phase 3 complete (economy & interaction loop), all
+four items done.
 Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
 Python brain drives **live ServUO characters** via the `anima-agent` IPC
 bridge (perceive→reflexes→planner→skill→act) — from a single agent up to a
@@ -37,7 +39,7 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-388 tests green, ruff clean; the full village, smelting, reflection,
+443 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -72,7 +74,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
-| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); 388 tests green |
+| **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); 443 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only

@@ -77,11 +77,11 @@ picks a `MineSmeltDeliver.deliver_threshold` per miner and learns from
 item 3's ledger — a live control pair established one value as better on a
 fixed-window reward metric, and an 8-session tuner run concentrated 7/8 of
 its picks on that same value, confirmed by a fresh process reading the
-ledger from disk — see `live_trade.py --tuner`. 388 tests green.
+ledger from disk — see `live_trade.py --tuner`. 443 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 388 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 443 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):

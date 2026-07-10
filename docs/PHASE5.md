@@ -76,7 +76,7 @@ item 4 (evolution, needs all three).
 
 ---
 
-## Item 1 — Independent fitness oracle ⏳
+## Item 1 — Independent fitness oracle ✅
 
 **Close DESIGN.md A6's gap: a fitness signal the agent's own code can never
 write.** Ports v1 `../anima/foundry/kernel/fitness.py` (locked kernel-owned
@@ -175,6 +175,48 @@ on the in-process tap). Provenance: the fitness inputs are read back by an
 independent `GmControl` connection post-run and cross-checked, the same "fresh
 channel, never the live process's own memory" discipline items 3-5 of Phase 4
 established.
+
+### As landed (live-verified)
+
+`anima2/foundry/` (`fitness.py` — v1's `compute_fitness` ported with the
+locked weights and the "the agent may not edit this module" contract stated in
+the docstring; `trajectory.py` — `TrajectoryRecorder` with channel (a) GM
+`[Get` window reads via the hardened `get_property_value` as the load-bearing
+source and a channel (b) `TappedBody` observation tap as corroboration),
+`live_fitness_gate.py`, and three test files (35 tests: component math against
+v1's formulas, frozen-trajectory gating, wall-walker penalty, one-action-
+spammer liveness rule, and the **AST-level import-graph guard** proving no
+module under `anima2/skills/`, `curriculum.py`, `skill_tuning.py`,
+`cognition.py`, or `skill_library.py` imports `anima2.foundry`).
+
+**Live gate — PASSED, all three rankings** (`python -m
+anima2.live_fitness_gate`, fresh accounts, two distinct viable spots so the
+subjects share no resource bank, fixed 300-tick windows, no early stop):
+
+```
+RANKING 1 self-report:        B(rigged) 300,000.0  >  A(honest) 1.3     (the gameable metric)
+RANKING 2 independent fitness: A(honest) 277.54    >  B(rigged) 0.00
+RANKING 3 channel-(a)-only:    A(honest) 36.92     >  B(rigged) 0.00    (ranking unchanged)
+```
+
+The rigged agent (a scripted skill self-reporting 1,000 reward per tick while
+emitting junk walk/speech actions) tops the self-reported ledger by five
+orders of magnitude — and scores **zero** on the independent fitness: the
+server-read Mining gain is 0.00, and its 225 denied moves drive the loop
+penalty to 1.0, zeroing the viability gate. The honest miner's Mining
+35.0→36.3 (server-read) carries it. The post-run cross-check runs on a FRESH
+GM connection **while the subjects are still online** (a logged-out mobile
+can't be `[Get`-read — the first gate run's post-run check hit exactly that;
+the script now owns the subject sessions until after the cross-check):
+B matched exactly (35.0/35.0); A read 36.4 vs the recorder's 36.3 — one gain
+quantum, the subject's final in-flight swing resolving server-side after the
+window-end read, which is itself evidence the fresh channel reads live server
+state rather than any cached snapshot.
+
+Also exercised on the way, honestly noted: two transient live-infra failures
+(a bridge broken-pipe at one session's tail; a ServUO login-throttle rejection
+when gate runs were launched back-to-back) — both resolved by retry/cooldown,
+neither a defect in the oracle.
 
 ### References
 

@@ -161,14 +161,24 @@ list, falling back deterministically on any bad reply. `village.py
 a miner's Mining past 50 mid-run, the `miner_mining_50` milestone fires
 exactly once (read directly from `EpisodicMemory`), and it STILL fires under
 a pure-garbage LLM — the achievement predicate is deterministic and
-LLM-independent. 388 tests green (up from 351), ruff clean. **Next:** Phase
-5 — see the "Notes carried into Phase 5 / open follow-ups" at the end of
-[`docs/PHASE4.md`](docs/PHASE4.md) (LLM-authored skill DSL with sandboxing,
-independent GM-verified fitness, multi-process ledger concurrency). A
-pre-Phase-5 hardening pass then resolved the `Harvest`/`Mine`
-intermittent-freeze bug and the `GmControl.get_property` empty-readback bug
-(both flagged above and in PHASE4.md item 3) — see PHASE4.md item 4's
-"Resolved" note and PHASE5.md item 1 for details; tests up to 408.
+LLM-independent. A pre-Phase-5 hardening pass then resolved the
+`Harvest`/`Mine` intermittent-freeze bug (resource-bank exhaustion +
+pack-full — windowed stuck-rate detection + `WalkTo` relocation) and the
+`GmControl.get_property` empty-readback bug (now `get_property_value`, a
+typed live-verified readback) — see PHASE4.md item 4's "Resolved" note.
+**Phase 5 item 1 — the independent fitness oracle — is live-verified**
+(`live_fitness_gate.py`): `anima2/foundry/` (the human-owned kernel the
+learning code provably never imports — an AST-level import-graph guard test)
+ports v1's locked-weight `compute_fitness` + a `TrajectoryRecorder` whose
+load-bearing channel is a separate GM connection's `[Get` reads (the server,
+not the agent, reports the numbers). The differential gate: an honest miner
+vs an agent rigged to self-report 300,000 reward — self-report ranks the
+gamer first, the independent fitness ranks the honest worker first (277.5 vs
+0.0; the rigged agent's 225 denied moves zero its viability gate), and the
+ranking is unchanged with the in-process channel (b) excluded — plus a
+post-run cross-check from a FRESH GM connection while the subjects are still
+online. 443 tests green, ruff clean. **Next:** Phase 5 item 2 — the
+repeatable eval harness (see [`docs/PHASE5.md`](docs/PHASE5.md)).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
