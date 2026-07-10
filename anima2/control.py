@@ -12,10 +12,56 @@ serial targets → `TargetObject`, ground targets → `TargetGround`.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from .contract import Say, TargetGround, TargetObject
 from .ipc_body import IpcBody
+
+#: A ServUO `[Get <prop>` reply always echoes the exact property name back,
+#: e.g. `"Skills.Mining.Base = 42.5"`, `"TotalGold = 1000 (0x3E8)"`,
+#: `'Name = "Anima"'` — or, on failure, `"Property '<prop>' not found."` /
+#: `"You must be at least <level> to get the property '<prop>'."` (live-
+#: observed against a real ServUO shard; see `parse_property_reply`'s own
+#: docstring). This matches the value half after the echoed `"<prop> = "`
+#: prefix, stripping an optional trailing hex annotation (`" (0x...)"`) that
+#: numeric replies carry.
+_NUMERIC_VALUE = re.compile(r"^(-?\d+(?:\.\d+)?)(?:\s*\(0x[0-9A-Fa-f]+\))?$")
+
+
+def parse_property_reply(raw: str | None, prop: str) -> float | str | None:
+    """Parse a `GmControl.get_property` raw reply into a typed value.
+
+    `raw` may be several `" | "`-joined journal lines (the raw variant's own
+    noisy-journal fallback) — this picks out the one that actually echoes
+    `prop` back (ServUO's `[Get`/`[Set` always do, live-confirmed: see
+    `control.py`'s module docstring reference in PHASE4.md item 3/PHASE5.md
+    item 1) rather than assuming the first line is the reply. Returns:
+      - `float` for a numeric reply (`"Str = 60 (0x3C)"` → `60.0`,
+        `"Skills.Mining.Base = 42.5"` → `42.5`) — always `float`, never
+        `int`, matching this function's own return type;
+      - `str` for a non-numeric reply, quotes stripped (`'Name = "Anima"'`
+        → `"Anima"`) or left as-is for a compound value ServUO doesn't quote
+        (`"Location = (3734, 2222, 20)"` → `"(3734, 2222, 20)"`);
+      - `None` if `raw` is `None`, empty, or no line echoes `prop` at all
+        (an error reply like `"Property 'Gold' not found."` — the property
+        name that server-side ServUO actually uses often differs from the
+        in-game display name, e.g. `TotalGold`, not `Gold` — or an access-
+        level-denied reply, neither of which echoes `"<prop> = "`).
+    """
+    if not raw:
+        return None
+    prefix = f"{prop} = "
+    line = next((seg for seg in raw.split(" | ") if seg.startswith(prefix)), None)
+    if line is None:
+        return None
+    value = line[len(prefix):]
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    m = _NUMERIC_VALUE.match(value)
+    if m:
+        return float(m.group(1))
+    return value
 
 
 class GmControl:
@@ -85,21 +131,43 @@ class GmControl:
         it), except this command's answer is a journal line, not a property
         write, so the caller reads it back afterward.
 
-        Advisory-only plumbing (PHASE4.md item 3's own measurement-
-        independence caveat: the skill ledger's reward is the agent's own
-        computed value, not an independently GM-verified channel) — the
-        reply's exact format isn't parsed here, just handed back raw for the
-        caller to eyeball/best-effort-parse. Never a hard pass/fail signal.
+        Hardened past PHASE4.md item 3's "returned empty" finding: this
+        collects journal text across up to `pumps` observations instead of
+        returning on the first tick that has *any* new journal content — in
+        a noisy scene (e.g. mid-combat, `live_hunt.py`'s own case) an
+        unrelated system/combat line can land in an earlier pump than the
+        actual `[Get` reply, and the old early-return would hand back that
+        unrelated line (or, if the reply lands one pump later than an empty
+        one, silently miss it — indistinguishable from "the server sent
+        nothing"). Once a line that echoes `prop` back (ServUO's own `[Get`
+        reply convention — see `parse_property_reply`) shows up, this stops
+        polling and returns everything collected so far, `" | "`-joined; the
+        exact-echo line is what `get_property_value` below picks out. Still
+        advisory-only raw plumbing (PHASE4.md item 3's own measurement-
+        independence caveat) — parsing now happens in `get_property_value`,
+        not here, so this keeps returning the full raw text for eyeballing.
         """
         self.body.act(Say(text=f"[Get {prop}"))
         if not self._await_cursor():
             return None
         self.body.act(TargetObject(serial=serial))
+        lines: list[str] = []
+        prefix = f"{prop} = "
         for _ in range(pumps):
             obs = self.body.observe()
-            if obs.new_journal:
-                return " | ".join(j.text for j in obs.new_journal)
-        return None
+            lines.extend(j.text for j in obs.new_journal)
+            if any(line.startswith(prefix) for line in lines):
+                break
+        return " | ".join(lines) if lines else None
+
+    def get_property_value(self, prop: str, serial: int, *, pumps: int = 6) -> float | str | None:
+        """`get_property` + `parse_property_reply` — a typed readback (Phase
+        5 item 1's load-bearing independent channel: `[Get` reads the
+        *server's* value, which the measured agent's own code can't forge).
+        `None` on no reply / an error reply (bad property name, insufficient
+        access level); see `parse_property_reply` for the exact typing.
+        """
+        return parse_property_reply(self.get_property(prop, serial, pumps=pumps), prop)
 
     def command_area(self, command: str, x1: int, y1: int, x2: int, y2: int, z: int) -> bool:
         """Run an area `[` command (e.g. `[WipeNPCs`) — two ground corners."""
@@ -240,14 +308,48 @@ class GmControl:
     ) -> tuple[int, int, int]:
         """Stage a character for work: set skills, add tools to the pack, and
         teleport it to the (server-settled) workplace at (x, y). The Control plane
-        in one call — generalizes `setup_miner` to any profession."""
+        in one call — generalizes `setup_miner` to any profession.
+
+        Teleporting `char_serial` needs the GM to be **near the character's
+        current position**, not near the destination — live-confirmed against
+        a real ServUO shard: unlike `[Set Skills...`/`[AddToPack` (grant
+        commands, which succeed at any distance) and `[Get` (also
+        distance-independent, see `get_property`), `[Set X`/`[Set Y`/`[Set Z`
+        (the position sub-properties `[Set X {gx} Y {gy} Z {gz}` below
+        writes) silently reply "That is too far away" (cliloc 500446) when
+        the GM issuing them isn't near where the character *currently* is.
+        Every existing caller reuses a small pool of characters that have
+        already been staged near a calibrated spot before, so the GM (parked
+        at the destination by the `self.go(x, y)` below, which is *also*
+        wherever it left off last time) is fortuitously already close enough
+        — but a genuinely fresh account (never staged before, PHASE5.md
+        item 1's live gate needs several) spawns far from any calibrated
+        spot, and the teleport used to no-op silently (`command_on`'s return
+        value went unchecked): skills/items land fine (they don't need
+        proximity), but the character itself never leaves its login point,
+        so every downstream distance-relative assumption (tools in reach,
+        workplace geometry) silently breaks too. Fixed by reading the
+        character's own current position back first
+        (`get_property_value("X"/"Y", ...)` — itself distance-independent)
+        and detouring the GM there before the `[Set X Y Z`, then returning
+        to the work location — a cheap self-teleport round trip, harmless
+        when the account was already warm (the detour lands on/near the same
+        spot `self.go(x, y)` already did).
+        """
         self.hide()
         gx, gy, gz = self.go(x, y)
+        cur_x = self.get_property_value("X", char_serial)
+        cur_y = self.get_property_value("Y", char_serial)
+        detoured = isinstance(cur_x, float) and isinstance(cur_y, float)
+        if detoured:
+            self.go(int(cur_x), int(cur_y))
+        self.command_on(f"[Set X {gx} Y {gy} Z {gz}", char_serial)
+        if detoured:
+            self.go(x, y)
         for skill, base in (skills or {}).items():
             self.command_on(f"[Set Skills.{skill}.Base {base}", char_serial)
         for item in items or []:
             self.command_on(f"[AddToPack {item}", char_serial)
-        self.command_on(f"[Set X {gx} Y {gy} Z {gz}", char_serial)
         return (gx, gy, gz)
 
     def setup_miner(self, char_serial: int, x: int = 2567, y: int = 493) -> tuple[int, int, int]:

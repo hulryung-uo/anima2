@@ -957,6 +957,15 @@ matching the combined in-process episodic count exactly (4==4). **Advisory
 GM `[Get Gold` readback returned empty** — the `get_property` helper needs
 hardening; advisory-only, did not gate (Phase 5 item 1 hardens it, since the
 independent-fitness channel depends on a working stat readback). 351 tests.
+**Hardened (P0 hardening pass, pre-Phase-5):** `[Get Gold` was itself the bug
+— `Gold` isn't a valid ServUO property name (it's `TotalGold`), so the reply
+was a "Property not found" line `get_property`'s old first-non-empty-tick
+return could still miss or misreport in a noisy scene. `control.py` gained
+`parse_property_reply`/`get_property_value` (typed `float|str|None` readback)
+and `get_property` itself now collects across all pumps and picks the line
+that echoes the property name back, rather than trusting the first non-empty
+tick. Live re-verified with staged ground truth (`Skills.Mining.Base=42.5`,
+fresh-account `TotalGold=1000`) — see PHASE5.md item 1's own note.
 
 ### References
 
@@ -1182,7 +1191,147 @@ exactly why fix 2 above (retry-bounded, never-record-a-poisoning-zero) is
 the correct mitigation at this item's layer, rather than a deeper
 `Harvest`/`Mine` change this item did not set out to make.
 
-### Offline tests
+### Resolved (P0 hardening pass, pre-Phase-5): confirmed root cause + fix
+
+Live instrumentation (unfiltered per-tick journal traces, a throwaway probe
+script run against the calibrated Minoc mining spots) reproduced the freeze
+on the first attempt and pinned down two distinct, genuine server-side "no"
+signals `Harvest.step()` (`skills/harvest.py`) never checked for — **not** a
+client state-machine wedge, **not** a throttle:
+
+1. **Resource bank exhaustion.** ServUO's `HarvestBank` grid is 8x8 tiles
+   (`Scripts/Services/Harvest/Core/HarvestBank.cs`) and holds 10-34 total
+   ore, respawning only after 10-20 real minutes once first consumed.
+   `Harvest`'s own reach (Chebyshev radius 2, `PROBE_OFFSETS`) sits well
+   inside one grid cell, so once that cell's bank empties, reachable tiles
+   report cliloc 503040 ("There is no metal here to mine.") — decisive
+   trace: a session mining continuously for 124 straight ticks alternated
+   *only* between 503040, 501862 ("can't mine there" — off-vein terrain,
+   unrelated), and 500237 ("target cannot be seen"), never a single "You
+   loosen some rocks but fail" (503043, which requires passing the
+   resource-availability check first) and never a success.
+2. **Pack capacity.** A dig can still succeed server-side once the pack is
+   full — the item is simply discarded (cliloc 1010481, "Your backpack is
+   full, so the ore you mined is lost.") — decisive trace: a session's pack
+   ore froze at 28 from tick 228 to the end of a 300-tick window, with 6
+   occurrences of cliloc 1010481 across the session.
+
+Both were previously invisible to `Harvest.step()`'s cursor/probe state
+machine, which kept probing and swinging every tick regardless — reading
+from the outside exactly like a freeze while the agent itself never crashed
+or hung, matching this item's own live observations exactly.
+
+**Fix, attempt 1 (streak + backoff) — insufficient, caught by its own live
+gate.** The first fix tallied a *strict* streak of confirmed "no" replies,
+reset by any skill-gain reward, and backed off (stopped spending actions) once
+a full probe-ring rotation's worth accumulated. Its own 6-session live gate
+exposed the gap: a probe ring that straddles a bank boundary is only *partly*
+dead — most swings fail with "no metal," but the rare one still lands on a
+live tile and gains skill. ServUO's skill-gain roll runs *before* the
+pack-full check too (`HarvestSystem.FinishHarvesting`), so skill can gain even
+when the resulting item is discarded. Either way, the strict streak reset on
+that rare reward before ever crossing its own threshold — sessions netted as
+little as 2-6 ore over a full 300-tick window with the "fix" never engaging
+(only 2 of 6 sessions ever backed off, and even then only once, since after
+one cooldown the same partial trickle kept resetting the streak again).
+
+**Fix, attempt 2 (shipped): windowed stuck-rate + relocation.** `Harvest`
+tracks the last `stuck_window_rotations` probe-ring rotations of swing
+*outcomes* (`harvest_recent_stuck`, one sample per reply — `1` if it carried a
+`no_resource_clilocs`/`pack_full_clilocs` cliloc, else `0`) and triggers once
+at least `stuck_rate_threshold` of a *full* window is stuck — a rate, not a
+streak, so occasional trickle-through successes lower the rate without
+wiping the window's memory. On trigger, instead of idling in place (which
+can't help a genuinely dead bank — it doesn't respawn inside a session
+window), the skill walks away: one `WalkTo` (the bridge's own A* route
+driver, same mechanism `skills/movement.py::GoTo` uses) to an offset at least
+one `HarvestBank` cell-width out, rotating through 8 compass directions
+across repeated relocations, monitored purely by position deltas (mirrors
+`GoTo`'s own "did the tile change at all" signal — see that class's
+docstring) and give-up-after-a-stall (`relocate_stall_limit`), then resumes
+ordinary probing from the new spot. `diagnose()` reports the relocating
+state.
+
+**Offline regression (`tests/test_harvest.py`, +8 tests over the pre-hardening
+14):** both live-confirmed stuck conditions (a full stuck-rate window of
+cliloc 503040 or 1010481) trigger a `WalkTo` relocation; a relocation leg
+that arrives (position deltas reach the target) resumes swinging on its own;
+one that never moves at all gives up after `relocate_stall_limit` and resumes
+from wherever it is rather than wedging; **the load-bearing regression** —
+a window with 40% stuck replies interleaved with continuous skill-gain
+rewards on the other 60% (reproducing attempt 1's exact failure mode) still
+crosses the rate threshold and relocates, where a strict streak never would;
+`Chop` (no `no_resource_clilocs` configured) is unaffected by mining's own
+cliloc fed into it, confirming the mechanism stays opt-in per subclass.
+
+**Also fixed along the way (blocking an honest fresh-account live gate for
+this very item):** `GmControl.stage()` (`control.py`) silently failed to
+reposition a genuinely fresh (never-before-staged) character — live-confirmed
+against the real shard: ServUO's `[Set X`/`[Set Y`/`[Set Z` (Mobile position
+sub-properties) require the GM issuing them to be physically near the
+character's *current* position, not the destination, unlike
+`[Set Skills...`/`[AddToPack`/`[Get` (all distance-independent) — a GM parked
+at the destination (as `stage()` always did) got "That is too far away"
+(cliloc 500446) trying to move a character still sitting at its login spot,
+and `command_on`'s return value went unchecked so this failed invisibly.
+Every existing live script happened to reuse warm, already-staged accounts,
+masking this for the project's whole history. Fixed by reading the
+character's own current position back via the hardened `get_property_value`
+before the position `[Set`, detouring the GM there, then returning to the
+work location. New offline tests in `tests/test_control.py` (14 tests) cover
+`parse_property_reply`'s fixture-line parsing, `get_property`/
+`get_property_value` end to end against a scripted fake body, and `stage()`'s
+detour-vs-no-detour call sequence.
+
+**Live gate (6 fresh-account, fixed-300-tick bare-`Mine()` sessions, honest
+methodology note below):** the fix's own first live-gate attempt (6 sessions
+back to back at one calibrated spot) caught the attempt-1 detection gap
+above, but *also* exposed a methodology bug: consecutive sessions at the
+identical `(x, y)` share ServUO's `HarvestBank` state, and its 10-20-real-
+minute respawn is far longer than 6 consecutive sessions take — later
+sessions were silently mining an already-thinned bank, not an independent
+trial. The corrected gate uses a **distinct spot per session** (spreading
+across the calibrated `MINING_SPOTS` pool, reusing two only after enough
+elapsed wall-clock time for a partial respawn). A byproduct of spreading
+across the pool: **6 of `MINING_SPOTS`' 10 entries (`[4]`–the already-
+documented one–`[5]`, `[6]`, `[7]`, `[8]`, `[9]`) turned out to have zero
+reachable ore** (confirmed via a dedicated spot-check: zero digs, zero
+skill gain, zero relevant journal lines over 60-300 ticks) — a genuine,
+separate `profession.py` calibration gap, not a `Harvest.step()` bug (flagged
+for a follow-up, not fixed here — out of this item's scope). The 6-session
+gate below uses the 4 confirmed-live spots (`MINING_SPOTS[0..3]`), two of
+them twice with a real elapsed-time gap between uses:
+
+```
+session  spot (MINING_SPOTS index)     final ore   Mining
+  A      [0] (2567,493)                    18       35.0 -> 36.2
+  B      [1] (2611,474) = TRADE_MINE_SPOT  32       35.0 -> 36.8
+  C      [2] (2584,411)                    32       35.0 -> 37.0
+  D      [3] (2551,420)                    28       35.0 -> 35.9
+  E      [0] reused (~40 min later)        13       35.0 -> 36.2
+  F      [1] reused (~50 min later)        36       35.0 -> 37.4
+```
+
+Every session shows **continuous ore growth from tick 0 through the last
+tick it changed** (full per-25-tick snapshot tables in the raw transcript) —
+zero sessions exhibit the pre-fix symptom (a long silent tail of wasted real
+actions with zero progress). Sessions B and F (both at the heaviest-tested
+spot, `TRADE_MINE_SPOT`) show the clearest partial-exhaustion pattern the
+attempt-1 gate missed: session B slows and plateaus at 32 ore for the last
+75 ticks (sparse cliloc-503040 hits mixed with occasional skill gain — never
+crosses the stuck-rate threshold, correctly, since real progress is still
+happening), session F sees four cliloc-1010481 ("pack full") hits mid-session
+yet keeps growing to 36 ore by the end. Zero relocate events fired across all
+6 sessions — every session's local ground stayed productive enough (a
+genuinely, sustainedly dead bank never arose in this particular run) that the
+fix correctly never needed to invoke relocation; the relocation mechanism
+itself is proven separately and deterministically by the offline regression
+above (which manufactures the exact stuck condition rather than hoping RNG
+produces it), matching this project's established "offline proves the
+mechanism, live proves the absence of the symptom in the wild" split (see
+e.g. PHASE3.md item 4's greedy-vs-`WalkTo` differential).
+
+### Offline tests (item 4's own — `skill_tuning.py`)
 
 `tests/test_skill_tuning.py` (new, 13 tests, seeded RNG where randomness is
 involved): `choose()`'s deterministic initial sweep (exact candidate order,
@@ -1256,8 +1405,10 @@ tests green, `ruff check .` clean, 3x-repeated stable.
 
 `anima2/skill_tuning.py`, `anima2/skills/smelt.py` (`MineSmeltDeliver.
 deliver_threshold`), `anima2/skills/harvest.py` (`Harvest.step`, the
-intermittent-freeze site), `anima2/live_trade.py`, `anima2/village.py`,
-`anima2/skill_library.py` (item 3), DESIGN.md A3.
+intermittent-freeze site — resolved, see "Resolved" above), `anima2/control.py`
+(`GmControl.stage`/`get_property`/`get_property_value`/`parse_property_reply`),
+`anima2/live_trade.py`, `anima2/village.py`, `anima2/skill_library.py` (item 3),
+`tests/test_harvest.py`, `tests/test_control.py`, DESIGN.md A3.
 
 ---
 

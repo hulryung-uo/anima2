@@ -140,10 +140,13 @@ honestly (a flat `{5:2, 8:2, 12:1, 20:1}` pull distribution pointing away
 from the control pair) — the fix and the live-caught root causes (an
 unstable per-episode-mean reward metric, an unrecorded zero-episode "live
 wedge" poisoning an arm, and too few sessions to let UCB1 concentrate over
-four candidates) are documented in full in PHASE4.md item 4, along with an
-open follow-up bug this diagnosis surfaced: `Harvest`/`Mine` can
-intermittently freeze mid-session (root cause unconfirmed) under a long,
-uninterrupted mining phase, independent of `deliver_threshold`'s value.
+four candidates) are documented in full in PHASE4.md item 4, along with a
+follow-up bug this diagnosis surfaced: `Harvest`/`Mine` could intermittently
+freeze mid-session under a long, uninterrupted mining phase, independent of
+`deliver_threshold`'s value — **resolved in a pre-Phase-5 hardening pass**
+(two confirmed ServUO server-side "no" signals, `Harvest.step()` never
+checked for either; see PHASE4.md item 4's "Resolved" note for the full
+root-cause trace and the windowed stuck-rate + `WalkTo`-relocation fix).
 **Phase 4 item 5 — automatic curriculum — is live-verified** and completes
 the phase: `curriculum.py::CurriculumController` (cadence-gated on its own
 daemon thread, mirroring `ReflectingCognition`) tracks a hand-written
@@ -161,8 +164,11 @@ a pure-garbage LLM — the achievement predicate is deterministic and
 LLM-independent. 388 tests green (up from 351), ruff clean. **Next:** Phase
 5 — see the "Notes carried into Phase 5 / open follow-ups" at the end of
 [`docs/PHASE4.md`](docs/PHASE4.md) (LLM-authored skill DSL with sandboxing,
-independent GM-verified fitness, the `Harvest`/`Mine` intermittent-freeze
-hardening, multi-process ledger concurrency).
+independent GM-verified fitness, multi-process ledger concurrency). A
+pre-Phase-5 hardening pass then resolved the `Harvest`/`Mine`
+intermittent-freeze bug and the `GmControl.get_property` empty-readback bug
+(both flagged above and in PHASE4.md item 3) — see PHASE4.md item 4's
+"Resolved" note and PHASE5.md item 1 for details; tests up to 408.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

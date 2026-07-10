@@ -50,6 +50,10 @@ on **two channels of unequal strength**, and the design leans on the strong one:
 >   what the "agents can't lie" claim actually rests on, and it is why hardening
 >   `GmControl.get_property` (which returned empty in Phase 4 item 3) is a
 >   load-bearing part of item 1, not a nicety.
+>
+>   *(Hardened ahead of schedule, in a pre-Phase-5 pass — see item 1's own
+>   scope note below: `get_property`/`get_property_value` now reliably parse
+>   a typed value, live-verified against staged ground truth.)*
 > - **Channel (b) — corroborating only: an observation-tap buffer.** In a single
 >   interpreter this is protected by the static import-graph guard (below), which
 >   catches *accidental* architectural violations but **not** an adversarial or
@@ -94,19 +98,27 @@ anima2 never touches the wire.
   measured agent does not own. Two sources, both independent of
   `Agent.episodes`: (a) a separate `GmControl` connection issuing `[Get` reads
   of the subject's skills/gold/alive-state at window start and end (the same
-  command family `stage()` already uses — verify a `[Get`/property readback
-  path in `control.py`; item 3 of Phase 4 already needed a `get_property` helper
-  and flagged it returned empty, so **hardening that readback is in scope
-  here**); (b) a passive tap of the subject's own observation JSON stream
-  recorded to a kernel-owned buffer the agent's reward logic can't mutate.
-  Produces a `TrajectorySummary` (skill-gain totals, gold delta, produced-item
-  value, alive fraction, action counts, deny/confirm counts) mirroring v1's
-  `TrajectorySummary` fields. **Channel (a) — the GM `[Get` reads — is the
-  load-bearing independent source** (the server, not the agent, reports the
-  numbers); channel (b) corroborates but is not treated as hard-independent in a
-  single interpreter (see the "how independent" note above). Hardening the
-  `get_property` readback is therefore in scope here (Phase 4 item 3 flagged it
-  returned empty).
+  command family `stage()` already uses); (b) a passive tap of the subject's
+  own observation JSON stream recorded to a kernel-owned buffer the agent's
+  reward logic can't mutate. Produces a `TrajectorySummary` (skill-gain
+  totals, gold delta, produced-item value, alive fraction, action counts,
+  deny/confirm counts) mirroring v1's `TrajectorySummary` fields. **Channel
+  (a) — the GM `[Get` reads — is the load-bearing independent source** (the
+  server, not the agent, reports the numbers); channel (b) corroborates but
+  is not treated as hard-independent in a single interpreter (see the "how
+  independent" note above). **`get_property` hardening — done in a
+  pre-Phase-5 pass, not deferred to this item:** item 3 of Phase 4 flagged
+  `[Get Gold` returning empty; the root cause was two-fold (`"Gold"` isn't a
+  valid ServUO property name — it's `TotalGold` — and the old
+  first-non-empty-tick return could miss the actual reply in a noisy scene).
+  `control.py` now has `parse_property_reply`/`get_property_value` (a typed
+  `float|str|None` readback, collecting across all pumps and picking the
+  line that echoes the property name back) — live re-verified against a
+  staged character (`Skills.Mining.Base=42.5`, fresh-account
+  `TotalGold=1000`, both matched exactly by a second, independent `GmControl`
+  connection reading the same character fresh). This item's own trajectory
+  recorder can build directly on `get_property_value` rather than
+  re-deriving a readback path.
 - **`foundry/fitness.py`** — a near-verbatim port of v1's `compute_fitness`:
   `fitness = viability_gate × (skill_term + worth_term + produce_term +
   behavior_bonus)`, all per-hour rates, weights (`W_SKILL=1.0`/`W_WORTH=0.3`/
