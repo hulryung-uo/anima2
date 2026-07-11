@@ -5,9 +5,10 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-11 · Status: **Phase 6 in progress (the living village) —
-items 1-2 (persistent lives, disk-backed `ReflectionMemory`; the village
-chronicle, an inter-agent relationship ledger) live-verified; see
+Last updated: 2026-07-12 · Status: **Phase 6 in progress (the living village) —
+items 1-3 (persistent lives, disk-backed `ReflectionMemory`; the village
+chronicle, an inter-agent relationship ledger; the forum as a continuing
+chronicle) live-verified, completing thread A; see
 [`PHASE6.md`](PHASE6.md) for the full itemized status.** Phase 5
 complete (independent measurement
 + evolution) — all four items done (items 1, 2, and 4 live-verified; item 3
@@ -44,7 +45,7 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-590 tests green, ruff clean; the full village, smelting, reflection,
+602 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -80,7 +81,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 complete (independent
-fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 in progress (items 1-2 — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger — both live-verified); 590 tests green |
+fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 in progress (items 1-3 — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle — all three live-verified); 602 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -446,11 +447,15 @@ The original analysis, kept as the decision record:
   a cognition-aware eval mode that finally gives `sociability`/
   `cognition_tier` real live signal, and a rerun of the evolution-vs-random
   comparative gate on the enriched harness (thread B). No item is expected
-  to touch the Observation/Action contract. **Item 1 ✅ live-verified**
-  (`memory.py::ReflectionMemory`'s optional `persist_path`/`agent_key` +
-  `load_insights()`, `village.py --persist-insights`) — see PHASE6.md item 1's
-  "As landed" section for the live-gate transcript. Items 2-6 ⏳ not yet
-  started.
+  to touch the Observation/Action contract. **Items 1-3 ✅ live-verified**
+  (item 1: `memory.py::ReflectionMemory`'s optional `persist_path`/
+  `agent_key` + `load_insights()`, `village.py --persist-insights`; item 2:
+  `chronicle.py::ChronicleLedger`, `village.py --chronicle`; item 3:
+  `forum.py`'s optional `yesterday`/`chronicle_events` grounding,
+  `village.py`'s existing `--forum` block) — completing thread A. See each
+  item's own "As landed" section in [`PHASE6.md`](PHASE6.md) for its
+  live-gate transcript. Items 4-6 (thread B, richer eval scenarios) ⏳ not
+  yet started.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane

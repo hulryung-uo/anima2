@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from .agent import Agent
-from .chronicle import ChronicleLedger
+from .chronicle import ChronicleEvent, ChronicleLedger
 from .contract import Observation, Say, Walk
 from .control import GmControl
 from .ipc_body import IpcBody
@@ -283,7 +283,8 @@ def _chronicle_events_this_tick(
 
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
                 job: str, *, chronicle: ChronicleLedger | None = None,
-                counterpart: str | None = None) -> None:
+                counterpart: str | None = None,
+                session_events: list[ChronicleEvent] | None = None) -> None:
     steps = says = 0
     last_say = ""
     # PHASE6.md item 2's own bookkeeping (only touched when `chronicle` is
@@ -331,8 +332,17 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                 # thread. See chronicle.py's module docstring: the ONLY
                 # file I/O happens once, later, from run_village's own
                 # joined main thread (chronicle_ledger.flush()).
-                chronicle.queue_event(tick=agent.ticks, from_persona=agent.persona.name,
-                                      to_persona=to_persona, kind=kind, amount=amount)
+                event = chronicle.queue_event(tick=agent.ticks, from_persona=agent.persona.name,
+                                              to_persona=to_persona, kind=kind, amount=amount)
+                # PHASE6.md item 3: also collect this agent's OWN events into
+                # its private, session-scoped list (independent of the
+                # shared ChronicleLedger's in-memory queue, which mixes every
+                # agent together and is cleared by flush()) — the forum
+                # block reads this back after the run to ground the day's
+                # post, with no dependency on data/chronicle.jsonl's
+                # cross-session persistence or a since_tick heuristic.
+                if session_events is not None:
+                    session_events.append(event)
                 if kind == "looted_corpse":
                     hunt_reward_accum = 0.0  # this batch's total has been attributed
                 # delivered_ingots needs no reset here — memory.get("smelt_phase")
@@ -557,14 +567,28 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     # already uses, and the real precedent this item's own `queue_event()`/
     # `flush()` split follows (see `chronicle.py`'s module docstring).
     chronicle_ledger: ChronicleLedger | None = None
+    # PHASE6.md item 3: one private, session-scoped event list per agent
+    # (keyed by persona name — unique within a roster), pre-populated before
+    # any worker thread starts so each thread only ever appends to an
+    # already-existing list it owns (never inserts a new key concurrently).
+    # Stays `{}` when `--chronicle` is off — every `.get()` below then
+    # returns `None`, reproducing today's forum behavior exactly.
+    session_chronicle: dict[str, list[ChronicleEvent]] = {}
     if chronicle:
         chronicle_ledger = ChronicleLedger(ledger_path=chronicle_path)
+        session_chronicle = {p["persona"].name: [] for p in plan}
         print(f"chronicle: ON — ledger at {chronicle_ledger.ledger_path.resolve()}")
 
     status: dict[int, str] = {}
     lock = threading.Lock()
     threads = []
     agents: list[tuple[Agent, str, float | None]] = []
+    # PHASE6.md item 3: each persona's most recently persisted insight text,
+    # captured right after `load_insights()` — i.e. what was true BEFORE this
+    # session's own ticks/reflections, the "yesterday" a continuing forum
+    # post refers to. Stays `{}` when `--persist-insights` (or `--llm-tiers`)
+    # is off, matching `session_chronicle`'s own no-op-by-default shape.
+    yesterday_texts: dict[str, str] = {}
     for i, p in enumerate(plan):
         cognition = None
         if tiered_clients is not None:
@@ -581,6 +605,16 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             # letting ReflectingCognition build its own in-memory-only default —
             # zero effect on any currently-passing `--llm-tiers` roster.
             insights = load_insights(INSIGHTS_PATH, p["persona"].name) if persist_insights else None
+            # PHASE6.md item 3: snapshot "yesterday" right here, at load
+            # time — before this session's own reflections (if any) can
+            # append a newer insight to the same ReflectionMemory — so the
+            # forum post's "yesterday you noted" always refers to what was
+            # actually persisted BEFORE this session started, never
+            # something this same session just reflected on.
+            if insights is not None:
+                prior = insights.recent(1)
+                if prior:
+                    yesterday_texts[p["persona"].name] = prior[-1].text
             cognition = ThreadedCognition(ReflectingCognition(inner, reflection, insights=insights))
         elif chat_client is not None:
             from .cognition import LLMCognition, ThreadedCognition
@@ -649,7 +683,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         t = threading.Thread(
             target=_run_worker,
             args=(agent, ticks, i, status, lock, p["prof"].key),
-            kwargs={"chronicle": chronicle_ledger, "counterpart": p["counterpart"]},
+            kwargs={"chronicle": chronicle_ledger, "counterpart": p["counterpart"],
+                    "session_events": session_chronicle.get(p["persona"].name)},
             daemon=True,
         )
         threads.append(t)
@@ -731,7 +766,14 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             llm = ReplicateClient.from_v1_config()  # in-character prose if available
             print(f"\n— the tavern board —{' (LLM-written)' if llm else ' (heuristic)'}")
             for agent, job, _chosen_threshold in agents:
-                res = post_day(agent, job=job, client=client, llm=llm)
+                # PHASE6.md item 3: `None` for both unless `--persist-insights`/
+                # `--chronicle` were actually passed — exactly reproducing
+                # today's forum behavior when neither is set.
+                res = post_day(
+                    agent, job=job, client=client, llm=llm,
+                    yesterday=yesterday_texts.get(agent.persona.name),
+                    chronicle_events=session_chronicle.get(agent.persona.name),
+                )
                 print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
 
 

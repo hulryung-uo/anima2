@@ -314,8 +314,57 @@ every retry attempt its own ledger file); and the solo-miner leg wedged on
 all retries because it mined the exact spot leg A had just drained (fixed
 by rotating the solo leg across the *other* `MINING_SPOTS` entries, mirroring
 `foundry/eval.py`'s own `spot_pool=` precedent). 590 tests green (up
-from 540), ruff clean. **Next:** Phase 6 item 3 (the forum as continuing
-chronicle) remains — see [`PHASE6.md`](docs/PHASE6.md).
+from 540), ruff clean. **Phase 6 item 3 — the forum as continuing chronicle
+— is live-verified and completes Phase 6's first thread**: `forum.py::
+compose_post`/`compose_post_llm` gain optional `yesterday`/`chronicle_events`
+parameters (both `None` by default, byte-for-byte unchanged output) — a
+CODE-composed grounding sentence (`_chronicle_grounding_line`, tallying this
+persona's own confirmed `ChronicleEvent`s by kind/counterpart, e.g. "You
+delivered ingots to Tormund3 twice today.") is spliced into the prompt/
+heuristic body before any LLM call, mirroring `cognition.py::
+LLMWikiReportProducer`'s "code composes the fact" discipline — the LLM only
+ever turns an already-true fact into prose. `post_day` gains a `data/
+forum_log.jsonl` local mirror (every attempted post, `remote_ok` reflecting
+the real forum call's own outcome) so later verification never depends on an
+unverified forum-side read API. `village.py`'s existing `--forum` block
+threads both new parameters through with no new flag: a per-agent
+`session_chronicle` list (fed by `chronicle.ChronicleLedger.queue_event()`'s
+now-returned `ChronicleEvent` — a small additive change) and a
+`yesterday_texts` snapshot taken right after `load_insights()`, before this
+session's own reflections can overwrite it. The live gate
+(`live_forum_chronicle.py`, a standalone driver reusing item 2's own staging
++ item 1's own `ReflectingCognition`/`ReflectionMemory(persist_path=...)`
+directly) is decisive and used the REAL live uotavern forum + REAL Replicate
+qwen client throughout: a paired miner+blacksmith session posts real,
+qwen-written prose whose content names the blacksmith's exact persona
+("Dropped them off with Tormund87..."), confirmed by a fresh-subprocess
+readback of `data/forum_log.jsonl`; a solo miner's post from the same gate
+run names neither paired persona (the negative-control half of the same
+grounding claim); an identical paired run with persistence/chronicle both
+off posts real prose with none of the item's own tells ("Yesterday", any
+grounding verb phrase); and a **genuinely separate OS process** (`--leg
+session2`, no live connection at all — the property under test is prompt
+construction, not live play) loads session1's own persisted insight text
+from disk and confirms it reaches the prompt handed to a capturing stub
+client. Three bugs were caught and fixed, all in the gate script itself,
+never the shipped code: a discarded, stalled retry attempt was still
+publishing to the real forum before being thrown away (fixed by gating the
+post on `not stalled`); the inertness leg had no delivery signal to stop on
+and mined far more than needed at the one shared, non-rotatable trade spot
+session1 had just used, wedging on all 3 retries (fixed by stopping as soon
+as a modest positive episode count is reached); and the gate's first,
+technical dash-suffixed persona names (`"Grimm-fc782135"`) were reliably
+paraphrased away by genuine LLM prose, while short, `village.py`-shaped
+names (`"Grimm87"`/`"Tormund87"`, matching the real `f"{persona_name}{idx}"`
+convention) survive it far more reliably — fixed by renaming every gate
+persona accordingly, with a wholly distinct name root per leg so no
+substring check can cross-match. The item's own bundled one-time real
+`../uowiki` write check was deliberately NOT run: `live_wiki_report.py`'s
+`_assert_no_remote` unconditionally refuses any repo with a configured git
+remote, and `../uowiki` genuinely has one — a real, unresolved tension left
+to an explicit human decision rather than resolved by weakening the check.
+602 tests green (up from 590), ruff clean. **Next:** Phase 6 items 4-6
+(richer eval scenarios) remain — see [`PHASE6.md`](docs/PHASE6.md).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

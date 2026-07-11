@@ -48,9 +48,9 @@ reruns the comparative gate on the enriched harness and reports whichever
 way it lands, honestly, per this project's own established "report a tie as
 a tie" discipline (PHASE5.md item 4).
 
-Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Items 1-2 are done
-(persistent lives; the village chronicle relationship ledger, both
-live-verified) — items 3-6 remain ⏳ todo.**
+Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Items 1-3 are done
+(persistent lives; the village chronicle relationship ledger; the forum as
+continuing chronicle — all three live-verified) — items 4-6 remain ⏳ todo.**
 
 **Dependency order.** Threads A and B touch disjoint code (village.py/
 forum.py/memory.py vs. foundry/eval.py/evolve.py/cognition.py) and can land
@@ -804,7 +804,7 @@ note (the known live freeze this item's own gate also hit and retried past).
 
 ---
 
-## Item 3 — The forum as continuing chronicle ⏳
+## Item 3 — The forum as continuing chronicle ✅
 
 **Make the village's daily forum post actually a *chronicle* — grounded in
 what happened, aware of what happened before — rather than an isolated,
@@ -941,15 +941,239 @@ same persistence proof pattern as items 1-2).
   status` on `../uowiki` before and after, confirming exactly one new real
   commit and an unchanged `git remote -v` push target.
 
+### As landed (live-verified)
+
+Landed close to spec, with one deliberately-deferred bullet and three
+live-caught fixes — all four documented here rather than left implicit.
+
+**Landed as specified:** `forum.py::compose_post`/`compose_post_llm` gain
+`yesterday: str | None = None`/`chronicle_events: list[ChronicleEvent] |
+None = None` (keyword-only, both `None` by default — byte-for-byte identical
+output to every pre-item-3 caller, pinned by a regression test). A new
+`_chronicle_grounding_line()` tallies `chronicle_events` by `(kind,
+to_persona)`, filtered to events this persona is the ACTOR in
+(`from_persona == persona_name` — "what I did", never "what happened to
+me"), and produces exactly the spec's own example shape ("You delivered
+ingots to Tormund3 twice today.") — spliced into `compose_post_llm`'s prompt
+*and* `compose_post`'s own heuristic body *before* any LLM call, mirroring
+`cognition.py::LLMWikiReportProducer`'s "code composes the fact" discipline
+exactly; `compose_post_llm`'s fallback threads both new parameters through to
+`compose_post`, so the property holds off the LLM path too. `post_day` gains
+the `data/forum_log.jsonl` mirror (`_log_forum_post`, module-level
+`_forum_log_lock`, same shape as `chronicle.py`'s/`memory.py`'s own
+ledgers) — every attempt that gets far enough to compose a post (i.e.
+`client.configured`) is recorded before returning, `remote_ok` reflecting
+whether the real `client.post()` call itself succeeded, never depending on
+an unverified forum-side read API. `village.py`'s existing `if forum:` block
+passes `yesterday=`/`chronicle_events=` through with no new flag, sourced
+from two small additions to the existing per-agent construction loop: a
+`session_chronicle: dict[str, list[ChronicleEvent]]` (keyed by persona name,
+pre-populated before any worker thread starts so each thread only ever
+appends to a list it already owns) fed by `chronicle.ChronicleLedger.
+queue_event()`'s own return value (a small, additive change —
+`queue_event()` now returns the `ChronicleEvent` it queued; every existing
+caller already ignored the return value, so this is a pure addition, not a
+behavior change), and a `yesterday_texts: dict[str, str]` snapshotting each
+agent's most recently loaded insight text right after `load_insights()` —
+*before* this session's own reflections (if any) can append a newer one to
+the same `ReflectionMemory`, so "yesterday" always means what was actually
+persisted before this session started, never something this same session
+just reflected on.
+
+**Clarification, not a divergence: `live_forum_chronicle.py`'s own
+"session2" leg needs no live ServUO connection at all.** The spec's
+Scope/live-gate prose describes "session 2 (later, same persona, a
+genuinely new process)" by analogy with item 1's own two-live-session
+shape. Re-read against the item's own "Cross-session reference" bullet,
+though, the actual claim under test is narrower and purely
+prompt-construction-level: "assert the prompt handed to the model contains
+session 1's persisted insight text... the same 'prove the request was built
+correctly' standard Phase 4 item 2 used... rather than attempting to grade
+whether the model's prose *used* it well." Proving that needs `memory.
+load_insights()` (real, unmodified) and `forum.compose_post_llm()` (real,
+unmodified) running in a genuinely separate OS process — nothing about live
+UO play. `live_forum_chronicle.py`'s own `session2` leg is therefore a
+`--leg session2` subprocess re-exec (mirroring `live_persistent_lives.py`'s
+identical pattern) that never opens an `IpcBody`/`GmControl` connection at
+all, finishing in well under a second versus the paired legs' multi-minute
+live sessions.
+
+**Deliberately NOT run — a real design tension surfaced, not resolved
+unilaterally.** The spec's bundled "one-time real `../uowiki` write check"
+describes running `live_wiki_report.py` (Phase 4 item 1, unchanged)
+"deliberately, against the **real** `../uowiki` clone... with every existing
+safety check still enforced (`_assert_no_remote`'s refusal-on-a-real-remote
+logic is what this run must actually pass *through*, not around)." Verified
+directly: `_assert_no_remote` (`live_wiki_report.py`) unconditionally
+`sys.exit()`s on ANY repository with a configured git remote, with no
+override flag; `git -C ../uowiki remote -v` confirms the real `../uowiki`
+clone genuinely has one (`origin` -> a real GitHub repo). Those two facts
+are in direct tension: the check that must be "passed through" refuses
+every target it could possibly be pointed at that isn't a disposable clone,
+by construction — it cannot be satisfied by running the script verbatim, and
+weakening `_assert_no_remote` itself to admit one specific real repository
+is exactly the kind of safety-check erosion this project's own live-gate
+discipline exists to prevent, not something to do unilaterally inside a
+routine item landing. This is left to an explicit human decision rather than
+resolved either by skipping the spirit of the check or by quietly loosening
+it — `live_forum_chronicle.py` prints a NOTE line to this effect in its own
+gate summary rather than reporting a silent pass or fail for this bullet.
+
+**Bug 1 (gate script only): a discarded, stalled attempt still published to
+the live forum before the retry wrapper decided to discard it.** First
+draft of `live_forum_chronicle.py::_run_forum_session` posted whenever
+`miner.episodes.total_recorded > 0`, regardless of whether the session had
+just given up via the `STALL_TICKS` guard (a live wedge — bank exhaustion at
+the shared, non-rotatable `TRADE_MINE_SPOT`, the exact PHASE6.md item 2
+"Bank-drain resilience" pattern, hit again here). The stalled attempt's
+incomplete session still reached the real, live uotavern API before
+`_run_forum_session_with_retry` threw its result away as "not a real
+signal." Harmless to the gate's own VERDICT (the decisive readback always
+reads the winning attempt's chronologically latest post), but a real,
+live-visible side effect from data the gate itself judged unreliable. Fixed
+by gating the post on `not stalled` — mirrors item 2's own "a discarded
+attempt's data must never bleed into the winning attempt's own evidence"
+lesson, applied to a live side effect instead of a ledger file.
+
+**Bug 2 (gate script only): the inertness leg had no delivery signal to stop
+on, so it mined far more than it needed to, at the one shared spot session1
+had just mined too.** With chronicle tracking off (`chronicle_ledger is
+None`, matching "item 1/2's flags both unset"), the leg's only stopping
+conditions were the full `session_ticks` budget or a `STALL_TICKS` bailout —
+both of which mean mining for a long time at `TRADE_MINE_SPOT`, immediately
+after session1's own draw on the identical, non-rotatable spot (paired
+scenarios have no alternate calibrated spot to rotate to — see item 2's own
+"As landed" note). A real bank respawns over 10-20 real minutes
+(`live_evolve_gate.py`'s own module docstring), far longer than this gate's
+15-second inter-leg cooldown; all 3 retries wedged on one live run. Fixed by
+stopping the leg as soon as it has a modest, clearly-positive episode
+count — the only thing its own "engine still ran" positive control actually
+needs, not a full session's worth of ore.
+
+**Bug 3 (gate script only): the gate's first persona-naming scheme made the
+"posted content contains the exact counterpart name" check flaky against
+genuine LLM prose.** First draft named gate personas
+`f"Grimm-fc{suffix}"`/`f"Tormund-fc{suffix}"` (a dash plus a 6-digit
+UNIX-time-derived suffix). A real, in-character qwen completion reliably
+turns this into "Tormund" alone once every few posts — the exact live
+observation: `"Dropped the ingots with Tormund"`, the numeric ID silently
+dropped. Verified with a standalone, offline check against the real
+Replicate client (no live shard needed): a plain digit-suffixed name in
+`village.py`'s own actual shape (`"Grimm0"`/`"Tormund3"`, i.e.
+`f"{prof.persona_name}{idx}"`) survives genuine prose far more reliably than
+a dash-plus-long-suffix name, both because it reads as a plausible
+name-plus-digit and because `compose_post_llm`'s own 2-retry-then-fallback
+discipline (`forum.py`, unchanged) means even a dropped attempt or two still
+very likely lands on a post that names the counterpart, whether via genuine
+prose or the code-composed fallback. Fixed by renaming every gate persona to
+a short, `village.py`-shaped tag (`f"Grimm{short}"`/`f"Tormund{short}"`,
+`short` = the last 2 digits of the run's own suffix) with a WHOLLY DISTINCT
+name root per leg (`"Doran"` for the differential solo miner, `"Boru"`/
+`"Aldric"` for the inertness pair) — never a shared prefix between two
+personas, so a substring check can never mistake one persona's own signed
+name for a mention of a different one. This is a property of genuine,
+non-deterministic LLM prose generation, not a `forum.py` defect: the
+grounding FACT reaching the prompt is deterministic and code-guaranteed (the
+load-bearing safety property this item's Key design decisions section
+states); which exact string a real model's free-form prose ends up
+containing is not, and the shipped `compose_post_llm`'s own retry+fallback
+design is what keeps the aggregate reliable, not a guarantee on any single
+raw completion.
+
+**Live gate — PASSED, all four legs, clean run (no retries needed) after
+the three fixes above landed:**
+
+```
+=== [session1: paired, chronicle+reflection ON]: miner=fcA783787r1 paired=True mine_spot=(2611,474) chronicle=ON reflect=ON ===
+GM staged miner at (2611,474,20) + forge
+GM staged blacksmith at (2609,474,20) + forge/anvil, 15 starting ingots
+  [session1: paired, chronicle+reflection ON] tick   46: [chronicle] delivered_ingots amount=5.0 (deliveries so far: 1)
+
+[session1: paired, chronicle+reflection ON]: reached 1 confirmed delivery/ies and >=1 reflected insight by tick 46 — stopping.
+  [session1: paired, chronicle+reflection ON]: reflection insights recorded this session: 4
+  [session1: paired, chronicle+reflection ON]: forum post: ok (remote) (attempt logged to data/forum_log_gate_fc783787_paired.jsonl)
+  session1: cross-process forum_log readback: {'count': 1, 'last_content': 'Swung the pickaxe hard today in
+    the Minoc hills, six turns of solid strikes ringing against the stone. Each blow sang back with fire in
+    my arms and dust in my throat—worth every ache when I pulled out those ingots. Dropped them off with
+    Tormund87, who grinned like a madman, so I reckon they must be good ones.', 'last_remote_ok': True}
+
+=== [differential: solo miner, chronicle ON]: miner=fcSolo783787r0 paired=False mine_spot=(2567,493) chronicle=ON reflect=OFF ===
+GM staged miner at (2567,493,22) + forge
+  [differential: solo miner, chronicle ON]: forum post: ok (remote) (attempt logged to data/forum_log_gate_fc783787_solo.jsonl)
+  differential solo: cross-process forum_log readback: {'count': 1, 'last_content': 'Swung the pick like an
+    old metronome today, twenty-two solid turns biting into the stubborn rock of the Minoc hills. Dust in my
+    throat, sweat in my eyes, but each strike rang true—brought home about 42.5. Worth every ache.',
+    'last_remote_ok': True}
+
+=== [inertness: paired, chronicle+persist OFF]: miner=fcInA783787r0 paired=True mine_spot=(2611,474) chronicle=OFF reflect=OFF ===
+GM staged miner at (2611,474,20) + forge
+GM staged blacksmith at (2609,474,20) + forge/anvil, 15 starting ingots
+
+[inertness: paired, chronicle+persist OFF]: no chronicle tracking, but a clear positive episode count by tick 76 — stopping.
+  [inertness: paired, chronicle+persist OFF]: forum post: ok (remote) (attempt logged to data/forum_log_gate_fc783787_inertness.jsonl)
+  inertness: cross-process forum_log readback: {'count': 1, 'last_content': 'Swung the pickaxe under a
+    iron-gray sky, each strike ringing true through the quiet hills. Ten solid turns, and the stone
+    yielded—about 6.6, gritty reward for grittier work. Dust in my throat, but my pockets heavier, and
+    that's the way of it.', 'last_remote_ok': True}
+
+=== session2: genuinely new process reads data/insights_gate_fc783787.jsonl for 'Grimm87' ===
+[session2] loaded insights for 'Grimm87' from data/insights_gate_fc783787.jsonl (a genuinely new process —
+  no live connection): 4 total, yesterday='Tormund pays fair for a clean haul.'
+[FLAG] session2_loaded_insight_from_disk = True
+[FLAG] session2_prompt_contains_session1_insight = True
+
+[FLAG] session1_at_least_one_confirmed_delivery = True
+[FLAG] session1_insight_recorded_for_continuity = True
+[FLAG] session1_forum_post_attempted = True
+[FLAG] session1_forum_log_readback_ok = True
+[FLAG] session1_post_mentions_paired_counterpart_name = True
+[FLAG] differential_solo_had_real_mining_activity = True
+[FLAG] differential_solo_zero_chronicle_events = True
+[FLAG] differential_solo_post_attempted = True
+[FLAG] differential_solo_post_mentions_no_other_persona = True
+[FLAG] inertness_engine_still_ran = True
+[FLAG] inertness_post_has_no_grounding_tells = True
+[FLAG] session2_loaded_insight_from_disk = True
+[FLAG] session2_prompt_contains_session1_insight = True
+[FLAG] PHASE6_ITEM3_FORUM_CHRONICLE PASSED: the forum as continuing chronicle
+```
+
+Every decisive claim was provenance-checked the established way: `session1`'s
+and the differential leg's `forum_log.jsonl` readbacks came from a **fresh
+`sys.executable -c` subprocess** reading disk directly, never the live
+process's own memory (`_cross_process_forum_readback`, mirroring
+`live_chronicle.py::_cross_process_chronicle_readback` exactly); the
+grounding claim's negative-control half held in the same run — the solo
+miner's post (real qwen prose, its own genuine mining day) named neither
+`Grimm87` nor `Tormund87`, proving the paired miner's mention of `Tormund87`
+was earned by a real, code-composed, confirmed delivery event, not a stock
+phrase the composer always reaches for; the inertness leg's post, composed
+with `yesterday=None, chronicle_events=None` exactly like every pre-item-3
+`--forum` run, carried none of the item-3-specific tells ("Yesterday", or
+any `forum._CHRONICLE_VERB` phrase); and `session2` — a genuinely separate
+OS process, zero live connection — loaded session1's own persisted insight
+text (`"Tormund pays fair for a clean haul."`, the scripted reflection
+marker) from disk and confirmed it reached the prompt handed to a
+prompt-capturing stub client, the "continuing" half of "continuing
+chronicle" proven at the level Phase 4 item 2's own prompt-shape gate used.
+
+**Offline: 602 tests green (590 + 12 new, all in `tests/test_forum.py`), 3
+consecutive full-suite runs, `ruff check .` clean.**
+
 ### References
 
 `anima2/forum.py`, `anima2/chronicle.py` (item 2), `anima2/memory.py`
 (`load_insights`, item 1), `anima2/village.py`, `anima2/cognition.py`
 (`LLMWikiReportProducer` — the code-composes-the-fact pattern this item
-reuses), `anima2/live_wiki_report.py`, `anima2/wiki.py` (`file_report`,
-`_assert_no_remote`'s live counterpart in `live_wiki_report.py`), PHASE4.md
-item 1 ("Notes carried into Phase 5" — the first-real-write nit this item
-closes), the `anima2-live-verification` memory note.
+reuses), `anima2/live_forum_chronicle.py` (this item's own live gate
+driver), `anima2/live_chronicle.py` (`MAX_WEDGE_ATTEMPTS`/`STALL_TICKS`/
+`_SOLO_MINE_SPOT_POOL`/`_attempt_ledger_path`, reused directly),
+`anima2/live_persistent_lives.py` (the `--leg` subprocess re-exec pattern
+this item's own `session2` leg reuses), `anima2/live_wiki_report.py`,
+`anima2/wiki.py` (`file_report`, `_assert_no_remote`'s live counterpart in
+`live_wiki_report.py`), PHASE4.md item 1 ("Notes carried into Phase 5" —
+the first-real-write nit this item's own deferred bullet responds to), the
+`anima2-live-verification` memory note.
 
 ---
 

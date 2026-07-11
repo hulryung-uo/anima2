@@ -140,12 +140,18 @@ class ChronicleLedger:
     def queue_event(
         self, *, tick: int, from_persona: str, to_persona: str | None, kind: str,
         amount: float, detail: str = "",
-    ) -> None:
+    ) -> ChronicleEvent:
         """`threading.Lock`-guarded, O(1), in-memory-only — safe to call from
         any worker thread on the fast-loop-adjacent tick-driving path. **No
         file I/O at all** — see the module docstring and this module's own
         offline test proving a `queue_event`-then-no-`flush()` sequence
         writes zero bytes to disk.
+
+        Returns the `ChronicleEvent` it just queued (PHASE6.md item 3:
+        `village.py` uses this to also build a per-agent, session-scoped
+        event list for forum-post grounding, without reconstructing the
+        event a second time) — every existing caller ignores the return
+        value, so this is additive, not a behavior change.
         """
         event = ChronicleEvent(
             ts=_now_iso(), tick=tick, from_persona=from_persona, to_persona=to_persona,
@@ -153,6 +159,7 @@ class ChronicleLedger:
         )
         with self._queue_lock:
             self._queue.append(event)
+        return event
 
     def flush(self, path: str | Path | None = None) -> int:
         """Write every currently-queued event to `path` (default:

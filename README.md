@@ -87,20 +87,25 @@ agent configs, landed offline), and item 4 (the evolution loop —
 `foundry/evolve.py::evolve`/`random_search`, compared live against each
 other on identical budgets; the comparative verdict came back an honest tie,
 the expected result while most of the genome's mutation space is live-inert
-under today's one eval scenario) are all done. Phase 6 items 1-2 are also
+under today's one eval scenario) are all done. Phase 6 items 1-3 are also
 live-verified — see [`docs/PHASE6.md`](docs/PHASE6.md): persistent lives
 (disk-backed `ReflectionMemory`, `village.py --persist-insights` — a
 genuinely new process resumes a persona's insights from
-`data/insights.jsonl` before its first tick) and the village chronicle (an
+`data/insights.jsonl` before its first tick), the village chronicle (an
 inter-agent relationship ledger mined from confirmed trade/market/hunt
 interactions, `village.py --chronicle` — two independent live sessions each
 produced exactly 2 confirmed deliveries whose count and amount matched an
-independent episode-transcript oracle, cross-process-verified). 590 tests
-green.
+independent episode-transcript oracle, cross-process-verified), and the
+forum as a continuing chronicle (`forum.py`'s `compose_post`/
+`compose_post_llm` gain optional `yesterday`/`chronicle_events` grounding,
+code-composed and spliced in before any LLM call — a real, live-posted
+qwen-written forum entry named its blacksmith partner by exact persona name,
+grounded in a real confirmed delivery, with a negative-control solo miner's
+post naming no one). 602 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 590 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 602 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
