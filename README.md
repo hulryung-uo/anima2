@@ -78,16 +78,20 @@ item 3's ledger — a live control pair established one value as better on a
 fixed-window reward metric, and an 8-session tuner run concentrated 7/8 of
 its picks on that same value, confirmed by a fresh process reading the
 ledger from disk — see `live_trade.py --tuner`. **Phase 5 (independent
-measurement + evolution) is underway** — see [`docs/PHASE5.md`](docs/PHASE5.md):
+measurement + evolution) is complete** — see [`docs/PHASE5.md`](docs/PHASE5.md):
 item 1 (an independent fitness oracle — a separate GM connection's `[Get`
-reads, so the agent's own self-reported reward can't game it) and item 2
+reads, so the agent's own self-reported reward can't game it), item 2
 (a repeatable eval harness — `foundry/eval.py::run_eval`/`run_eval_multi`,
-fixed-window/no-early-stop/multi-seed) are both live-verified. 505 tests
-green.
+fixed-window/no-early-stop/multi-seed), item 3 (a MAP-Elites archive over
+agent configs, landed offline), and item 4 (the evolution loop —
+`foundry/evolve.py::evolve`/`random_search`, compared live against each
+other on identical budgets; the comparative verdict came back an honest tie,
+the expected result while most of the genome's mutation space is live-inert
+under today's one eval scenario) are all done. 530 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 505 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 530 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -118,10 +122,12 @@ python -m anima2.live_hunt      # bare-handed hunter kills weak creatures, loots
 python -m anima2.live_navigate  # differential proof: greedy wedges, WalkTo-delegated GoTo crosses (round trip)
 ```
 
-Next: Phase 4 — the learning stack (fuller uowiki loop, Voyager-style skill
-library + curriculum; cognition cost tiering is done) — see
-[`docs/PHASE4.md`](docs/PHASE4.md) and [`docs/DESIGN.md`](docs/DESIGN.md) §10
-for the roadmap.
+Next: Phase 6 — society scale-out (persistent lives, inter-agent
+relationships, the forum as village chronicle), plus a richer eval-scenario
+follow-up item 4's own live gate surfaced (today's harness leaves most of the
+evolution genome's axes live-inert) — see
+[`docs/PHASE5.md`](docs/PHASE5.md)'s "Notes carried into Phase 6" section and
+[`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
 
 ## Family
 

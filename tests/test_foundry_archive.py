@@ -385,3 +385,22 @@ def test_add_persists_raw_json_line_shape(tmp_path):
     assert obj["id"] == "g_00001"
     assert obj["profession"] == "miner"
     assert obj["eval"]["cell"] == list(GATHERING_CELL)
+
+
+def test_best_by_reliability_differs_from_raw_fitness_argmax(tmp_path):
+    """The optimizer's-curse repro the item-4 review demonstrated: a lucky
+    high-variance genome out-MEANS a steady one while carrying a far worse
+    reliability. `best()` (telemetry) picks the lucky one; any comparative
+    verdict must use `best_by_reliability()`, which picks the steady one."""
+    arc = Archive(tmp_path / "archive.jsonl")
+    lucky = _genome("g_lucky", GATHERING_CELL, per_seed=[80.0, 20.0])   # mean 50, rel 20
+    steady = _genome("g_steady", CRAFTING_CELL, per_seed=[46.0, 44.0])  # mean 45, rel 44
+    arc.add(lucky)
+    arc.add(steady)
+
+    assert arc.best().id == "g_lucky"                  # raw-fitness argmax (display only)
+    assert arc.best_by_reliability().id == "g_steady"  # the decision selector
+
+
+def test_best_by_reliability_empty_archive_is_none(tmp_path):
+    assert Archive(tmp_path / "archive.jsonl").best_by_reliability() is None

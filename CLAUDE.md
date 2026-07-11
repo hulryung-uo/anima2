@@ -208,9 +208,39 @@ MAP-Elites archive — is landed offline** (its live proof folds into item
 `foundry/archive.py` port v1's cell key and the reliability-discounted
 promotion rule (`mean − λ·pstdev`, the optimizer's-curse guard) verbatim,
 with Genome as four named config fields (never code) and an append-only
-replayed `data/archive.jsonl`. 505 tests green, ruff clean. **Next:**
-Phase 5 item 4 — the evolution loop (see
-[`docs/PHASE5.md`](docs/PHASE5.md)) — the last Phase 5 item.
+replayed `data/archive.jsonl`. **Phase 5 item 4 — the evolution loop — is
+live-verified and completes Phase 5** (`live_evolve_gate.py`):
+`foundry/evolve.py` adds the MAP-Elites loop (`evolve()`, mutating one of
+`Genome`'s four named config axes per step off a sampled elite) and a
+`random_search()` baseline built from the same shared step-driver, both
+bounded by `max_genomes` and a `foundry/STOP` kill switch, sequential-only
+(`MAX_CONCURRENT_EVALS` pinned at `1` — this project's shard has exactly one
+GM account). `foundry/_filelock.py` (`fcntl.flock`-based `append_line_locked`,
+proven by 6 real concurrent subprocesses writing 240 lines with zero torn or
+lost lines) closes Phase 4 item 3's multi-process ledger-write follow-up,
+wired into every `data/*.jsonl` append in `archive.py`/`eval.py`. Adversarial
+review caught a must-fix before any verdict was trusted: the gate/tests were
+selecting each arm's champion by raw-fitness argmax and only then reading its
+reliability — re-importing the optimizer's curse item 3's reliability
+discount exists to prevent; fixed by `Archive.best_by_reliability()`, now the
+selector everywhere a comparative verdict is drawn, regression-pinned by 2 new
+tests, and the fix demonstrably mattered in the live run (the evolve arm's
+raw-fitness and reliability champions genuinely diverged). The live gate (8
+genomes/arm x 2 seeds x 200 ticks, interleaved E/R over a shared
+`MINING_SPOTS` cursor for drain fairness) passed its full infrastructure
+check (spot fairness, live kill-switch proof, kernel-guard offline-proven
+per item 2's precedent, no early halt, and item 3's own folded per-cell-elite
+recompute proof, all cross-process-verified) and came back an **honest tie**
+on the comparative verdict (margin −12.42 against an 18.57 noise band) — the
+expected outcome given three of the four genome axes are live-inert under
+today's bare-`Mine()` eval scenario, as `evolve.py`'s own docstring states.
+530 tests green, ruff clean. **Next:** Phase 6 — DESIGN.md §10's society
+scale-out (persistent lives, inter-agent relationships, the forum as village
+chronicle) is the next named phase; item 4's own live gate also surfaced a
+richer-eval-scenarios follow-up (today's harness leaves most genome axes
+live-inert, so a decisive evolution-vs-random differential needs
+multi-profession/cognition-aware scenarios) — see PHASE5.md's "Notes carried
+into Phase 6" section for both and the other carried-forward items.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

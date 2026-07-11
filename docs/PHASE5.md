@@ -66,9 +66,12 @@ on **two channels of unequal strength**, and the design leans on the strong one:
 
 Status legend: ✅ done · 🚧 in progress · ⏳ todo
 
-**Every item below is ⏳.** Society scale-out (persistent lives, inter-agent
-relationships, the forum as village chronicle — the "society" half of DESIGN.md
-§10's Phase-5 line) is deliberately carried into a **Phase 6** note at the end:
+**All four items below are ✅ done — items 1, 2, and 4 live-verified; item 3
+landed offline with its live proof folded into item 4's own gate (the
+`per_cell_elites_recompute_matches` flag) — Phase 5 is complete.** Society
+scale-out (persistent lives, inter-agent relationships, the forum as village
+chronicle — the "society" half of DESIGN.md §10's Phase-5 line) is deliberately
+carried into a **Phase 6** note at the end:
 folding it in here would dilute this phase's single coherent theme (independent
 measurement + evolution). Dependency order: item 1 (fitness) → item 2 (eval
 harness, needs fitness) → item 3 (descriptor + archive, independent of 1-2) →
@@ -484,7 +487,7 @@ multi-seed / no-early-stop lessons this harness bakes in).
 
 ---
 
-## Item 3 — Behavior descriptor + MAP-Elites archive ✅ (offline; live proof folds into item 4)
+## Item 3 — Behavior descriptor + MAP-Elites archive ✅ (offline; live proof delivered by item 4)
 
 **The quality-diversity grid: keep the best agent OF EACH KIND, not just the
 single best.** Ports v1 `../anima/foundry/kernel/descriptor.py` and `archive.py`.
@@ -544,6 +547,12 @@ live gate is: real evaluated genomes land in sensible cells and the archive's
 per-cell elite is the highest-fitness genome actually seen for that cell,
 cross-checked from a fresh process reading `archive.jsonl`.
 
+**Delivered.** Item 4's live gate (2026-07-11) recomputed every cell's elite
+independently from the raw archive rows (`_recompute_per_cell_elites`, never
+via `Archive`'s own bookkeeping) and matched `Archive`'s reported elite for
+every cell exactly (`per_cell_elites_recompute_matches = True`) — see item 4's
+"As landed" section below for the full run.
+
 ### As landed (offline — built in an isolated worktree, adversarially reviewed)
 
 `anima2/foundry/descriptor.py` (compute_descriptor: profession_focus x
@@ -577,7 +586,7 @@ packet counter). Review: 9 findings, 0 must-fix; all nits applied.
 
 ---
 
-## Item 4 — Evolution loop (MAP-Elites over agent configs) ⏳
+## Item 4 — Evolution loop (MAP-Elites over agent configs) ✅
 
 **Improve the population, not just one agent** — the offline optimizer DESIGN.md
 §6.6 names, scoped to config-space so no code is ever synthesized.
@@ -639,13 +648,156 @@ thorough one — and if the margin is within noise (a real possibility with a
 small live budget), the gate reports **that** rather than dressing a tie as a
 win.
 
+### As landed (live-verified)
+
+`anima2/foundry/evolve.py` — the MAP-Elites loop: `evolve()` (mutation-guided)
+and `random_search()` (the comparative baseline), both built from the same
+`_drive` loop over a STATEFUL step function (`make_mutation_step`/
+`make_random_step`) so the two searches share identical guard-check and
+evaluate-insert-record mechanics and differ only in how the next candidate
+genome is produced. Four mutation operators (`op_deliver_threshold`,
+`op_sociability`, `op_cognition_tier`, `op_profession`), each touching exactly
+one of `Genome`'s four named config axes per call — never code. Bounded by
+`EvolutionConfig.max_genomes` and a `foundry/STOP` kill-switch file
+(`kill_switch_active`), both checked between evals, never mid-eval.
+`MAX_CONCURRENT_EVALS` is pinned at `1` and every genome is evaluated
+sequentially in a plain `for` loop — this project's persistent shard has
+exactly one GM account (`hulryung`), so real concurrent evals would fight over
+one GM session; the constant is kept named (not hard-coded) purely so a future
+second account has one obvious place to raise it. `anima2/foundry/_filelock.py`
+(`append_line_locked`, `fcntl.flock`-based) is the multi-process ledger-write
+follow-up this item's scope forced (Phase 4 item 3's open note) — wired into
+both `archive.py::Archive._append` and `eval.py`'s result-writing path, so
+every `data/*.jsonl` append is now safe across separate OS processes, not just
+threads/the GIL within one. (The scope's *other* forced follow-up, the
+`Harvest`/`Mine` intermittent-freeze hardening, was already resolved in the
+pre-Phase-5 hardening pass documented in PHASE4.md item 4's "Resolved" note
+and CLAUDE.md's current-phase paragraph — nothing further was needed here.)
+`anima2/live_evolve_gate.py` is the differential live gate (below). Modified:
+`foundry/archive.py` (the filelock wiring, plus `Archive.best_by_reliability()`
+— see the review finding below) and `foundry/eval.py` (the filelock wiring).
+Tests: `tests/test_foundry_evolve.py` (19 tests — mutation operators stay
+within their config space and are deterministic given a seed; the offline
+convergence proof; kill-switch and `max_genomes` guard behavior; descriptor-
+cell selection from the median-fitness seed) and `tests/test_foundry_filelock.py`
+(4 tests, one of them the decisive proof: 6 real `subprocess.Popen` processes —
+not threads, which would only prove the GIL — writing 240 padded lines
+concurrently into one file through `append_line_locked`, zero torn or lost
+lines, each worker's own line sequence intact). The spec's originally planned
+test filename was `tests/test_evolve.py`; the landed name follows the
+`test_foundry_*` convention items 1-3 already established for everything under
+`anima2/foundry/`, so it's `tests/test_foundry_evolve.py` instead — recorded
+here since the "Offline tests (planned)" section above still names the
+original.
+
+**One must-fix found by adversarial review, fixed before any verdict was
+trusted.** The gate/test verdict originally selected each arm's champion by
+raw-fitness argmax (`Archive.best()`) and only then compared *that* genome's
+reliability — re-importing the exact optimizer's curse item 3's
+`PROMOTION_LAMBDA` reliability discount exists to prevent (a lucky
+high-variance genome can out-mean a steady one while carrying a worse
+discounted score, and `best()` would silently hand it the win). Fixed:
+`Archive.best_by_reliability()` (`foundry/archive.py`) — reliability argmax
+over the elites — is now the selector used at the live gate's main verdict,
+its cross-process readback, and the offline convergence test
+(`test_convergence_evolve_beats_random_search_baseline_same_budget`); `best()`
+is kept but its docstring now states plainly it's "display/telemetry only."
+Regression-pinned by 2 new tests in `tests/test_foundry_archive.py`: a lucky
+genome (per-seed `[80.0, 20.0]`, mean 50/reliability 20) vs a steady one
+(per-seed `[46.0, 44.0]`, mean 45/reliability 44) — `best()` picks the lucky
+one, `best_by_reliability()` picks the steady one. The fix wasn't
+belt-and-suspenders: it **mattered** in the live gate run below — the evolve
+arm's raw-fitness argmax (`g_00003`, reliability 53.43) and its
+reliability argmax (`g_00006`, reliability 59.81) genuinely diverged, so the
+old code path would have reported a different (wrong) champion and a
+different margin. Review additionally verified, without further findings: the
+spot-fairness cursor arithmetic (hand-traced), eval-budget parity between the
+two arms, the filelock multi-process proof, the live kill-switch proof, and
+that every loop is genuinely bounded.
+
+530 tests green (up from 505), ruff clean.
+
+### Live verification gate — PASSED
+
+`python -m anima2.live_evolve_gate --ticks 200 --seeds 2 --genomes 8`, run
+2026-07-11, fresh accounts throughout: 8 genomes per arm x 2 seeds x 200 ticks
+= 32 seed-evals, interleaved E/R round-robin over a shared spot cursor across
+`MINING_SPOTS[0..3]` for `HarvestBank`-drain fairness between the two arms. (A
+prior same-day attempt died at round 6 to an unrelated session exit and was
+discarded — not counted as a gate result.)
+
+**Infrastructure gate — PASSED, every flag true:**
+
+```
+spot_fairness_design_ok = True
+kill_switch_live_proven = True
+kernel_guard_offline_proven_live_skipped_per_item2_precedent = True
+run_completed_without_early_halt = True
+per_cell_elites_recompute_matches = True
+```
+
+`per_cell_elites_recompute_matches` is item 3's own folded live proof,
+delivered here (see item 3's "Live verification gate" section above). Cross-
+process readback (a fresh `python -c` subprocess) worked; 32 lines were
+written to `data/eval_results.jsonl` this run.
+
+**Comparative verdict — HONEST TIE**, reported as such per the spec's own
+"report that rather than dressing a tie as a win" clause:
+
+```
+evo best:  g_00006 (op_cognition_tier)  reliability=59.81
+rand best: g_00007                      reliability=72.23
+margin (evo - rand) = -12.4169
+data-derived noise band = 2 x pooled per-genome per-seed pstdev = 18.5667
+|margin| < noise band -> TIE
+```
+
+An **expected, valid outcome at this budget, not a failure of the loop**:
+three of the four genome axes (`sociability`, `cognition_tier`,
+`deliver_threshold`) are live-inert under the current bare-`Mine()` eval
+scenario — `foundry/evolve.py`'s own module docstring states this plainly
+(the measured `Agent` runs with no `cognition=` and a bare work-`Skill`
+planner, so nothing ever reads `Persona.talkativeness`, picks an LLM tier, or
+reaches a `deliver_threshold` check) — and `profession` has exactly one
+scenario-supported candidate (`"miner"`) today, so `op_profession` is a
+structural no-op. With three-of-four axes inert and the fourth pinned to one
+choice, both the mutation-guided and random searches sample near-identical
+phenotypes on the identical `"mining"` scenario; the fitness spread that
+remains is Mining's own per-swing gain-chance randomness (item 2's live gate
+already documented this same RNG swinging ~2 to ~95), not a real signal either
+search strategy could out-search the other on. A decisive differential needs a
+richer eval harness (multi-profession, multi-cognition-tier scenarios so all
+four axes carry real live signal) — carried into "Notes carried into Phase 6"
+below as the named follow-up, not a same-item hack.
+
+The verdict was **independently recomputed** from the raw archive rows
+(`data/archive_evolve_gate.jsonl` / `data/archive_random_gate.jsonl`, read
+directly rather than trusting the live process's own in-memory `Archive`
+objects) and matched exactly.
+
+**Known nit, honestly recorded:** the gate's `--suffix` flag disambiguates
+account names between runs but does **not** get plumbed into the archive/eval
+ledger file paths (`data/archive_evolve_gate.jsonl`,
+`data/archive_random_gate.jsonl`, `data/eval_results.jsonl` are fixed names),
+so repeated gate runs accumulate rows across invocations in those files. A
+re-analysis of a specific run must filter by each row's own `ts`; a future
+run could instead plumb `--suffix` into the paths themselves. Not a
+correctness bug in this run (the gate clears its own ledgers at the start of
+`_run_interleaved`, so this run's own verdict is unaffected) — just a
+housekeeping gap for anyone reading the files cold afterward.
+
 ### References
 
-`anima2/foundry/evolve.py`, `anima2/foundry/archive.py`,
-`anima2/foundry/eval.py`, `anima2/skill_tuning.py` (the `deliver_threshold` grid
-a mutation walks), `anima2/skills/harvest.py` (the freeze fix this item forces),
-`../anima/foundry/kernel/` (the whole kernel + `../anima/foundry/orchestrator`
-run shape), DESIGN.md §6.6 (MAP-Elites), A6 (the locked ruler).
+`anima2/foundry/evolve.py`, `anima2/foundry/_filelock.py`,
+`anima2/foundry/archive.py` (`Archive.best_by_reliability()`),
+`anima2/foundry/eval.py`, `anima2/live_evolve_gate.py`,
+`anima2/skill_tuning.py` (the `deliver_threshold` grid a mutation walks),
+`tests/test_foundry_evolve.py`, `tests/test_foundry_filelock.py`,
+`tests/test_foundry_archive.py` (the `best_by_reliability` regression tests),
+PHASE4.md item 4's "Resolved" note (the pre-Phase-5 `Harvest`/`Mine` freeze
+fix this item's scope had also flagged), `../anima/foundry/kernel/` (the whole
+kernel + `../anima/foundry/orchestrator` run shape), DESIGN.md §6.6
+(MAP-Elites), A6 (the locked ruler).
 
 ---
 
@@ -667,6 +819,22 @@ run shape), DESIGN.md §6.6 (MAP-Elites), A6 (the locked ruler).
 - **First real `../uowiki` write** (Phase 4 item 1) — the write loop is proven
   against a disposable clone; the first run against the real repo deserves the
   same care as a first live-shard run.
+- **Richer eval scenarios so evolution's mutation space carries real live
+  signal** (item 4's own live gate) — today's one live-scoreable scenario (a
+  bare `Mine()`, no cognition, no persona speech) leaves three of the four
+  genome axes (`sociability`, `cognition_tier`, `deliver_threshold`) live-inert
+  and `profession` pinned to one candidate, which is why item 4's comparative
+  live gate came back an honest tie: both searches sampled near-identical
+  phenotypes and the residual fitness spread was Mining's own per-swing
+  gain-chance RNG, not a real search-quality signal. Needs multi-profession and
+  cognition-aware `Scenario` entries in `foundry/eval.py::SCENARIOS` before a
+  decisive evolution-vs-random differential is possible.
+- **`live_evolve_gate.py`'s `--suffix` doesn't reach its own archive/eval file
+  paths** — it disambiguates account names between runs but
+  `data/archive_evolve_gate.jsonl`/`data/archive_random_gate.jsonl`/
+  `data/eval_results.jsonl` are fixed names, so repeated gate runs accumulate
+  rows across invocations; a re-analysis must filter by each row's own `ts`,
+  or a future run should plumb `--suffix` into the paths themselves.
 
 ---
 
@@ -677,8 +845,10 @@ run shape), DESIGN.md §6.6 (MAP-Elites), A6 (the locked ruler).
   (roadmap — this phase's entry points here), §11 (open decisions).
 - PHASE4.md — the self-reported-reward gap this phase closes; the fixed-window /
   multi-seed / no-early-stop / cross-process-readback / differential-gate house
-  style every item above follows; the `Harvest`/`Mine` freeze and multi-process
-  ledger follow-ups item 4 resolves.
+  style every item above follows; Phase 4 item 3's own open note on
+  multi-process ledger-write safety, resolved here (`foundry/_filelock.py`) —
+  the `Harvest`/`Mine` freeze item 4's scope also flagged was already resolved
+  in a pre-Phase-5 hardening pass (PHASE4.md item 4's "Resolved" note).
 - `../anima/foundry/kernel/fitness.py`, `descriptor.py`, `archive.py`, `eval.py`,
   `safety.py`, `trajectory.py`, and `../anima/foundry/orchestrator` — the v1
   Foundry assets this phase ports (signal source swapped: raw-packet → GM-read +

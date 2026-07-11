@@ -29,6 +29,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ._filelock import append_line_locked
+
 # Promotion is decided on a reliability-discounted score (a lower-confidence
 # bound), NOT the raw multi-seed mean — ported VERBATIM from v1
 # `../anima/foundry/kernel/archive.py:28-44`. With run-to-run variance,
@@ -235,12 +237,16 @@ class Archive:
         silently (never raises) — matches `skill_library.py::
         SkillLibrary.record_outcome`'s "never break the caller over a
         logging failure" discipline; the in-memory archive stays correct
-        even if the disk write fails."""
+        even if the disk write fails.
+
+        Guarded by BOTH `_archive_lock` (same-process thread safety — kept,
+        cheap, harmless) AND `append_line_locked`'s `fcntl.flock` (PHASE5.md
+        item 4's cross-process ledger-write safety follow-up — see
+        `_filelock.py`'s own module docstring for why the threading lock
+        alone was never enough for a future multi-process run)."""
         try:
             with _archive_lock:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                with self.path.open("a", encoding="utf-8") as f:
-                    f.write(json.dumps(g.to_dict()) + "\n")
+                append_line_locked(self.path, json.dumps(g.to_dict()))
         except OSError:
             return
 
@@ -306,8 +312,20 @@ class Archive:
         return sum(g.fitness for g in self.elites())
 
     def best(self) -> Genome | None:
+        """Raw-fitness argmax — display/telemetry only (`summary()`). For any
+        reliability-based decision use `best_by_reliability`: picking a champion
+        by raw mean and then reading its reliability re-imports the optimizer's
+        curse the reliability discount exists to prevent (a lucky high-variance
+        genome can out-mean a steady one while carrying a worse discounted
+        score)."""
         es = self.elites()
         return max(es, key=lambda g: g.fitness) if es else None
+
+    def best_by_reliability(self) -> Genome | None:
+        """Reliability argmax over the elites — the selector for comparative
+        verdicts (the live evolve gate's margin, the offline convergence test)."""
+        es = self.elites()
+        return max(es, key=lambda g: g.reliability) if es else None
 
     def summary(self) -> dict[str, Any]:
         es = self.elites()

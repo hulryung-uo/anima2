@@ -51,6 +51,8 @@ from ..planner import Planner
 from ..profession import MINING_SPOTS
 from ..skills import Mine
 from ..skills.base import Skill
+from ._filelock import append_line_locked
+from .descriptor import compute_descriptor
 from .fitness import FitnessBreakdown, compute_fitness
 from .trajectory import TappedBody, TrajectoryRecorder
 
@@ -251,6 +253,15 @@ class EvalResult:
     gold_delta: int
     alive_fraction: float
     ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    #: `descriptor.py::compute_descriptor(summary).cell` — item 3's behavior
+    #: cell key (Phase-0 active grid: `profession_focus x sociability_bin`),
+    #: computed once inside `run_eval` (the only place the full
+    #: `TrajectorySummary` is ever in scope — it's never persisted itself,
+    #: see this class's own docstring) and carried on the result so item 4's
+    #: `evolve.py` doesn't need to re-derive it or keep the summary alive.
+    #: Defaults to `()` (empty tuple) for backward compatibility with any
+    #: `eval_results.jsonl` line written before this field existed.
+    descriptor_cell: tuple = field(default_factory=tuple)
 
     @property
     def score(self) -> float:
@@ -266,6 +277,7 @@ class EvalResult:
             "skill_gain_total": self.skill_gain_total,
             "gold_delta": self.gold_delta,
             "alive_fraction": self.alive_fraction,
+            "descriptor_cell": list(self.descriptor_cell),
         }
 
     @classmethod
@@ -286,6 +298,7 @@ class EvalResult:
             gold_delta=d["gold_delta"],
             alive_fraction=d["alive_fraction"],
             ts=d.get("ts", ""),
+            descriptor_cell=tuple(d.get("descriptor_cell", ())),
         )
 
 
@@ -297,10 +310,12 @@ def write_eval_result(result: EvalResult, path: str | Path | None = None) -> Non
     """
     p = Path(path) if path is not None else _DEFAULT_RESULTS_PATH
     try:
+        # `_results_lock` (same-process threads) + `append_line_locked`'s
+        # `fcntl.flock` (cross-process — PHASE5.md item 4's forced follow-up,
+        # see `_filelock.py`'s own module docstring) — same double-guard
+        # `archive.py::Archive._append` uses.
         with _results_lock:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open("a") as f:
-                f.write(json.dumps(result.to_json()) + "\n")
+            append_line_locked(p, json.dumps(result.to_json()))
     except OSError:
         return
 
@@ -402,6 +417,10 @@ def run_eval(cfg: EvalConfig, *, kernel_repo_root: str | Path | None = ".") -> E
             summary = recorder.finish()
 
     fitness = compute_fitness(summary)
+    # Item 3's descriptor, computed here (the only place the full
+    # `TrajectorySummary` is in scope) and carried on the result as just its
+    # `cell` key — see `EvalResult.descriptor_cell`'s own docstring.
+    descriptor = compute_descriptor(summary)
     return EvalResult(
         scenario_id=cfg.scenario_id,
         config=cfg,
@@ -410,6 +429,7 @@ def run_eval(cfg: EvalConfig, *, kernel_repo_root: str | Path | None = ".") -> E
         skill_gain_total=summary.skill_gain_total,
         gold_delta=summary.gold_delta,
         alive_fraction=summary.alive_fraction(),
+        descriptor_cell=descriptor.cell,
     )
 
 
