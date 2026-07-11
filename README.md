@@ -87,11 +87,15 @@ agent configs, landed offline), and item 4 (the evolution loop —
 `foundry/evolve.py::evolve`/`random_search`, compared live against each
 other on identical budgets; the comparative verdict came back an honest tie,
 the expected result while most of the genome's mutation space is live-inert
-under today's one eval scenario) are all done. 530 tests green.
+under today's one eval scenario) are all done. Phase 6 item 1 (persistent
+lives — disk-backed `ReflectionMemory`, `village.py --persist-insights`,
+live-verified: a genuinely new process resumes a persona's insights from
+`data/insights.jsonl` before its first tick) is also live-verified — see
+[`docs/PHASE6.md`](docs/PHASE6.md). 540 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 530 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 540 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):

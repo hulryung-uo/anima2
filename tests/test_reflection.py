@@ -23,7 +23,7 @@ from anima2.cognition import (
 )
 from anima2.contract import Observation, PlayerView, Position
 from anima2.llm import StubLLMClient
-from anima2.memory import Episode
+from anima2.memory import Episode, Insight, ReflectionMemory, load_insights
 from anima2.mock_body import MockBody
 from anima2.persona import Persona
 from anima2.planner import Planner
@@ -298,6 +298,61 @@ def test_reflecting_cognition_skips_reflection_when_one_already_in_flight():
     gate.set()
     assert reflecting.wait_idle(timeout=2.0)
     assert len(reflecting.insights) == 2
+
+
+# --- persisted insights reach the goal-prompt path (PHASE6.md item 1) --------
+#
+# `village.py --persist-insights`'s own wiring shape: `load_insights(...)` ->
+# `insights=` -> `ReflectingCognition(...)`. Covered at the unit level here —
+# `village.py` itself has no dedicated test module, matching every other
+# `village.py`-only wiring detail (curriculum, deliver_threshold tuning) this
+# codebase already tests at this same seam rather than through village.py's
+# own CLI/run_village.
+
+
+def test_reflecting_cognition_surfaces_preloaded_insight_before_first_reflection(tmp_path):
+    """The non-vacuous core of PHASE6.md item 1's wiring: a `ReflectionMemory`
+    seeded via `load_insights(...)` from a *prior* session's persisted insight
+    must reach `LLMCognition`'s situation prompt on this session's very FIRST
+    `reconsider()` call — before this session has recorded a single episode,
+    let alone reflected. Proves the seed reaches the goal-prompt path, not
+    just that `load_insights` itself parses correctly (test_memory.py already
+    covers that in isolation)."""
+    path = tmp_path / "insights.jsonl"
+    seed = ReflectionMemory(persist_path=path, agent_key="Grimm0")
+    seed.record(Insight(text="The east vein pays better in the morning.",
+                         episode_ticks=(1, 5), episode_count=5))
+
+    loaded = load_insights(path, "Grimm0")  # simulates the fresh-process restart village.py performs
+    client = StubLLMClient('{"goal": "idle"}')
+    reflecting = ReflectingCognition(LLMCognition(client, job="miner"), HeuristicReflection(),
+                                      every_n_reconsiders=1000, min_new_episodes=1000,
+                                      insights=loaded)
+    ctx = _ctx(episodes=[], episode_count=0)  # no episodes this session — reflection cannot have fired
+
+    reflecting.reconsider(ctx)
+    assert "The east vein pays better in the morning." in client.calls[0][1]
+
+
+def test_reflecting_cognition_insights_default_is_isolated_per_persona(tmp_path):
+    """The cross-persona-isolation half of the same wiring: loading a
+    DIFFERENT persona's key against the same ledger file must not leak the
+    first persona's insight into the second persona's prompt."""
+    path = tmp_path / "insights.jsonl"
+    seed = ReflectionMemory(persist_path=path, agent_key="Grimm0")
+    seed.record(Insight(text="The east vein pays better in the morning.",
+                         episode_ticks=(1, 5), episode_count=5))
+
+    loaded = load_insights(path, "Marina0")  # a different persona, same ledger file
+    client = StubLLMClient('{"goal": "idle"}')
+    reflecting = ReflectingCognition(LLMCognition(client, job="fisher"), HeuristicReflection(),
+                                      every_n_reconsiders=1000, min_new_episodes=1000,
+                                      insights=loaded)
+    ctx = _ctx(episodes=[], episode_count=0)
+
+    reflecting.reconsider(ctx)
+    assert "east vein" not in client.calls[0][1]
+    assert "Lessons learned: (nothing yet)" in client.calls[0][1]
 
 
 # --- agent-loop integration ----------------------------------------------------

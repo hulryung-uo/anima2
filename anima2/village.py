@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import threading
 import time
+from pathlib import Path
 
 from .agent import Agent
 from .contract import Say, Walk
@@ -44,6 +45,11 @@ from .uomap import find_tree_clusters
 # Each lumberjack gets a distinct grove (a stand spot + the trees in reach).
 FOREST_BASE = (2520, 450)
 LUMBER_MAP = 1
+
+#: `data/insights.jsonl` relative to the process's cwd — mirrors `curriculum.
+#: py`'s `_DEFAULT_MILESTONES_LOG`/`skill_library.py`'s `_DEFAULT_LEDGER`
+#: convention exactly (created lazily, gitignored). PHASE6.md item 1.
+INSIGHTS_PATH = Path("data") / "insights.jsonl"
 
 
 def _persona_for(prof: Profession, idx: int) -> Persona:
@@ -94,7 +100,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 ticks: int = 60, stagger: float = 4.0, forum: bool = False,
                 chatter: bool = False, llm_tiers: str | None = None,
                 tune_deliver_threshold: bool = False, ledger_path: str | None = None,
-                curriculum: bool = False) -> None:
+                curriculum: bool = False, persist_insights: bool = False) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -254,10 +260,19 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         cognition = None
         if tiered_clients is not None:
             from .cognition import LLMCognition, LLMReflection, ReflectingCognition, ThreadedCognition
+            from .memory import load_insights
 
             inner = LLMCognition(call_counters[ROLE_TIER["chatter"]], job=p["prof"].key)
             reflection = LLMReflection(call_counters[ROLE_TIER["reflection"]])
-            cognition = ThreadedCognition(ReflectingCognition(inner, reflection))
+            # PHASE6.md item 1: resume this persona's distilled insights from a
+            # prior session, if any — `load_insights` returns an empty (but
+            # already disk-wired) ReflectionMemory when there's nothing to
+            # resume, so this is safe on a persona's very first run too.
+            # `persist_insights=False` (the default) leaves `insights=None`,
+            # letting ReflectingCognition build its own in-memory-only default —
+            # zero effect on any currently-passing `--llm-tiers` roster.
+            insights = load_insights(INSIGHTS_PATH, p["persona"].name) if persist_insights else None
+            cognition = ThreadedCognition(ReflectingCognition(inner, reflection, insights=insights))
         elif chat_client is not None:
             from .cognition import LLMCognition, ThreadedCognition
 
@@ -431,6 +446,14 @@ def main() -> None:
     # records an `Episode` when one is achieved (observational only for now).
     ap.add_argument("--curriculum", action="store_true",
                      help="automatic curriculum: track/pick milestones (Phase 4 item 5)")
+    # Opt-in, unset by default (Phase 6 item 1): zero effect on any currently-
+    # passing roster unless passed, and only takes effect at all when
+    # reflection is itself wired (today: only via --llm-tiers). Resumes each
+    # agent's distilled insights from data/insights.jsonl at construction and
+    # keeps appending newly-distilled ones to the same file as the run goes.
+    ap.add_argument("--persist-insights", action="store_true",
+                     help="disk-backed ReflectionMemory: resume + persist insights across restarts "
+                          "(Phase 6 item 1; requires --llm-tiers to have any effect)")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
@@ -438,7 +461,7 @@ def main() -> None:
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
                 forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers,
                 tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path,
-                curriculum=args.curriculum)
+                curriculum=args.curriculum, persist_insights=args.persist_insights)
 
 
 if __name__ == "__main__":

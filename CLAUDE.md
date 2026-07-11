@@ -241,10 +241,34 @@ richer-eval-scenarios follow-up (today's harness leaves most genome axes
 live-inert, so a decisive evolution-vs-random differential needs
 multi-profession/cognition-aware scenarios) — see PHASE5.md's "Notes carried
 into Phase 6" section for both and the other carried-forward items. **Work
-breakdown written** — see [`PHASE6.md`](docs/PHASE6.md): six items, starting
-with item 1 (persistent lives — disk-backed `ReflectionMemory` so an agent's
-distilled `Insight`s survive a process restart, keyed by persona name,
-`data/insights.jsonl`).
+breakdown written** — see [`PHASE6.md`](docs/PHASE6.md): six items.
+**Phase 6 item 1 — persistent lives — is live-verified**: `memory.py::
+ReflectionMemory` gains optional `persist_path`/`agent_key` constructor kwargs
+(`record()` appends one `{ts, agent_key, text, episode_ticks, episode_count}`
+JSON line when set, under a new `_insights_log_lock` — byte-for-byte no-op
+otherwise) and a new `load_insights(path, agent_key)` module function (the
+"load at construction, append incrementally" idiom `skill_library.py`/
+`curriculum.py` already established, now ported to `ReflectionMemory`);
+`village.py --persist-insights` wires it into `data/insights.jsonl`, scoped to
+the existing `--llm-tiers` branch only. The live gate (`live_persistent_lives.py`,
+four legs each run as its own subprocess/genuinely new OS process) is
+decisive: a fresh persona reflects and persists real insight text to disk
+(confirmed by an independent fresh-process readback), then a **genuinely new
+process** — same account, same character — loads that insight from disk and
+surfaces it in its very first cognition prompt before reflecting even once
+itself; a different persona sharing the same ledger file sees none of it
+(cross-persona isolation); an identical run with persistence off genuinely
+reflects in memory (a positive control proving the engine ran) yet leaves the
+ledger byte-for-byte unchanged on disk (inertness). All four legs passed on
+the first attempt. Caught one bug along the way, in the live-gate script
+itself (not the shipped code): the scripted reflection client was wired
+directly as `ReflectingCognition`'s `reflection` producer instead of wrapped
+in `cognition.LLMReflection`, so `_reflect_bg`'s broad exception guard
+silently swallowed an `AttributeError` every cadence cycle — fixed by
+matching `live_wiki_report.py`'s own established wrapping pattern. 540 tests
+green (up from 530), ruff clean. **Next:** Phase 6 items 2-3 (the village
+chronicle relationship ledger, the forum as continuing chronicle) remain —
+see [`PHASE6.md`](docs/PHASE6.md).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

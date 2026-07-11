@@ -94,7 +94,7 @@ thread A's new ledgers use a plain lock, matching `skill_library.py`/
 
 ---
 
-## Item 1 — Persistent lives: disk-backed reflection memory ⏳
+## Item 1 — Persistent lives: disk-backed reflection memory ✅
 
 **Close the literal gap in "persistent lives across sessions": an agent's
 distilled `Insight`s vanish when the process exits.** Everything else that
@@ -260,6 +260,105 @@ confused with organically-generated text.
   from a subprocess invocation independent of the live process's own memory,
   the same "fresh channel, never the live process's own memory" discipline
   every gate since Phase 4 item 4 has used.
+
+### As landed (live-verified)
+
+Landed exactly to spec — `memory.py::ReflectionMemory` gains `persist_path`/
+`agent_key` (keyword-only, both `None` by default) and `record()` appends the
+documented `{ts, agent_key, text, episode_ticks, episode_count}` JSON line
+under a new module-level `_insights_log_lock` (mirrors `curriculum.py::
+_milestones_log_lock` exactly) only when `persist_path` is set; the new
+`load_insights(path, agent_key, capacity=20)` module function does the
+"degrade, never crash" read (missing file → empty, corrupt trailing line
+skipped, non-matching `agent_key` filtered out) and returns a `ReflectionMemory`
+already wired to keep appending to the same file. `village.py` gains
+`--persist-insights` and `INSIGHTS_PATH = Path("data") / "insights.jsonl"`;
+wiring is scoped to the existing `tiered_clients is not None` branch exactly as
+specified — `--persist-insights` alone (without `--llm-tiers`) has no effect,
+matching the "only takes effect when reflection is itself wired" rule. No
+change to `cognition.py` was needed, as predicted.
+
+**One clarification worth stating, not a divergence:** the spec's live-gate
+prose describes session 1 as "`--persist-insights`", but per the item's own
+"References"/Scope section `live_persistent_lives.py` is a **standalone
+driver mirroring `live_reflect.py`'s wiring shape directly** (its own
+`ReflectingCognition(..., insights=...)` construction), not a wrapper that
+shells out to `village.py`'s CLI — so "`--persist-insights`" in that
+prose means *this item's persistence wiring, exercised the same way
+`village.py` exercises it*, not a literal subprocess invocation of
+`village.py`. The gate additionally structures all four legs (session1,
+session2, differential, inertness) as **independent `--leg` subprocesses**
+or a genuinely new process — `live_persistent_lives.py`'s own module
+docstring), each with its own retry loop (bounded at 3 attempts, a fresh
+account per retry) guarding against this project's known intermittent
+Mine/Harvest live freeze (`anima2-harvest-freeze` memory note) — belt-and-
+suspenders beyond what the spec strictly required, since only session 2 is
+explicitly named as needing process isolation.
+
+**Bug caught before it could produce a false-negative gate result:** the
+live-gate script's first draft passed a raw scripted `LLMClient`-shaped
+object (`.complete(system, user)`) directly as `ReflectingCognition`'s
+`reflection` parameter, which expects a `ReflectionProducer`
+(`.reflect(episodes, persona)`). `ReflectingCognition.reconsider()` has no
+guard around that call, so `_reflect_bg`'s broad `except Exception: pass`
+silently swallowed the resulting `AttributeError` every cadence cycle — a
+150-tick session1 run completed cleanly, printing plausible-looking
+episode/reward progress, with `reflect_calls` staying `0` throughout and
+*zero* insights ever recorded. Fixed by wrapping the scripted client in
+`cognition.LLMReflection(...)`, exactly `live_wiki_report.py`'s own pattern
+— the fix that was already used everywhere else in this codebase, just
+missed in this new script's first draft. This was a bug in the **live-gate
+script**, not in `memory.py`/`village.py`'s shipped code.
+
+**Live gate — PASSED, all four legs, first attempt (no retries needed):**
+
+```
+[Grimm-life1-762710-a0] preloaded insights from disk BEFORE first tick: 0 (persist=True)
+[Grimm-life1-762710-a0] done. episodes=32 reward=0.7 reflect_calls=5 insights_in_memory=5
+[FLAG] session1_reflected_in_memory = True
+
+=== independent readback #1: a FRESH `python -c` process reads data/insights.jsonl ===
+  agent_key='Grimm-life1-762710-a0': {'count': 5, 'texts': ['The east vein pays better
+  in the morning.', ... x5]}
+
+[Grimm-life1-762710-a0] preloaded insights from disk BEFORE first tick: 5 (persist=True)
+[Grimm-life1-762710-a0] tick   0: episodes=1 reward=0.0 reflect_calls=0 insights_in_memory=5
+[Grimm-life1-762710-a0] first reconsider prompt (tick 0): '...Lessons learned: The east
+  vein pays better in the morning. | The east vein pays better in the morning. | The east
+  vein pays better in the morning.\n...'
+[FLAG] session2_preloaded_from_disk_before_first_tick = True
+[FLAG] session2_first_tick_prompt_has_session1_insight = True
+[FLAG] session2_first_tick_prompt_lacks_session2_own_insight = True
+
+[Marina-life1-762710] preloaded insights from disk BEFORE first tick: 0 (persist=True)
+[FLAG] differential_cross_persona_isolated = True
+
+[Grimm-life2-762710-a0] preloaded insights from disk BEFORE first tick: 0 (persist=False)
+[Grimm-life2-762710-a0] done. episodes=28 reward=0.3 reflect_calls=5 insights_in_memory=5
+[FLAG] inertness_leg_reflected_in_memory = True   # positive control: it DID reflect...
+[FLAG] inertness_leg_disk_unchanged = True         # ...but nothing hit disk
+
+[FLAG] session1_insight_persisted_to_disk_fresh_process_readback = True
+[FLAG] differential_marina_never_sees_grimm_insight_fresh_readback = True
+[FLAG] PHASE6_ITEM1_PERSISTENT_LIVES PASSED
+```
+
+Session 2's own first-tick prompt (captured before it had reflected even
+once itself) carried session 1's exact insight text three times over (the
+"Lessons learned" line's `ctx.insights[-3:]` window) — the decisive,
+non-vacuous proof: `load_insights()` ran in a genuinely separate OS process,
+before that process's first tick, and the result reached the goal-prompt
+path. The differential leg (`Marina-life1`, a different persona sharing the
+same `data/insights.jsonl`) preloaded zero insights. The inertness leg is
+the sharpest control: with persistence off, reflection still fired 5 times
+in memory (proving the engine genuinely ran, not merely "did nothing"), yet
+`data/insights.jsonl` was byte-for-byte identical before and after — the
+opt-out path is inert by omission of a write, not by omission of the whole
+feature.
+
+**Offline: 540 tests green (530 + 9 new — 7 in `tests/test_memory.py`, 2 in
+`tests/test_reflection.py`), 3 consecutive full-suite runs, `ruff check .`
+clean.**
 
 ### References
 

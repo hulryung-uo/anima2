@@ -5,8 +5,9 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-11 · Status: **Phase 6 begun (the living village) — work
-breakdown written, nothing landed yet; see [`PHASE6.md`](PHASE6.md).** Phase 5
+Last updated: 2026-07-11 · Status: **Phase 6 in progress (the living village) —
+item 1 (persistent lives, disk-backed `ReflectionMemory`) live-verified; see
+[`PHASE6.md`](PHASE6.md) for the full itemized status.** Phase 5
 complete (independent measurement
 + evolution) — all four items done (items 1, 2, and 4 live-verified; item 3
 landed offline with its live proof folded into item 4's gate); see
@@ -42,7 +43,7 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-530 tests green, ruff clean; the full village, smelting, reflection,
+540 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -78,7 +79,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 complete (independent
-fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); 530 tests green |
+fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 in progress (item 1, persistent lives via disk-backed `ReflectionMemory`, live-verified); 540 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -444,7 +445,11 @@ The original analysis, kept as the decision record:
   a cognition-aware eval mode that finally gives `sociability`/
   `cognition_tier` real live signal, and a rerun of the evolution-vs-random
   comparative gate on the enriched harness (thread B). No item is expected
-  to touch the Observation/Action contract. ⏳ Not yet started.
+  to touch the Observation/Action contract. **Item 1 ✅ live-verified**
+  (`memory.py::ReflectionMemory`'s optional `persist_path`/`agent_key` +
+  `load_insights()`, `village.py --persist-insights`) — see PHASE6.md item 1's
+  "As landed" section for the live-gate transcript. Items 2-6 ⏳ not yet
+  started.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane
