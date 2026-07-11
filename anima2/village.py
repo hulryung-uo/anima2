@@ -20,9 +20,11 @@ import time
 from pathlib import Path
 
 from .agent import Agent
-from .contract import Say, Walk
+from .chronicle import ChronicleLedger
+from .contract import Observation, Say, Walk
 from .control import GmControl
 from .ipc_body import IpcBody
+from .memory import Episode
 from .persona import Persona
 from .profession import (
     BANKER_SPOT,
@@ -57,19 +59,296 @@ def _persona_for(prof: Profession, idx: int) -> Persona:
                    combat_disposition=prof.combat_disposition)
 
 
+# ============================================================================
+# PHASE6.md item 2 — the village chronicle: pure event detectors.
+#
+# Each detector is a small, unit-testable pure function reading only
+# `ctx.memory`'s own phase-key strings (duplicated, never cross-imported from
+# `skills/*.py` — mirrors `curriculum.py::_mid_transaction`'s identical
+# discipline, cited by name in this item's own spec) plus, where a skill
+# actually has one, a confirmed reward-bearing `Episode` recorded THIS tick.
+# `_run_worker` below calls these once per tick, per agent, only when
+# `--chronicle` is set — every detector returns `None` when nothing fired.
+# ============================================================================
+
+#: Mirrors `skills/smelt.py::INGOT_GRAPHICS`/`curriculum.py::_INGOT_GRAPHICS`
+#: — duplicated, not imported, matching this codebase's established
+#: "duplicate a handful of graphic constants rather than reach into a
+#: skill's own module" convention (see curriculum.py's own module docstring).
+_CHRONICLE_BACKPACK_LAYER = 0x15
+_CHRONICLE_INGOT_GRAPHICS = frozenset({0x1BEF, 0x1BF0, 0x1BF1, 0x1BF2})
+
+
+def _pack_ingot_count(obs: Observation) -> int:
+    bp = next((i for i in obs.items if i.layer == _CHRONICLE_BACKPACK_LAYER
+              and i.container == obs.player.serial), None)
+    if bp is None:
+        return 0
+    return sum(i.amount for i in obs.items if i.graphic in _CHRONICLE_INGOT_GRAPHICS and i.container == bp.serial)
+
+
+def _reward_if_named(new_episode: Episode | None, prefix: str) -> float | None:
+    """`new_episode`'s own reward, iff it was actually recorded THIS tick
+    (the caller only ever passes an episode here when `agent.episodes.
+    total_recorded` grew since the last check — see `_run_worker`), its
+    `summary` names the expected skill (`str.startswith`, not exact
+    equality: the live blacksmith work skill is `market.py::
+    BlacksmithMarket`, `name = "blacksmith_market"`, which a `"blacksmith"`
+    prefix check still matches — the same episode a plain solo `Blacksmith`
+    would also produce), and the reward is positive — the "confirmed, not
+    merely attempted" gate every detector below shares. `None` otherwise —
+    never fabricates an event off phase-key noise alone.
+    """
+    if new_episode is not None and new_episode.summary.startswith(prefix) and new_episode.reward > 0:
+        return float(new_episode.reward)
+    return None
+
+
+def _delivered_ingots(prev_memory: dict, memory: dict, deliver_phase_reward: float) -> float | None:
+    """miner -> blacksmith: `smelt_phase` transitions out of `"deliver"`
+    (prior tick `"deliver"`, this tick `"return"` — `skills/smelt.py::
+    MineSmeltDeliver.step()`'s own same-tick "deliver done -> resume via
+    return" fallthrough) — `amount` is `deliver_phase_reward`, the TOTAL
+    confirmed reward the caller accumulated across every tick of the trip
+    (see `_run_worker`'s own accumulator), not a single tick's own episode
+    reward.
+
+    This is necessary, not merely careful — **live-caught** (PHASE6.md item
+    2's own live gate): `INGOT_GRAPHICS` has 4 distinct graphics, matching
+    `ORE_GRAPHICS`'s own pile fragmentation (`Item.WillStack` requires an
+    exact graphic match, so a smelted haul is often 2-4 separate piles, not
+    always one), and `MineSmeltDeliver._deliver_step` pays its reward as one
+    increment **per confirmed pile-drop**, not as one lump sum on the exact
+    tick `smelt_phase` finally flips to `"return"` — that tick's own reward
+    is often `0.0` (everything already paid on earlier ticks), even for a
+    real, fully-confirmed delivery. A first-draft version of this detector
+    checked only that tick's own episode and silently missed every delivery
+    with more than one pile — caught because `picked_up_ingots` (the
+    blacksmith's side of the identical edge, reward-channel-free by
+    necessity — see that detector's own docstring) kept firing with real,
+    correct amounts while this one stayed silent.
+    """
+    if prev_memory.get("smelt_phase") == "deliver" and memory.get("smelt_phase") == "return":
+        if deliver_phase_reward > 0:
+            return deliver_phase_reward
+    return None
+
+
+def _picked_up_ingots(
+    prev_memory: dict, memory: dict, fetch_entry_ingots: int | None, pack_ingots_now: int,
+) -> float | None:
+    """blacksmith <- miner, the same edge, reverse direction: `bs_state`
+    transitions out of `"fetch"` (`skills/craft.py::Blacksmith._fetch_step`'s
+    own state, held for the whole fetch-plus-walk-home trip). Unlike the
+    other three detectors, `Blacksmith.step()` has **no dedicated reward
+    channel for the pickup itself** — verified directly: its only reward
+    computation is Blacksmithing skill-base gain, computed unconditionally
+    at the top of every tick and attached to whatever action that tick
+    happens to return, fetch included, purely incidentally. So `amount`
+    here is a **confirmed pack-ingot delta** (`pack_ingots_now -
+    fetch_entry_ingots`, both Observation-derived — `_pack_ingot_count`)
+    over the fetch trip instead of an episode reward — the same "only a
+    confirmed, observed outcome pays" discipline the reward-based detectors
+    get from `EpisodicMemory`, applied here via a direct pack-count
+    comparison since no reward channel exists to read it from.
+    `fetch_entry_ingots` is the pack count `_run_worker` captured the tick
+    `bs_state` first became `"fetch"` (its own snapshot, taken once per
+    fetch trip — not recomputed here); `None` (never captured) yields no
+    event rather than a bogus delta against a missing baseline.
+    """
+    if prev_memory.get("bs_state") == "fetch" and memory.get("bs_state") != "fetch":
+        if fetch_entry_ingots is not None:
+            amount = pack_ingots_now - fetch_entry_ingots
+            if amount > 0:
+                return float(amount)
+    return None
+
+
+def _sold_to_vendor(prev_memory: dict, memory: dict, new_episode: Episode | None) -> float | None:
+    """blacksmith -> world: `mkt_phase` transitions out of `"sell"` (`skills/
+    market.py::BlacksmithMarket._sell_step`'s own same-tick fallthrough to
+    `"sell_return"`) with a confirmed reward-bearing episode — `amount` is
+    the gold gained (`_sell_step`'s own confirmed-gain accounting)."""
+    if prev_memory.get("mkt_phase") == "sell" and memory.get("mkt_phase") == "sell_return":
+        return _reward_if_named(new_episode, "blacksmith")
+    return None
+
+
+def _banked_gold(prev_memory: dict, memory: dict, new_episode: Episode | None) -> float | None:
+    """blacksmith -> world: `mkt_phase` transitions out of `"bank"` — mirrors
+    `_sold_to_vendor` exactly, off `BlacksmithMarket._bank_step`'s own
+    confirmed-deposit accounting instead."""
+    if prev_memory.get("mkt_phase") == "bank" and memory.get("mkt_phase") == "bank_return":
+        return _reward_if_named(new_episode, "blacksmith")
+    return None
+
+
+def _looted_corpse(prev_memory: dict, memory: dict, hunt_reward_accum: float) -> float | None:
+    """hunter -> world: growth in `len(memory["hunt_looted"])` since the
+    last check — mirrors `curriculum.py::_memory_list_len_threshold`'s exact
+    "this skill's own bookkeeping list grew" signal. `amount` is
+    `hunt_reward_accum`, the confirmed loot value the caller has accumulated
+    since `hunt_looted` last grew (see `_run_worker`'s own accumulator) —
+    **not** a single tick's own episode reward, for the identical reason
+    `_delivered_ingots` isn't: a corpse can hold more than one whitelisted
+    item (`skills/hunt.py::LOOT_GRAPHICS` — gold plus gems), each looted in
+    its own lift-then-place tick, so the confirmed reward can land across
+    several ticks before the corpse is finally retired and `hunt_looted`
+    grows. `0.0` (not `None`) for a genuinely empty corpse (the skill's own
+    module docstring: "a corpse can legitimately be empty") — still a real
+    loot-cycle event, just a zero-value one.
+    """
+    prev_n = len(prev_memory.get("hunt_looted") or ())
+    now_n = len(memory.get("hunt_looted") or ())
+    if now_n > prev_n:
+        return hunt_reward_accum
+    return None
+
+
+def _accumulate_deliver_reward(current: float, prev_memory: dict, new_episode: Episode | None) -> float:
+    """One tick's contribution to the miner's running `deliver_phase_reward`
+    total (see `_delivered_ingots`'s docstring for why a running total, not
+    a single tick's episode, is needed) — extracted from `_run_worker`'s own
+    loop as its own pure, independently-testable function. `prev_memory.get
+    ("smelt_phase") == "deliver"` is true both mid-trip and on the exact
+    transition tick itself (that tick's own `memory` already reads
+    `"return"` post-step, but it was `"deliver"` going into this tick's
+    `step()` call), so this also folds in the final pile's own increment.
+    """
+    if (prev_memory.get("smelt_phase") == "deliver" and new_episode is not None
+            and new_episode.summary.startswith("mine_smelt_deliver") and new_episode.reward > 0):
+        return current + new_episode.reward
+    return current
+
+
+def _accumulate_hunt_reward(current: float, new_episode: Episode | None) -> float:
+    """One tick's contribution to the hunter's running `hunt_reward_accum`
+    total (see `_looted_corpse`'s docstring) — not phase-gated the way
+    `_accumulate_deliver_reward` is, since a corpse's confirmed loot value
+    can settle during `Hunt`'s own `hunt_val_settle` window, after
+    `hunt_phase` has already reset back to `"engage"`.
+    """
+    if new_episode is not None and new_episode.summary.startswith("hunt") and new_episode.reward > 0:
+        return current + new_episode.reward
+    return current
+
+
+def _chronicle_events_this_tick(
+    job: str, counterpart: str | None, prev_memory: dict, memory: dict, new_episode: Episode | None,
+    *, fetch_entry_ingots: int | None, pack_ingots_now: int,
+    deliver_phase_reward: float = 0.0, hunt_reward_accum: float = 0.0,
+) -> list[tuple[str, str | None, float]]:
+    """Every chronicle event `job`'s own detectors fired this tick, as
+    `(kind, to_persona, amount)` triples — `village.py`'s only place that
+    decides *which* detectors apply to which profession (the detectors
+    themselves are profession-agnostic pure functions above). `counterpart`
+    is supplied statically from `run_village`'s own trade-pairing wiring
+    (never learned by a skill) — `None` for a solo miner/blacksmith or any
+    other profession. `deliver_phase_reward`/`hunt_reward_accum` are the
+    caller's own running accumulators (see `_run_worker`) — pure inputs to
+    this function, not state it owns; `_delivered_ingots`/`_looted_corpse`'s
+    own docstrings explain why a single tick's episode reward isn't enough.
+    """
+    events: list[tuple[str, str | None, float]] = []
+    if job == "miner":
+        amount = _delivered_ingots(prev_memory, memory, deliver_phase_reward)
+        if amount is not None:
+            events.append(("delivered_ingots", counterpart, amount))
+    elif job == "blacksmith":
+        amount = _picked_up_ingots(prev_memory, memory, fetch_entry_ingots, pack_ingots_now)
+        if amount is not None:
+            events.append(("picked_up_ingots", counterpart, amount))
+        amount = _sold_to_vendor(prev_memory, memory, new_episode)
+        if amount is not None:
+            events.append(("sold_to_vendor", None, amount))
+        amount = _banked_gold(prev_memory, memory, new_episode)
+        if amount is not None:
+            events.append(("banked_gold", None, amount))
+    elif job == "hunter":
+        amount = _looted_corpse(prev_memory, memory, hunt_reward_accum)
+        if amount is not None:
+            events.append(("looted_corpse", None, amount))
+            # Two corpses can retire in one tick (`Hunt._advance` recurses
+            # same-tick into an already-resolved next corpse), which would
+            # otherwise silently undercount loot-cycle events. Keep the event
+            # COUNT faithful with one zero-amount event per extra retirement —
+            # the combined confirmed loot stays on the first event, since a
+            # per-corpse split of a same-tick accumulator is unknowable.
+            grew = (len(memory.get("hunt_looted") or ())
+                    - len(prev_memory.get("hunt_looted") or ()))
+            for _ in range(grew - 1):
+                events.append(("looted_corpse", None, 0.0))
+    return events
+
+
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
-                job: str) -> None:
+                job: str, *, chronicle: ChronicleLedger | None = None,
+                counterpart: str | None = None) -> None:
     steps = says = 0
     last_say = ""
+    # PHASE6.md item 2's own bookkeeping (only touched when `chronicle` is
+    # set): a snapshot of `agent.memory` and `agent.episodes.total_recorded`
+    # from the PREVIOUS tick, so this tick's detectors can see the exact
+    # phase-key transition and whether a fresh episode landed — mirrors
+    # `curriculum.py::CurriculumController`'s own `_episode_count_at_last`
+    # "new episodes since last check" bookkeeping.
+    prev_memory: dict = dict(agent.memory)
+    prev_recorded = agent.episodes.total_recorded
+    fetch_entry_ingots: int | None = None
+    # Running accumulators for the two detectors whose skill has no
+    # single-tick reward channel to read a delivery/loot-run's TOTAL off of
+    # (see `_delivered_ingots`/`_looted_corpse`'s own docstrings — a
+    # multi-pile ingot haul or a multi-item corpse pays its reward across
+    # several ticks, not as one lump sum on the transition/growth tick).
+    deliver_phase_reward = 0.0
+    hunt_reward_accum = 0.0
     for _ in range(ticks):
         if not agent.body.connected:
             break
         action = agent.tick()
+        obs = agent.body.observe()
+        p = obs.player.pos
+
+        if chronicle is not None:
+            memory = agent.memory
+            new_episode = agent.episodes.recent(1)[0] if agent.episodes.total_recorded > prev_recorded else None
+            pack_ingots_now = _pack_ingot_count(obs) if job == "blacksmith" else 0
+            if job == "blacksmith" and prev_memory.get("bs_state") != "fetch" and memory.get("bs_state") == "fetch":
+                fetch_entry_ingots = pack_ingots_now  # baseline captured once, at fetch entry
+            # Accumulate BEFORE detecting — see `_accumulate_deliver_reward`/
+            # `_accumulate_hunt_reward`'s own docstrings.
+            if job == "miner":
+                deliver_phase_reward = _accumulate_deliver_reward(deliver_phase_reward, prev_memory, new_episode)
+            if job == "hunter":
+                hunt_reward_accum = _accumulate_hunt_reward(hunt_reward_accum, new_episode)
+            for kind, to_persona, amount in _chronicle_events_this_tick(
+                job, counterpart, prev_memory, memory, new_episode,
+                fetch_entry_ingots=fetch_entry_ingots, pack_ingots_now=pack_ingots_now,
+                deliver_phase_reward=deliver_phase_reward, hunt_reward_accum=hunt_reward_accum,
+            ):
+                # queue_event is O(1), in-memory-only, threading.Lock-guarded
+                # — safe to call from this (or any other agent's) worker
+                # thread. See chronicle.py's module docstring: the ONLY
+                # file I/O happens once, later, from run_village's own
+                # joined main thread (chronicle_ledger.flush()).
+                chronicle.queue_event(tick=agent.ticks, from_persona=agent.persona.name,
+                                      to_persona=to_persona, kind=kind, amount=amount)
+                if kind == "looted_corpse":
+                    hunt_reward_accum = 0.0  # this batch's total has been attributed
+                # delivered_ingots needs no reset here — memory.get("smelt_phase")
+                # is always "return" (not "deliver") whenever it fires, so the
+                # unconditional phase check just below already resets it.
+            if job == "blacksmith" and memory.get("bs_state") != "fetch":
+                fetch_entry_ingots = None
+            if memory.get("smelt_phase") != "deliver":
+                deliver_phase_reward = 0.0  # never entered/no longer in the deliver phase
+            prev_memory = dict(memory)
+            prev_recorded = agent.episodes.total_recorded
+
         steps += isinstance(action, Walk)
         if isinstance(action, Say):
             says += 1
             last_say = action.text
-        p = agent.body.observe().player.pos
         with lock:
             line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) "
                     f"out+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
@@ -100,7 +379,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 ticks: int = 60, stagger: float = 4.0, forum: bool = False,
                 chatter: bool = False, llm_tiers: str | None = None,
                 tune_deliver_threshold: bool = False, ledger_path: str | None = None,
-                curriculum: bool = False, persist_insights: bool = False) -> None:
+                curriculum: bool = False, persist_insights: bool = False,
+                chronicle: bool = False, chronicle_path: str | None = None) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -137,6 +417,16 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     #    two professions is untouched — same staging as before this feature.
     has_trade_pair = (any(p.key == "miner" for _, p, _ in online)
                       and any(p.key == "blacksmith" for _, p, _ in online))
+    # PHASE6.md item 2: `village.py` already knows the trade pairing
+    # structurally (the same `has_trade_pair` fact staging already computes)
+    # — so the chronicle's `delivered_ingots`/`picked_up_ingots` detectors
+    # can be handed each side's counterpart persona name statically, at
+    # wiring time, rather than teaching a skill to learn it. `None` when
+    # there's no pairing (a solo miner/blacksmith never gets a counterpart).
+    trade_miner_persona = (next((persona for _, p, persona in online if p.key == "miner"), None)
+                           if has_trade_pair else None)
+    trade_smith_persona = (next((persona for _, p, persona in online if p.key == "blacksmith"), None)
+                           if has_trade_pair else None)
     # TRADE_MINE_SPOT *is* MINING_SPOTS[1] — once a trade pairing claims it
     # directly (below), it must not also be handed out from this pool, or a
     # later miner ends up staged on top of the trade miner.
@@ -147,10 +437,13 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     trade_miner_placed = trade_smith_placed = not has_trade_pair
     plan: list[dict] = []
     for body, prof, persona in online:
-        workplace, nodes, smithy_drop, vendor_spot, banker_spot = None, None, None, None, None
+        workplace, nodes, smithy_drop, vendor_spot, banker_spot, counterpart = (
+            None, None, None, None, None, None,
+        )
         if prof.key == "miner" and not trade_miner_placed:
             workplace = TRADE_MINE_SPOT
             smithy_drop = TRADE_SMITH_SPOT
+            counterpart = trade_smith_persona.name if trade_smith_persona is not None else None
             trade_miner_placed = True
         elif prof.key == "lumberjack":
             grove = next(groves, None)
@@ -167,6 +460,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             workplace = TRADE_SMITH_SPOT
             vendor_spot = VENDOR_SPOT
             banker_spot = BANKER_SPOT
+            counterpart = trade_miner_persona.name if trade_miner_persona is not None else None
             trade_smith_placed = True
         elif prof.key == "blacksmith":
             workplace = next(smith_spots, None)
@@ -174,7 +468,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             workplace = prof.workplace or next(spots)
         plan.append({"body": body, "prof": prof, "persona": persona,
                      "workplace": workplace, "nodes": nodes, "smithy_drop": smithy_drop,
-                     "vendor_spot": vendor_spot, "banker_spot": banker_spot})
+                     "vendor_spot": vendor_spot, "banker_spot": banker_spot, "counterpart": counterpart})
 
     # 3) Control plane: stage workers and name everyone.
     #    `find_mobile_near`'s own exclude set needs every agent serial the
@@ -251,6 +545,21 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         )
         print(f"deliver_threshold tuning: ON — ledger at {skill_lib.ledger_path.resolve()} "
               f"(seeded pulls: {tuner.pulls()})")
+
+    # PHASE6.md item 2 — opt-in, unset by default: zero effect on any
+    # currently-passing roster unless `--chronicle` is passed. ONE
+    # `ChronicleLedger` shared by the whole roster: every agent's worker
+    # thread below calls `queue_event()` on it (in-memory only, no I/O); this
+    # function's own MAIN thread flushes it exactly once, after every worker
+    # has already joined (see the `for t in threads: t.join()` block below) —
+    # the same "compute in worker threads, persist once from the joined main
+    # thread" shape the `deliver_threshold` tuner-outcome recording above
+    # already uses, and the real precedent this item's own `queue_event()`/
+    # `flush()` split follows (see `chronicle.py`'s module docstring).
+    chronicle_ledger: ChronicleLedger | None = None
+    if chronicle:
+        chronicle_ledger = ChronicleLedger(ledger_path=chronicle_path)
+        print(f"chronicle: ON — ledger at {chronicle_ledger.ledger_path.resolve()}")
 
     status: dict[int, str] = {}
     lock = threading.Lock()
@@ -337,8 +646,12 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         if chosen_threshold is not None:
             print(f"  {p['persona'].name}: deliver_threshold={chosen_threshold} (tuner-chosen)")
         agents.append((agent, p["prof"].key, chosen_threshold))
-        t = threading.Thread(target=_run_worker,
-                             args=(agent, ticks, i, status, lock, p["prof"].key), daemon=True)
+        t = threading.Thread(
+            target=_run_worker,
+            args=(agent, ticks, i, status, lock, p["prof"].key),
+            kwargs={"chronicle": chronicle_ledger, "counterpart": p["counterpart"]},
+            daemon=True,
+        )
         threads.append(t)
         t.start()
 
@@ -349,6 +662,18 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         print("— village —\n  " + "\n  ".join(snap))
     for t in threads:
         t.join()
+
+    # PHASE6.md item 2: flush every queued chronicle event now — the ONE
+    # place this run touches data/chronicle.jsonl, strictly after every
+    # worker thread (the only queue_event() callers) has already exited. A
+    # mid-run crash loses only that session's queued-but-unflushed events —
+    # the accepted tradeoff `chronicle.py`'s own module docstring documents,
+    # the same one the deliver_threshold tuner's own end-of-session-only
+    # ledger write already carries.
+    if chronicle_ledger is not None:
+        n = chronicle_ledger.flush()
+        print(f"chronicle: flushed {n} event(s) to {chronicle_ledger.ledger_path.resolve()}")
+
     print("\nday's work done.")
 
     # PHASE4.md item 4: at session end, record (value, reward) for every
@@ -454,6 +779,16 @@ def main() -> None:
     ap.add_argument("--persist-insights", action="store_true",
                      help="disk-backed ReflectionMemory: resume + persist insights across restarts "
                           "(Phase 6 item 1; requires --llm-tiers to have any effect)")
+    # Opt-in, unset by default (Phase 6 item 2): zero effect on any currently-
+    # passing roster unless passed. Each agent's worker thread queues
+    # confirmed trade/market/hunt events (in-memory only, no I/O); the main
+    # thread flushes them all to data/chronicle.jsonl once, after every
+    # worker has finished.
+    ap.add_argument("--chronicle", action="store_true",
+                     help="record inter-agent trade/market/hunt events to data/chronicle.jsonl "
+                          "(Phase 6 item 2)")
+    ap.add_argument("--chronicle-path", default=None,
+                     help="override data/chronicle.jsonl (mainly for isolated test/live runs)")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
@@ -461,7 +796,8 @@ def main() -> None:
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
                 forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers,
                 tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path,
-                curriculum=args.curriculum, persist_insights=args.persist_insights)
+                curriculum=args.curriculum, persist_insights=args.persist_insights,
+                chronicle=args.chronicle, chronicle_path=args.chronicle_path)
 
 
 if __name__ == "__main__":

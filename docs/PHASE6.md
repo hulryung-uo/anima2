@@ -48,8 +48,9 @@ reruns the comparative gate on the enriched harness and reports whichever
 way it lands, honestly, per this project's own established "report a tie as
 a tie" discipline (PHASE5.md item 4).
 
-Status legend: ✅ done · 🚧 in progress · ⏳ todo. **All six items below are
-⏳ todo — Phase 6 is newly designed, nothing has landed yet.**
+Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Items 1-2 are done
+(persistent lives; the village chronicle relationship ledger, both
+live-verified) — items 3-6 remain ⏳ todo.**
 
 **Dependency order.** Threads A and B touch disjoint code (village.py/
 forum.py/memory.py vs. foundry/eval.py/evolve.py/cognition.py) and can land
@@ -372,7 +373,7 @@ scripted-client-for-determinism precedent), `anima2/live_common.py`.
 
 ---
 
-## Item 2 — The village chronicle: an inter-agent relationship ledger ⏳
+## Item 2 — The village chronicle: an inter-agent relationship ledger ✅
 
 **Mine "who helped whom" from the trade/hunt/market interactions that
 already run live, rather than inventing new instrumentation inside the
@@ -583,16 +584,223 @@ implementer's choice at landing time).
 - **Provenance-aware:** cross-process readback throughout, the established
   "fresh channel, never the live process's own memory" discipline.
 
+### As landed (live-verified)
+
+Landed close to spec, with one clarification and one live-caught fix — both
+documented here rather than left implicit.
+
+**Landed as specified:** `anima2/chronicle.py`'s `ChronicleEvent`/
+`ChronicleLedger` — the `queue_event()`/`flush()` split (in-memory,
+`threading.Lock`-guarded queue; `flush()` is the only disk write, guarded by
+a module-level `_chronicle_log_lock` mirroring `skill_library.py`'s own
+`_ledger_lock`), plus the corrupt-line-tolerant read side (`events_for`/
+`between`/`recent`). `village.py` gains `--chronicle`/`--chronicle-path`,
+wires each side's static counterpart persona name into the staging block
+exactly as specified (`trade_miner_persona`/`trade_smith_persona` computed
+once from `online`, attached to the plan entries), and flushes once from
+the main thread right after `for t in threads: t.join()`.
+
+**Clarification, not a divergence: `picked_up_ingots`'s amount is a
+confirmed pack-ingot delta, not an episode reward.** The spec's prose
+describes it "with a confirmed reward-bearing episode," by analogy with
+`delivered_ingots`. Verified false by reading `skills/craft.py::
+Blacksmith.step()` directly: it has **no reward channel dedicated to the
+fetch/pickup at all** — its only reward computation is Blacksmithing
+skill-base gain, computed unconditionally every tick and attached to
+whichever action that tick happens to return, fetch included, purely
+incidentally. Gating on a coincident skill-gain would make `picked_up_ingots`
+fire almost never. Implemented instead as a confirmed pack-ingot delta
+(`_pack_ingot_count`, Observation-derived) over the fetch trip, baselined at
+fetch-entry — the same "only a confirmed, observed outcome pays" discipline,
+via the channel that's actually available.
+
+**Bug caught by the live gate's own first attempt, live, before the run even
+finished printing:** the first-draft `_delivered_ingots` (and, by the same
+reasoning, `_looted_corpse`) checked only the exact phase-exit tick's own
+episode reward. Live-caught: `INGOT_GRAPHICS` has 4 distinct graphics
+(mirroring `ORE_GRAPHICS`'s own pile fragmentation — `Item.WillStack`
+requires an exact graphic match), so a smelted haul is often 2-4 separate
+piles, and `MineSmeltDeliver._deliver_step` pays its reward as one increment
+**per confirmed pile-drop**, not as a lump sum on the tick `smelt_phase`
+finally flips to `"return"` — that tick's own reward is frequently `0.0`
+even for a real, fully-confirmed delivery (the earlier piles' rewards
+already paid on earlier ticks). The smoking gun was direct: the
+blacksmith's own `picked_up_ingots` (pack-delta based, immune to this bug)
+fired twice with real, correct amounts (15 then 10 ingots picked up) while
+the miner's own `delivered_ingots` stayed completely silent the whole
+run — one side of a real relationship chronicled, the other not. Fixed by
+accumulating confirmed reward across the **whole** `"deliver"` phase
+(`_accumulate_deliver_reward`, extracted as its own independently-testable
+function, called every tick by `_run_worker` and reset once the transition
+fires), not just the exit tick — and, by the identical reasoning,
+`_looted_corpse` was fixed the same way (`_accumulate_hunt_reward`) before
+shipping with a latent version of the same bug (a corpse holding gold *and*
+a gem pays across several ticks too), even though this item's own live gate
+doesn't exercise `Hunt`. `sold_to_vendor`/`banked_gold` were checked and
+left as single-episode-reward checks — a vendor sale is one `SellItems`
+action covering every dagger at once, and `GOLD_GRAPHIC` never fragments
+into multiple piles (`skills/market.py`'s own module docstring) — neither is
+exposed to the pile-fragmentation pattern that motivated the other two
+fixes. 7 new regression tests pin both fixes, two of which replay the exact
+multi-tick accumulation sequence the live bug exhibited.
+
+**Two gate-script bugs caught by an independent second run of this gate —
+both in `live_chronicle.py` itself, never in the shipped `chronicle.py`/
+`village.py` code, both fixed before the gate could be trusted:**
+
+1. **Retry isolation.** Leg A session 0's first attempt staged, confirmed
+   one real delivery (12.0 ingots), then stalled (an unrelated wedge); the
+   retry wrapper correctly retried with a fresh account, which then
+   completed cleanly (2 more deliveries, 8.0+8.0=16.0). But both attempts
+   had been queuing into the **same** `ChronicleLedger` object, so the final
+   `flush()` wrote all 5 events (2+3) from **both** attempts into one file,
+   while the independent oracle — correctly reset fresh per attempt, since
+   it has no business remembering a previous attempt's history — reflected
+   only the winning attempt (2 events, 16.0). Readback: `{'count': 3,
+   'sum_amount': 28.0, 'total_events_for_miner': 5}` vs. oracle `(2, 16.0)`
+   — a real mismatch, but entirely a gate-methodology bug: the ledger itself
+   faithfully recorded every real, confirmed delivery from both attempts,
+   exactly as `queue_event`/`flush` are designed to. Fixed by giving every
+   retry attempt its **own** ledger file (`_attempt_ledger_path`,
+   `..._a0.jsonl` -> `..._a0_r0.jsonl`, `..._a0_r1.jsonl`, ...); only the
+   winning attempt's own file is read back for the decisive comparison, and
+   a stalled attempt's file still exists afterward for forensic review.
+2. **Bank-drain resilience.** The same run showed leg B (solo miner) wedge
+   on all `MAX_WEDGE_ATTEMPTS` with **zero** episodes each — not a partial
+   stall, no progress at all, three fresh accounts in a row — immediately
+   after leg A's two sessions had just mined ~45 ingots' worth of ore from
+   the exact same spot (`TRADE_MINE_SPOT`). This is resource-bank
+   exhaustion (banks respawn over real minutes, far longer than this gate's
+   own ~15s retry cooldown), not the pre-8ead6eb intermittent-freeze bug the
+   original `STALL_TICKS` comment named (that root cause — resource-bank
+   exhaustion + a pack-full edge case `Harvest.step()` never checked for —
+   was already fixed by a windowed stuck-rate + `WalkTo`-relocation
+   hardening pass; see the `anima2-harvest-freeze` memory note and
+   PHASE4.md item 4's own "Resolved" note). Leg A/leg C are structurally
+   pinned to `TRADE_MINE_SPOT` (the one live-calibrated spot with a
+   co-located, route-calibrated smithy — `profession.py`'s own extensive
+   comments on why no other `MINING_SPOTS` entry has one) and can't rotate
+   away from it. Leg B needs no blacksmith at all, so it now draws from
+   `_SOLO_MINE_SPOT_POOL` — every other `MINING_SPOTS` entry, mirroring
+   `foundry/eval.py`'s own `spot_pool=` rotation precedent
+   (`live_evolve_gate.py`/CLAUDE.md: "a `spot_pool=` rotation across
+   `MINING_SPOTS[0..3]` so back-to-back mining seeds don't share one
+   thinning `HarvestBank`") — cycling to a different spot on every retry
+   attempt too, so it never competes with leg A/C for the same bank and
+   never re-hammers a spot it just drained itself.
+
+**Live gate — PASSED, all legs, multi-cycle, provenance-checked, no retries
+needed on the corrected run:**
+
+Reused `live_trade.py`'s exact staged miner+blacksmith scenario as a
+**standalone driver** (`live_chronicle.py`) rather than a `village.py
+--chronicle` CLI wrapper — mirrors item 1's own `live_persistent_lives.py`
+precedent, for the identical reason: `village.py`'s roster login hardcodes
+`anima{i}` account names with no override, and this gate needs fresh
+accounts per session/leg. The REAL `village._chronicle_events_this_tick`/
+`chronicle.ChronicleLedger.queue_event`/`flush` are called directly from the
+driver's own round-robin tick loop — never reimplemented. The gate also
+builds a wholly **independent** oracle, hand-written in the driver (never
+calling `chronicle.py`/`village.py`'s own detector functions), that watches
+the same phase transition and correlates it against `agent.episodes` by
+hand — the decisive cross-check leg the spec calls for.
+
+- **Leg A — the decisive cross-check, two independent sessions, each its own
+  isolated ledger file:**
+  - Session 0: 2 confirmed deliveries (14.0 + 8.0 = 22.0 ingots) by tick 121.
+    A **fresh subprocess** reading `data/chronicle_gate_773425_a0_r0.jsonl`
+    from disk reported `{'count': 2, 'sum_amount': 22.0,
+    'total_events_for_miner': 3}` — exactly matching the independent
+    episode-transcript oracle (2 deliveries, sum 22.0).
+  - Session 1 (fresh account): 2 confirmed deliveries (5.0 + 9.0 = 14.0) by
+    tick 177. Fresh-subprocess readback of `..._a1_r0.jsonl`: `{'count': 2,
+    'sum_amount': 14.0, 'total_events_for_miner': 3}` — again an exact
+    match.
+  - The blacksmith's own `picked_up_ingots` (the same edge, reverse
+    direction, pack-delta-based) independently confirmed the first
+    delivery's amount each time (14.0 and 5.0 respectively) — a third,
+    structurally-independent evidence channel beyond the oracle and the
+    ledger.
+- **Leg B — differential (solo miner, chronicle ON), staged at a rotated
+  spot `(2567,493)` never touched by leg A/C:** 26 real episodes recorded
+  (genuine mining activity — the positive control, and markedly healthier
+  than the previous run's zero, confirming the bank-drain fix) but **zero**
+  chronicle events, and `data/chronicle_gate_773425_solo_r0.jsonl` was
+  **never created at all** (`flush()` on an empty queue touches no file) —
+  proves the ledger doesn't fabricate relationships when none are
+  structurally wired.
+- **Leg C — inertness (chronicle disabled entirely), pinned to
+  `TRADE_MINE_SPOT` like leg A:** 15 real episodes recorded, including 2
+  full confirmed delivery cycles (10.0 + 5.0 ingots) — the underlying
+  economy loop demonstrably kept working exactly as it does with chronicle
+  on — yet `data/chronicle_gate_773425_inertness_r0.jsonl` was **never
+  created**. The opt-out path is inert by omission of a write, not by
+  omission of the whole engine — the same sharpest-control shape item 1's
+  own inertness leg established.
+- **Provenance-aware throughout:** every decisive count/sum came from a
+  **fresh subprocess** reading the WINNING attempt's own ledger file from
+  disk, never the live process's own in-memory `ChronicleLedger` and never a
+  file a different attempt might have written to; the cross-check oracle was
+  written entirely separately from the shipped detector code it checks.
+
+```
+=== [leg A session 1/2]: miner=achA0773425r0 paired=True mine_spot=(2611,474) chronicle=ON ===
+  [leg A session 1/2] tick  104: [oracle] CONFIRMED delivery — reward=14.0 (deliveries so far: 1)
+  [leg A session 1/2] tick  107: [chronicle] picked_up_ingots amount=14.0
+  [leg A session 1/2] tick  121: [oracle] CONFIRMED delivery — reward=8.0 (deliveries so far: 2)
+  [leg A session 1/2]: flushed 3 chronicle event(s) to data/chronicle_gate_773425_a0_r0.jsonl
+  session 0: cross-process readback (fresh `python -c ...`, reading
+    .../data/chronicle_gate_773425_a0_r0.jsonl from disk):
+    {'count': 2, 'sum_amount': 22.0, 'total_events_for_miner': 3}
+
+=== [leg A session 2/2]: miner=achA1773425r0 paired=True mine_spot=(2611,474) chronicle=ON ===
+  [leg A session 2/2] tick  152: [oracle] CONFIRMED delivery — reward=5.0 (deliveries so far: 1)
+  [leg A session 2/2] tick  155: [chronicle] picked_up_ingots amount=5.0
+  session 1: flushed 3 chronicle event(s) to data/chronicle_gate_773425_a1_r0.jsonl; oracle deliveries=2 sum=14.0
+  session 1: cross-process readback (fresh `python -c ...`, reading
+    .../data/chronicle_gate_773425_a1_r0.jsonl from disk):
+    {'count': 2, 'sum_amount': 14.0, 'total_events_for_miner': 3}
+
+=== [leg B differential: solo miner]: miner=achSolo773425r0 paired=False mine_spot=(2567,493) chronicle=ON ===
+  [leg B differential: solo miner]: flushed 0 chronicle event(s) to data/chronicle_gate_773425_solo_r0.jsonl
+  solo miner (26 episodes recorded): chronicle events=0 (expect 0)
+  solo ledger path never created: True
+
+=== [leg C inertness: chronicle OFF]: miner=achInA773425r0 paired=True mine_spot=(2611,474) chronicle=OFF ===
+  inertness leg: 15 miner episodes recorded (positive control), oracle deliveries=2,
+    ledger path data/chronicle_gate_773425_inertness_r0.jsonl exists=False
+
+[FLAG] leg_a_session0_at_least_2_deliveries = True
+[FLAG] leg_a_session0_chronicle_count_matches_independent_episode_oracle = True
+[FLAG] leg_a_session0_chronicle_sum_matches_independent_episode_oracle = True
+[FLAG] leg_a_session1_at_least_2_deliveries = True
+[FLAG] leg_a_session1_chronicle_count_matches_independent_episode_oracle = True
+[FLAG] leg_a_session1_chronicle_sum_matches_independent_episode_oracle = True
+[FLAG] leg_b_solo_miner_had_real_activity = True
+[FLAG] leg_b_solo_miner_zero_chronicle_events = True
+[FLAG] leg_b_solo_ledger_path_never_created = True
+[FLAG] leg_c_inertness_engine_still_ran = True
+[FLAG] leg_c_inertness_ledger_path_never_created = True
+[FLAG] PHASE6_ITEM2_CHRONICLE PASSED: village chronicle relationship ledger
+```
+
+**Offline: 590 tests green (540 + 50 new — 13 in `tests/test_chronicle.py`,
+37 in `tests/test_village_chronicle.py`), 3 consecutive full-suite runs,
+`ruff check .` clean.**
+
 ### References
 
-`anima2/chronicle.py`, `anima2/village.py`, `anima2/skills/smelt.py`
-(`MineSmeltDeliver`, `smelt_phase`), `anima2/skills/craft.py` (`Blacksmith`,
-`bs_state`), `anima2/skills/market.py` (`BlacksmithMarket`, `mkt_phase`),
+`anima2/chronicle.py`, `anima2/village.py`, `anima2/live_chronicle.py` (the
+live gate driver), `anima2/skills/smelt.py` (`MineSmeltDeliver`,
+`smelt_phase`), `anima2/skills/craft.py` (`Blacksmith`, `bs_state`),
+`anima2/skills/market.py` (`BlacksmithMarket`, `mkt_phase`),
 `anima2/skills/hunt.py` (`Hunt`, `hunt_phase`/`hunt_looted`),
 `anima2/curriculum.py` (`_mid_transaction` — the same phase-key reads,
 `_memory_list_len_threshold` — the same "bookkeeping list grew" pattern),
 `anima2/skill_library.py` (the ledger convention this module mirrors),
-`anima2/live_trade.py`, DESIGN.md §6 item 4 (Generative Agents).
+`anima2/live_trade.py`, `anima2/live_common.py` (`GM_RELOGIN_COOLDOWN_S`),
+DESIGN.md §6 item 4 (Generative Agents), the `anima2-harvest-freeze` memory
+note (the known live freeze this item's own gate also hit and retried past).
 
 ---
 

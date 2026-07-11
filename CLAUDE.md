@@ -266,9 +266,56 @@ directly as `ReflectingCognition`'s `reflection` producer instead of wrapped
 in `cognition.LLMReflection`, so `_reflect_bg`'s broad exception guard
 silently swallowed an `AttributeError` every cadence cycle — fixed by
 matching `live_wiki_report.py`'s own established wrapping pattern. 540 tests
-green (up from 530), ruff clean. **Next:** Phase 6 items 2-3 (the village
-chronicle relationship ledger, the forum as continuing chronicle) remain —
-see [`PHASE6.md`](docs/PHASE6.md).
+green (up from 530), ruff clean. **Phase 6 item 2 — the village chronicle
+relationship ledger — is live-verified**: `chronicle.py::ChronicleLedger`
+mines "who helped whom" from confirmed trade/market/hunt interactions
+already computed by the fast loop, via a deliberate `queue_event()`/
+`flush()` split — worker threads only ever append to an in-memory queue
+(`threading.Lock`-guarded, zero disk I/O), and `village.py`'s **main**
+thread flushes the whole batch to `data/chronicle.jsonl` once, right after
+`for t in threads: t.join()`, mirroring the exact "compute in worker
+threads, persist once from the joined main thread" shape the
+`deliver_threshold` tuner's own outcome recording already established.
+`village.py --chronicle` wires five pure, unit-tested per-profession event
+detectors (`delivered_ingots`/`picked_up_ingots`/`sold_to_vendor`/
+`banked_gold`/`looted_corpse`) into `_run_worker` (the hunter dispatch emits
+one zero-amount `looted_corpse` event per extra corpse retired in the same
+tick, keeping the event *count* faithful to `Hunt._advance`'s own same-tick
+recursion without inventing a per-corpse split of an unknowable combined
+accumulator), with each side's counterpart persona supplied statically from
+the trade-pairing wiring `village.py` already computes. The live gate
+(`live_chronicle.py`, a standalone driver mirroring item 1's own
+`live_persistent_lives.py` precedent) is decisive: two independent staged
+sessions each produce exactly 2 confirmed `delivered_ingots` events whose
+count *and* summed amount match a wholly independent oracle — hand-written
+in the gate script, never calling the shipped detector code — built by
+walking the miner's own `agent.episodes` transcript directly, cross-checked
+against a **fresh subprocess** reading the ledger from disk (22.0 and 14.0
+ingots, exact matches both times); a solo miner (no blacksmith paired, staged
+at a rotated, never-shared mining spot) records real mining activity but
+zero chronicle events, and the ledger file for that persona is never even
+created; and an identical run with `--chronicle` off keeps the underlying
+economy working normally (15 episodes, 2 full delivery cycles) while never
+touching `data/chronicle.jsonl` at all. The live gate caught a real bug
+before it could ship: a first-draft `delivered_ingots` (and, by the same
+flaw, `looted_corpse`) checked only the exact phase-exit tick's own episode
+reward, but a multi-pile ingot haul (`INGOT_GRAPHICS` has 4 distinct
+graphics, like `ORE_GRAPHICS`) pays its confirmed reward across several
+ticks — one per confirmed pile-drop — so that tick's own reward is often
+`0.0` even for a real delivery; the blacksmith's own `picked_up_ingots`
+(pack-delta based, immune to the bug) kept firing correctly while the
+miner's `delivered_ingots` stayed silent, exposing the gap directly. Fixed
+by accumulating confirmed reward across the whole phase rather than reading
+one tick's episode. An independent second run of the gate then caught two
+more bugs — both in the **gate script itself**, never the shipped code:
+retried attempts sharing one `ChronicleLedger` mixed a stalled attempt's
+real events into the winning attempt's own flush batch (fixed by giving
+every retry attempt its own ledger file); and the solo-miner leg wedged on
+all retries because it mined the exact spot leg A had just drained (fixed
+by rotating the solo leg across the *other* `MINING_SPOTS` entries, mirroring
+`foundry/eval.py`'s own `spot_pool=` precedent). 590 tests green (up
+from 540), ruff clean. **Next:** Phase 6 item 3 (the forum as continuing
+chronicle) remains — see [`PHASE6.md`](docs/PHASE6.md).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
