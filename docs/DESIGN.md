@@ -5,10 +5,12 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-11 · Status: **Phase 5 complete (independent measurement
+Last updated: 2026-07-11 · Status: **Phase 6 begun (the living village) — work
+breakdown written, nothing landed yet; see [`PHASE6.md`](PHASE6.md).** Phase 5
+complete (independent measurement
 + evolution) — all four items done (items 1, 2, and 4 live-verified; item 3
 landed offline with its live proof folded into item 4's gate); see
-[`PHASE5.md`](PHASE5.md).** Phase 4 complete (learning stack, all five items —
+[`PHASE5.md`](PHASE5.md). Phase 4 complete (learning stack, all five items —
 [`PHASE4.md`](PHASE4.md)); Phase 3 complete (economy & interaction loop), all
 four items done.
 Phase 2 (cognition + memory) closed out — see [`PHASE2.md`](PHASE2.md). The
@@ -424,6 +426,25 @@ The original analysis, kept as the decision record:
   genome's mutation space live-inert — see PHASE5.md item 4 and its "Notes
   carried into Phase 6" follow-up). Society scale-out (persistent lives, the
   forum as village chronicle) is split into a Phase 6 note.
+- **Phase 6 — The living village** *(work breakdown written — see
+  [`PHASE6.md`](PHASE6.md) for the itemized status)*: six independently-
+  landable items across two threads — items 1-3 and 5-6 are no-op-by-default
+  (an unset flag/unset config field reproduces today's exact behavior);
+  item 4 is the deliberate exception, stated plainly rather than folded into
+  a blanket claim — it widens the shared, module-global `foundry/
+  evolve.py::PROFESSION_SCENARIO` search space for every future
+  `evolve()`/`random_search()` call, not just a flagged gate, which is the
+  whole point of giving `op_profession` a second candidate (see PHASE6.md
+  item 4's own "Key design decisions"). Thread A: persistent lives
+  (disk-backed `Insight` memory across sessions), a village chronicle
+  (an inter-agent relationship ledger mined from the already-live trade/
+  hunt/market loops), and the uotavern forum becoming a genuine continuing
+  chronicle. Thread B: the richer-eval-scenarios follow-up PHASE5.md
+  item 4's own live gate surfaced — a second scenario-supported profession,
+  a cognition-aware eval mode that finally gives `sociability`/
+  `cognition_tier` real live signal, and a rerun of the evolution-vs-random
+  comparative gate on the enriched harness (thread B). No item is expected
+  to touch the Observation/Action contract. ⏳ Not yet started.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane

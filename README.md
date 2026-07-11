@@ -125,7 +125,9 @@ python -m anima2.live_navigate  # differential proof: greedy wedges, WalkTo-dele
 Next: Phase 6 — society scale-out (persistent lives, inter-agent
 relationships, the forum as village chronicle), plus a richer eval-scenario
 follow-up item 4's own live gate surfaced (today's harness leaves most of the
-evolution genome's axes live-inert) — see
+evolution genome's axes live-inert). **Work breakdown written** — see
+[`docs/PHASE6.md`](docs/PHASE6.md): six items starting with persistent lives
+(disk-backed reflection memory across sessions); see also
 [`docs/PHASE5.md`](docs/PHASE5.md)'s "Notes carried into Phase 6" section and
 [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
 

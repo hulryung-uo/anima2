@@ -240,7 +240,11 @@ chronicle) is the next named phase; item 4's own live gate also surfaced a
 richer-eval-scenarios follow-up (today's harness leaves most genome axes
 live-inert, so a decisive evolution-vs-random differential needs
 multi-profession/cognition-aware scenarios) — see PHASE5.md's "Notes carried
-into Phase 6" section for both and the other carried-forward items.
+into Phase 6" section for both and the other carried-forward items. **Work
+breakdown written** — see [`PHASE6.md`](docs/PHASE6.md): six items, starting
+with item 1 (persistent lives — disk-backed `ReflectionMemory` so an agent's
+distilled `Insight`s survive a process restart, keyed by persona name,
+`data/insights.jsonl`).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
