@@ -48,8 +48,8 @@ from ..ipc_body import IpcBody, IpcError
 from ..live_common import GM_RELOGIN_COOLDOWN_S, login_throttle, wipe_area
 from ..persona import Persona
 from ..planner import Planner
-from ..profession import MINING_SPOTS
-from ..skills import Mine
+from ..profession import FISHING_SPOTS, MINING_SPOTS
+from ..skills import Fish, Mine
 from ..skills.base import Skill
 from ._filelock import append_line_locked
 from .descriptor import compute_descriptor
@@ -171,6 +171,20 @@ class Scenario:
     items: tuple[str, ...]
     skill_names: tuple[str, ...] = ("Mining",)
     work_skill: type[Skill] = Mine
+    #: PHASE6.md item 4: the staged agent's `harvest_nodes` cluster
+    #: (`skills/harvest.py::Harvest._current_node`, checked before probing).
+    #: `Fish` is technically capable of probing like `Mine` (its own class
+    #: docstring: "water is contiguous terrain ... a fisher just probes the
+    #: tiles in casting range") but `profession.py`'s own fisher wiring
+    #: deliberately avoids that — "probing reach-4 wastes ticks reaching far
+    #: water, so we target the known tile directly" — so any fishing
+    #: `Scenario` needs `nodes` set for the same efficiency reason
+    #: `village.py`'s real fisher wiring already does. `None` (every
+    #: existing mining entry) is a no-op — `run_eval` only seeds
+    #: `agent.memory["harvest_nodes"]` when this is set, mirroring
+    #: `village.py`'s own `if p["nodes"]: agent.memory["harvest_nodes"] =
+    #: p["nodes"]` wiring.
+    nodes: tuple[tuple[int, int, int, int], ...] | None = None
 
 
 #: PHASE5.md item 2's own required pair: a bare `Mine()` at a viable
@@ -179,6 +193,18 @@ class Scenario:
 #: indices `[0..3]` have live, reachable ore; `[4:]` are calibration dead
 #: ends), and the same scenario staged at Mining 50 instead of 35 — for the
 #: live gate's ordering leg.
+#: PHASE6.md item 4's second scenario-supported profession: fishing, chosen
+#: as the minimal-risk addition (`Fish` is a `Harvest` subclass covered by
+#: the same Phase 4 windowed-stuck-rate/`WalkTo`-relocation hardening `Mine`
+#: already has, and `FISHING_SPOTS` — `profession.py`'s own already-
+#: calibrated, already-live-verified fisher shore/water pool — needs no new
+#: calibration work). `FISHING_SPOTS[0]` is `((2866, 647), (2865, 646, -5))`
+#: — `spot` is the shore stand tile, `nodes` the exact water tile as a
+#: 4-tuple with graphic `0` (a land-target cast), matching `village.py`'s own
+#: fisher wiring (`if prof.key == "fisher": ... nodes = [(wx, wy, wz, 0)]`)
+#: exactly.
+_FISH_STAND, _FISH_WATER = FISHING_SPOTS[0]
+
 SCENARIOS: dict[str, Scenario] = {
     "mining": Scenario(
         id="mining", spot=MINING_SPOTS[0], skills={"Mining": 35},
@@ -187,6 +213,11 @@ SCENARIOS: dict[str, Scenario] = {
     "mining_50": Scenario(
         id="mining_50", spot=MINING_SPOTS[0], skills={"Mining": 50},
         items=("Pickaxe", "Pickaxe"), skill_names=("Mining",), work_skill=Mine,
+    ),
+    "fishing": Scenario(
+        id="fishing", spot=_FISH_STAND, skills={"Fishing": 35},
+        items=("FishingPole",), skill_names=("Fishing",), work_skill=Fish,
+        nodes=(_FISH_WATER + (0,),),
     ),
 }
 
@@ -216,6 +247,21 @@ class EvalConfig:
     (the live gate's own fallback ordering pair if the Mining-35-vs-50
     skill-gain-RATE comparison doesn't empirically go the expected way — see
     `live_eval_gate.py`).
+
+    `nodes` mirrors `spot`: when not `None` it OVERRIDES the scenario's own
+    `nodes` (the harvest node — the exact water/ore tile the staged agent
+    probes, seeded into `agent.memory["harvest_nodes"]`); `None` (every
+    existing mining caller AND a plain fishing `run_eval`) falls back to the
+    scenario's own `nodes`, a byte-for-byte no-op. It exists for exactly one
+    reason: fishing drains its 8x8 `HarvestBank` the same way mining drains an
+    ore vein (5-15 fish, 10-20 min respawn — verified against
+    `../servuo/Scripts/Services/Harvest/Fishing.cs`), so a multi-seed fishing
+    run must rotate the WATER node in lockstep with the shore STAND `spot` —
+    `FISHING_SPOTS` entries are `((stand), (water))` MATCHED pairs — or every
+    seed re-fishes one draining bank (a real, live-caught PHASE6.md item 4
+    failure: three with-pole seeds at `FISHING_SPOTS[0]` came back
+    `[134.6, 237.7, 0.0]`, the third starved). `run_eval_multi`'s `nodes_pool=`
+    rotates this per seed alongside `spot_pool=`; see its own docstring.
     """
 
     scenario_id: str
@@ -226,6 +272,7 @@ class EvalConfig:
     port: int = 2594
     pump_ms: int = 400
     spot: tuple[int, int] | None = None
+    nodes: tuple[tuple[int, int, int, int], ...] | None = None
     skill_overrides: dict[str, float] = field(default_factory=dict)
     item_overrides: tuple[str, ...] | None = None
 
@@ -285,6 +332,8 @@ class EvalResult:
         cfg_d = dict(d["config"])
         if cfg_d.get("spot") is not None:
             cfg_d["spot"] = tuple(cfg_d["spot"])
+        if cfg_d.get("nodes") is not None:
+            cfg_d["nodes"] = tuple(tuple(n) for n in cfg_d["nodes"])
         if cfg_d.get("item_overrides") is not None:
             cfg_d["item_overrides"] = tuple(cfg_d["item_overrides"])
         config = EvalConfig(**cfg_d)
@@ -374,6 +423,13 @@ def run_eval(cfg: EvalConfig, *, kernel_repo_root: str | Path | None = ".") -> E
 
     scenario = SCENARIOS[cfg.scenario_id]
     spot = cfg.spot or scenario.spot
+    # `cfg.nodes` OVERRIDES the scenario's own `nodes` when set (the harvest
+    # water/ore tile the staged agent probes) — the per-seed rotation hook
+    # `run_eval_multi`'s `nodes_pool=` needs so a multi-seed fishing run moves
+    # the water node in lockstep with the shore `spot`. `None` falls back to
+    # the scenario's own `nodes` (every mining caller and a plain fishing
+    # `run_eval` — a byte-for-byte no-op). See `EvalConfig.nodes`' docstring.
+    nodes = cfg.nodes if cfg.nodes is not None else scenario.nodes
     skills = dict(scenario.skills)
     skills.update(cfg.skill_overrides)
     items = list(cfg.item_overrides) if cfg.item_overrides is not None else list(scenario.items)
@@ -411,6 +467,14 @@ def run_eval(cfg: EvalConfig, *, kernel_repo_root: str | Path | None = ".") -> E
                 body=tapped, persona=Persona(name=f"eval-{cfg.scenario_id}-{cfg.seed}"),
                 planner=Planner([scenario.work_skill()]),
             )
+            if nodes:
+                # Mirrors `village.py`'s own `if p["nodes"]: agent.memory[
+                # "harvest_nodes"] = p["nodes"]` wiring — see `Scenario.
+                # nodes`'s own docstring for why fishing needs this set
+                # rather than falling back to `Fish`'s own probe capability.
+                # `nodes` is `cfg.nodes` when the caller overrode it (per-seed
+                # rotation), else the scenario's own — resolved above.
+                agent.memory["harvest_nodes"] = list(nodes)
             for _ in range(cfg.ticks):
                 agent.tick()
 
@@ -464,6 +528,7 @@ def run_eval_multi(
     *,
     seeds: int = 3,
     spot_pool: Sequence[tuple[int, int]] | None = None,
+    nodes_pool: Sequence[tuple[tuple[int, int, int, int], ...]] | None = None,
     kernel_repo_root: str | Path | None = ".",
     results_path: str | Path | None = None,
 ) -> MultiEvalResult:
@@ -485,6 +550,19 @@ def run_eval_multi(
     scenario's own default spot — the caller's job to space in time if that
     matters for a non-mining scenario.
 
+    `nodes_pool` is `spot_pool`'s FISHING companion, rotated IN LOCKSTEP:
+    seed `i` gets `nodes_pool[i % len(nodes_pool)]` as its `nodes` override.
+    Fishing drains its water bank exactly as mining drains ore (verified
+    against `../servuo/.../Fishing.cs`; a real PHASE6.md item 4 gate run
+    starved a spot's third seed to a `0.0`), and a fishing spot is a MATCHED
+    `(shore-stand, water-node)` pair — so rotating only the stand `spot` isn't
+    enough; the water node the agent actually casts at must move with it.
+    Callers pass `spot_pool`/`nodes_pool` as same-length, index-aligned pairs
+    (`spot_pool[i]`'s stand goes with `nodes_pool[i]`'s water) — see
+    `live_eval_gate.py::_fishing_gate`. `nodes_pool=None` (every mining
+    caller) leaves each seed at `cfg.nodes`/the scenario's own default node,
+    a byte-for-byte no-op.
+
     `results_path` is passed to `write_eval_result` per seed when given (the
     live gate's own way of getting every seed onto `data/eval_results.jsonl`
     as it runs, not just at the end).
@@ -492,7 +570,8 @@ def run_eval_multi(
     multi = MultiEvalResult(scenario_id=cfg.scenario_id, base_config=cfg)
     for i in range(seeds):
         seed_spot = spot_pool[i % len(spot_pool)] if spot_pool else cfg.spot
-        seed_cfg = replace(cfg, seed=cfg.seed + i, spot=seed_spot)
+        seed_nodes = nodes_pool[i % len(nodes_pool)] if nodes_pool else cfg.nodes
+        seed_cfg = replace(cfg, seed=cfg.seed + i, spot=seed_spot, nodes=seed_nodes)
         result = _run_eval_with_retry(seed_cfg, kernel_repo_root=kernel_repo_root)
         multi.results.append(result)
         if results_path is not None:

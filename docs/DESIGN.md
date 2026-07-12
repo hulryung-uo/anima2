@@ -8,7 +8,9 @@
 Last updated: 2026-07-12 · Status: **Phase 6 in progress (the living village) —
 items 1-3 (persistent lives, disk-backed `ReflectionMemory`; the village
 chronicle, an inter-agent relationship ledger; the forum as a continuing
-chronicle) live-verified, completing thread A; see
+chronicle) live-verified, completing thread A, and item 4 (a second,
+fishing-based eval scenario making `evolve.py`'s profession axis a real
+mutation) live-verified, opening thread B; see
 [`PHASE6.md`](PHASE6.md) for the full itemized status.** Phase 5
 complete (independent measurement
 + evolution) — all four items done (items 1, 2, and 4 live-verified; item 3
@@ -45,7 +47,7 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-602 tests green, ruff clean; the full village, smelting, reflection,
+615 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -81,7 +83,7 @@ clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
 | [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 complete (independent
-fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 in progress (items 1-3 — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle — all three live-verified); 602 tests green |
+fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 in progress (items 1-4 — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation — all four live-verified); 615 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only

@@ -24,18 +24,22 @@ second GM account can raise it without hunting for the number; nothing in
 `evolve()` reads it as anything other than a loop-serialization fact today.
 
 **Which Genome axes actually move live fitness — stated plainly, not glossed
-over.** `foundry/eval.py`'s `SCENARIOS` registry (item 2's own scope) has
-exactly one scenario family live-scoreable today: a bare `Mine()` skill, no
-`Agent.cognition`, no `Persona`-driven speech. Against that harness:
+over.** `foundry/eval.py`'s `SCENARIOS` registry had exactly one
+scenario family live-scoreable at Phase 5 item 4's own landing: a bare
+`Mine()` skill, no `Agent.cognition`, no `Persona`-driven speech.
+PHASE6.md item 4 added a second, `Fish()`-based `"fishing"` scenario — see
+below for what that changes and what's still inert. Against today's harness:
   - **`profession`** genuinely selects the eval's scenario, via
-    `PROFESSION_SCENARIO` below — but that map has exactly ONE entry
-    (`"miner" -> "mining"`) today, because `"miner"` is the only
-    `profession.py` profession item 2 built a scenario for. The mutation
-    operator (`op_profession`) is fully general (swaps among
-    `PROFESSION_SCENARIO`'s keys, whatever they are) — it is simply a
-    single-choice, structurally-correct no-op until a future scenario (a
-    fisher/hunter/blacksmith `Scenario` entry — item 2's own "As landed"
-    section never scoped past mining) gives it a second candidate.
+    `PROFESSION_SCENARIO` below — TWO entries as of PHASE6.md item 4
+    (`"miner" -> "mining"`, `"fisher" -> "fishing"`), so the mutation
+    operator (`op_profession`, fully general — swaps among
+    `PROFESSION_SCENARIO`'s keys, whatever they are) is no longer a
+    guaranteed no-op (`_active_mutation_operators` now includes it — see
+    that function's own docstring). Hunter/blacksmith scenarios remain
+    deferred (PHASE6.md item 4's own "Key design decisions" — they need
+    staging machinery `Scenario`/`run_eval` don't have yet), so this is
+    still a two-choice space, not the full `profession.py::PROFESSIONS`
+    roster.
   - **`sociability`** (persona talkativeness) and **`cognition_tier`** (an
     `llm.py` tier key) have **zero effect** on `run_eval`'s trajectory: the
     measured `Agent` there is built with no `cognition=` argument
@@ -46,12 +50,13 @@ exactly one scenario family live-scoreable today: a bare `Mine()` skill, no
     work skill is `Mine` (a class with no `deliver_threshold` attribute at
     all, not `MineSmeltDeliver`), so it too has no live effect.
 
-  **This is an honest limitation of item 2's harness, not a defect
+  **This was an honest limitation of item 2's harness, not a defect
   introduced here, and it is exactly what PHASE5.md item 4's own "profession
-  swaps between the SCENARIO-SUPPORTED professions" wording already flags.**
-  Three of the four genome axes are schema-correct, offline-tested, and
-  ready for a richer eval harness — but inert against today's one live
-  scenario. Consequences, stated up front rather than discovered mid-gate:
+  swaps between the SCENARIO-SUPPORTED professions" wording already flagged
+  — `profession` itself is no longer one of the still-inert axes (PHASE6.md
+  item 4), but `sociability`/`cognition_tier`/`deliver_threshold` remain so
+  until PHASE6.md item 5's own cognition-aware eval lands.** Consequences,
+  stated up front rather than discovered mid-gate:
   - The offline **convergence test** (this module's own required proof,
     below) does NOT depend on any of this — it drives `evolve()`/
     `random_search()` through an injected `eval_fn` that reads a genome's
@@ -59,16 +64,19 @@ exactly one scenario family live-scoreable today: a bare `Mine()` skill, no
     proving the SELECTION/MUTATION/PROMOTION mechanics are sound on a clean
     signal, independent of what any particular live harness can score today.
   - The **live gate** (`anima2/live_evolve_gate.py`) is honest about the
-    likely consequence: with `profession` pinned to one candidate and the
-    other three axes live-inert, the live comparative test largely measures
-    whether directed search beats random search on the `"mining"` scenario's
-    own per-swing RNG (item 2's live gate already documented this as
+    likely consequence: with three of the four axes still live-inert
+    (`sociability`/`cognition_tier`/`deliver_threshold`, unaffected by
+    PHASE6.md item 4's `profession` fix — `deliver_threshold` still has no
+    live effect on the bare `Mine()`/`Fish()` scenarios either, neither being
+    `MineSmeltDeliver`), the live comparative test still substantially
+    measures whether directed search beats random search on a scenario's own
+    per-swing RNG (item 2's live gate already documented this as
     substantial — swings from ~2 to ~95 fitness) — i.e. it may legitimately
     tie. PHASE5.md item 4's own spec anticipates exactly this ("if the
     margin is within noise ... the gate reports that rather than dressing a
-    tie as a win") — a follow-up item (widen `SCENARIOS`/wire a
-    cognition-aware eval so all four axes carry real live signal) is the
-    honest next step, not a same-item hack.
+    tie as a win") — PHASE6.md item 5 (a cognition-aware eval so the
+    remaining three axes carry real live signal) is the honest next step,
+    not a same-item hack.
 
 **Bounded by two guards, both checked BETWEEN evals (never mid-eval — an
 in-flight `run_eval_multi` call always finishes its current seed):**
@@ -130,10 +138,11 @@ def kill_switch_active(foundry_root: str | Path | None = None) -> bool:
 # --- genome <-> scenario mapping --------------------------------------------
 
 #: `Genome.profession` (a `profession.py::PROFESSIONS` key) -> the
-#: `foundry/eval.py::SCENARIOS` id it evaluates on. Exactly one entry today
-#: — see this module's own docstring ("Which Genome axes actually move live
-#: fitness") for why, and what growing this table takes.
-PROFESSION_SCENARIO: dict[str, str] = {"miner": "mining"}
+#: `foundry/eval.py::SCENARIOS` id it evaluates on. TWO entries as of
+#: PHASE6.md item 4 (`"fisher"` added — see this module's own docstring,
+#: "Which Genome axes actually move live fitness," for what that changes and
+#: what growing this table further takes).
+PROFESSION_SCENARIO: dict[str, str] = {"miner": "mining", "fisher": "fishing"}
 
 #: `llm.py::_TIER_MODEL`'s own keys (`"cheap"`/`"standard"`/`"heavy"`) —
 #: reused directly rather than re-declared, so this module can never drift
@@ -211,14 +220,16 @@ MUTATION_OPERATORS: tuple[Callable[[Genome, random.Random], Genome], ...] = (
 def _active_mutation_operators() -> tuple[Callable[[Genome, random.Random], Genome], ...]:
     """`MUTATION_OPERATORS` filtered to operators that can currently produce
     a genuinely different genome. Concretely: `op_profession` is excluded
-    while `PROFESSION_SCENARIO` has fewer than 2 candidates (today: exactly
-    one) — otherwise it is a GUARANTEED no-op every single call (there is
-    nothing else to swap to), which would waste a full quarter of every
-    mutation budget on evaluating an exact duplicate of its parent's config
-    (live-caught while tuning this module's own convergence test: a wasted
-    quarter of a 24-genome budget is not a rounding error). Recomputed per
-    `mutate()` call rather than cached at import time, so a future second
-    scenario-supported profession reactivates the operator automatically."""
+    while `PROFESSION_SCENARIO` has fewer than 2 candidates (true before
+    PHASE6.md item 4 landed; `PROFESSION_SCENARIO` now has 2, so
+    `op_profession` is active) — otherwise it is a GUARANTEED no-op every
+    single call (there is nothing else to swap to), which would waste a full
+    quarter of every mutation budget on evaluating an exact duplicate of its
+    parent's config (live-caught while tuning this module's own convergence
+    test: a wasted quarter of a 24-genome budget is not a rounding error).
+    Recomputed per `mutate()` call rather than cached at import time, so a
+    future THIRD scenario-supported profession needs no further change here
+    either."""
     if len(PROFESSION_SCENARIO) < 2:
         return tuple(op for op in MUTATION_OPERATORS if op is not op_profession)
     return MUTATION_OPERATORS

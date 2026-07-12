@@ -40,6 +40,27 @@ def test_scenarios_registry_has_mining_and_mining_50():
     assert SCENARIOS["mining"].work_skill is Mine
     assert SCENARIOS["mining_50"].work_skill is Mine
     assert SCENARIOS["mining"].items == ("Pickaxe", "Pickaxe")
+    assert SCENARIOS["mining"].nodes is None  # unchanged by PHASE6.md item 4's new field
+    assert SCENARIOS["mining_50"].nodes is None
+
+
+def test_scenarios_registry_has_fishing():
+    """PHASE6.md item 4: a second scenario-supported profession — staged from
+    `profession.py::FISHING_SPOTS[0]`'s calibrated shore/water pair."""
+    from anima2.profession import FISHING_SPOTS
+    from anima2.skills import Fish
+
+    stand, water = FISHING_SPOTS[0]
+    assert "fishing" in SCENARIOS
+    fishing = SCENARIOS["fishing"]
+    assert fishing.spot == stand
+    assert fishing.skills == {"Fishing": 35}
+    assert fishing.items == ("FishingPole",)
+    assert fishing.skill_names == ("Fishing",)
+    assert fishing.work_skill is Fish
+    # A 4-tuple cluster of exactly the one calibrated water tile, graphic 0
+    # (a land-target cast) — matches `village.py`'s own fisher wiring shape.
+    assert fishing.nodes == (water + (0,),)
 
 
 def test_eval_config_account_name():
@@ -80,6 +101,27 @@ def test_eval_result_round_trips_through_jsonl(tmp_path):
     assert back[0].duration_h == pytest.approx(1.0)
     assert back[0].gold_delta == 200
     assert back[1].fitness.total == pytest.approx(20.0)
+
+
+def test_eval_config_nodes_round_trips_through_jsonl(tmp_path):
+    """PHASE6.md item 4's fishing bank-drain fix: `EvalConfig.nodes` (the
+    per-seed water-tile override) survives the `to_json`/`from_json` ledger
+    round-trip as a tuple-of-tuples, not a list-of-lists — mirroring the
+    `spot`/`item_overrides` conversion `from_json` already does."""
+    path = tmp_path / "eval_results.jsonl"
+    cfg = EvalConfig(scenario_id="fishing", ticks=250, nodes=((2868, 638, -5, 0),))
+    fb = FitnessBreakdown(total=5.0)
+    r = EvalResult(
+        scenario_id="fishing", config=cfg, fitness=fb, duration_h=1.0,
+        skill_gain_total=0.0, gold_delta=0, alive_fraction=1.0,
+    )
+    write_eval_result(r, path)
+
+    back = read_eval_results(path)
+
+    assert len(back) == 1
+    assert back[0].config.nodes == ((2868, 638, -5, 0),)  # tuple-of-tuples, not list-of-lists
+    assert back[0].config == cfg  # full config equality survives the round-trip
 
 
 def test_read_eval_results_missing_file_returns_empty():
@@ -176,6 +218,54 @@ def test_run_eval_multi_no_spot_pool_keeps_configured_spot(monkeypatch):
     run_eval_multi(cfg, seeds=2, kernel_repo_root=None)
 
     assert [c.spot for c in captured] == [(5, 5), (5, 5)]
+
+
+def test_run_eval_multi_cycles_nodes_pool_in_lockstep_with_spot_pool(monkeypatch):
+    """PHASE6.md item 4's fishing bank-drain fix: `nodes_pool` rotates the
+    water node per seed, index-aligned with `spot_pool`'s shore stand — a
+    matched `(stand, water)` pair must move together so no two seeds re-fish
+    one draining 8x8 `HarvestBank`."""
+    captured: list[EvalConfig] = []
+
+    def fake(cfg, *, kernel_repo_root="."):
+        captured.append(cfg)
+        return EvalResult(
+            scenario_id=cfg.scenario_id, config=cfg, fitness=FitnessBreakdown(total=1.0),
+            duration_h=1.0, skill_gain_total=0.0, gold_delta=0, alive_fraction=1.0,
+        )
+
+    monkeypatch.setattr(eval_mod, "run_eval", fake)
+    cfg = EvalConfig(scenario_id="fishing", seed=0)
+    stands = [(1, 1), (2, 2), (3, 3)]
+    nodes = [((10, 10, -5, 0),), ((20, 20, -5, 0),), ((30, 30, -5, 0),)]
+
+    run_eval_multi(cfg, seeds=3, spot_pool=stands, nodes_pool=nodes, kernel_repo_root=None)
+
+    # stand[i] and node[i] land on the SAME seed — the lockstep guarantee.
+    assert [c.spot for c in captured] == [(1, 1), (2, 2), (3, 3)]
+    assert [c.nodes for c in captured] == [
+        ((10, 10, -5, 0),), ((20, 20, -5, 0),), ((30, 30, -5, 0),)
+    ]
+
+
+def test_run_eval_multi_no_nodes_pool_keeps_configured_nodes(monkeypatch):
+    """`nodes_pool=None` (every mining caller) leaves each seed at `cfg.nodes`
+    — a byte-for-byte no-op, mirroring `spot_pool`'s own default."""
+    captured: list[EvalConfig] = []
+
+    def fake(cfg, *, kernel_repo_root="."):
+        captured.append(cfg)
+        return EvalResult(
+            scenario_id=cfg.scenario_id, config=cfg, fitness=FitnessBreakdown(total=1.0),
+            duration_h=1.0, skill_gain_total=0.0, gold_delta=0, alive_fraction=1.0,
+        )
+
+    monkeypatch.setattr(eval_mod, "run_eval", fake)
+    cfg = EvalConfig(scenario_id="mining", seed=0)
+
+    run_eval_multi(cfg, seeds=2, kernel_repo_root=None)
+
+    assert [c.nodes for c in captured] == [None, None]
 
 
 def test_run_eval_multi_writes_each_seed_to_results_path(tmp_path, monkeypatch):
@@ -282,3 +372,110 @@ def test_run_eval_skips_kernel_guard_when_repo_root_is_none(monkeypatch):
         eval_mod.run_eval(cfg, kernel_repo_root=None)
 
     assert called == []  # the guard itself was never invoked
+
+
+# --- PHASE6.md item 4: Scenario.nodes -> agent.memory["harvest_nodes"] -----
+#
+# `run_eval` itself needs a live shard to actually exercise `Fish` (that's
+# `live_eval_gate.py`'s job — see PHASE6.md item 4's own live gate); these
+# stub out `IpcBody`/`GmControl` entirely (no network) to prove the
+# staging/memory-seeding PLUMBING alone: a fixture `run_eval` call, with
+# `ticks=0` so the fast loop never actually runs, seeds (or doesn't seed)
+# `agent.memory["harvest_nodes"]` exactly per `Scenario.nodes`.
+
+
+class _StubIpc:
+    """Minimal context-manager `IpcBody.spawn(...)` stand-in — no real bridge
+    subprocess, no network."""
+
+    def __init__(self, serial: int = 111) -> None:
+        self.ready = {"player": {"serial": serial}}
+        self._serial = serial
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def observe(self):
+        from anima2.contract import Observation, PlayerView, Position
+        return Observation(player=PlayerView(serial=self._serial, pos=Position(0, 0, 0)))
+
+    def act(self, action) -> None:
+        pass
+
+
+class _StubGm:
+    """Minimal context-manager `GmControl.spawn(...)` stand-in — same purpose
+    as `_StubIpc`."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def hide(self) -> None:
+        pass
+
+    def stage(self, *a, **k) -> None:
+        pass
+
+    def get_property_value(self, *a, **k):
+        return 0.0
+
+
+def _run_eval_with_stub_plumbing(monkeypatch, cfg: EvalConfig):
+    """Runs `eval_mod.run_eval(cfg, kernel_repo_root=None)` against
+    `_StubIpc`/`_StubGm` and returns the `Agent` it constructed (via a spy
+    wrapper around `eval_mod.Agent`, since `run_eval` doesn't return it
+    itself) — proves `run_eval`'s own staging/memory-seeding wiring without a
+    live shard."""
+    monkeypatch.setattr(time, "sleep", lambda s: None)  # skip the real login throttle
+    monkeypatch.setattr(eval_mod, "wipe_area", lambda *a, **k: None)
+    monkeypatch.setattr(eval_mod.IpcBody, "spawn", staticmethod(lambda *a, **k: _StubIpc()))
+    monkeypatch.setattr(eval_mod.GmControl, "spawn", staticmethod(lambda *a, **k: _StubGm()))
+
+    captured = {}
+    real_agent_cls = eval_mod.Agent
+
+    def _spy_agent(*a, **k):
+        agent = real_agent_cls(*a, **k)
+        captured["agent"] = agent
+        return agent
+
+    monkeypatch.setattr(eval_mod, "Agent", _spy_agent)
+    eval_mod.run_eval(cfg, kernel_repo_root=None)
+    return captured["agent"]
+
+
+def test_run_eval_seeds_harvest_nodes_from_scenario_nodes_when_set(monkeypatch):
+    """`SCENARIOS["fishing"].nodes` round-trips into
+    `agent.memory["harvest_nodes"]` exactly (a list, matching `village.py`'s
+    own `agent.memory["harvest_nodes"] = p["nodes"]` shape) — `Fish` has no
+    exact node to probe toward without this."""
+    agent = _run_eval_with_stub_plumbing(monkeypatch, EvalConfig(scenario_id="fishing", ticks=0))
+    assert agent.memory["harvest_nodes"] == list(SCENARIOS["fishing"].nodes)
+
+
+def test_run_eval_does_not_seed_harvest_nodes_when_scenario_nodes_is_none(monkeypatch):
+    """Negative control — `Scenario.nodes=None` (every mining entry, the
+    pre-item-4 default) never touches `agent.memory` at all, not even an
+    empty-list key."""
+    agent = _run_eval_with_stub_plumbing(monkeypatch, EvalConfig(scenario_id="mining", ticks=0))
+    assert "harvest_nodes" not in agent.memory
+
+
+def test_run_eval_prefers_cfg_nodes_over_scenario_nodes_when_set(monkeypatch):
+    """PHASE6.md item 4's fishing bank-drain fix: `EvalConfig.nodes`, when
+    set, OVERRIDES the scenario's own `nodes` in `agent.memory[
+    "harvest_nodes"]` — the per-seed water-tile rotation the fix needs.
+    Deliberately a DISTINCT node from `SCENARIOS["fishing"].nodes` to prove
+    the override path, not the fallback one."""
+    override = ((2868, 638, -5, 0),)
+    assert override != SCENARIOS["fishing"].nodes  # genuinely different from the scenario default
+    agent = _run_eval_with_stub_plumbing(
+        monkeypatch, EvalConfig(scenario_id="fishing", ticks=0, nodes=override)
+    )
+    assert agent.memory["harvest_nodes"] == list(override)

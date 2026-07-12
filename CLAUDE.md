@@ -363,8 +363,45 @@ substring check can cross-match. The item's own bundled one-time real
 `_assert_no_remote` unconditionally refuses any repo with a configured git
 remote, and `../uowiki` genuinely has one — a real, unresolved tension left
 to an explicit human decision rather than resolved by weakening the check.
-602 tests green (up from 590), ruff clean. **Next:** Phase 6 items 4-6
-(richer eval scenarios) remain — see [`PHASE6.md`](docs/PHASE6.md).
+602 tests green (up from 590), ruff clean.
+**Phase 6 item 4 — richer eval scenarios (a second scenario-supported
+profession) — is live-verified**: `foundry/eval.py::Scenario` gains a
+`nodes` field and a new `SCENARIOS["fishing"]` entry (a `Fish()` scenario at
+`FISHING_SPOTS[0]`), and `foundry/evolve.py::PROFESSION_SCENARIO` gains its
+second entry (`{"miner": "mining", "fisher": "fishing"}`) — which, with no
+other `evolve.py` change, makes `op_profession`/`_active_mutation_operators`
+a real, non-no-op mutation axis for the first time (the old
+single-entry-`PROFESSION_SCENARIO` tripwire test was consciously rewritten
+against a locally-monkeypatched dict, not left to bit-rot). The live gate
+(`live_eval_gate.py --scenario fishing`) reuses Phase 5 item 2's own ordering
+(differential) proof shape — `"fishing"` WITH a `FishingPole` vs the same
+scenario with `item_overrides=()` (no pole, `Harvest`'s "find nothing"
+branch), `run_eval_multi(seeds=3)` per side — and PASSED all four gating flags
+(ordering holds in- and cross-process, mean_with 4.5436 > mean_without 2.5241,
+gap 2.0195 dwarfing both sides' stdev; every with-pole seed's
+`produce_value_rate` nonzero `[201.8, 302.8, 303.2]`, every no-pole seed a
+provable `0.0`). Two decisions made honestly at landing, both documented in
+full in PHASE6.md item 4's "As landed": (a) `fitness.produce_value_rate`
+(channel (b), confirmed fish in the pack), not the `descriptor_cell`, is the
+decisive "the harness scored real fishing" signal — Fishing's channel-(a)
+skill-BASE delta essentially never registers within an eval-sized window even
+while fish genuinely land, so the descriptor cells read all-`NONE` and that
+flag was demoted to informational, provable from the gate's own transcript
+rather than any claim about runs outside it; (b) the ordering leg needed a
+matched-pair spot rotation the original single-fixed-spot scope didn't — a
+live run first drained one fishing bank's third seed to `0.0`
+(`[134.6, 237.7, 0.0]`, the same 8×8 `HarvestBank` 5-15-fish/10-20-min
+respawn mechanism ore veins use, verified against `../servuo/.../Fishing.cs`),
+fixed by adding an `EvalConfig.nodes` override + a `run_eval_multi(nodes_pool=)`
+companion that rotates the water node in lockstep with `spot_pool`'s shore
+stand (both `None`-default, byte-for-byte no-ops for every mining caller), so
+each with-pole seed fishes a distinct `FISHING_SPOTS[1..3]` bank. A first-cut
+`nodes`-shape bug (a bare 4-tuple where a tuple-of-nodes was needed, flattened
+by `list(nodes)` into an int `harvest.py` couldn't unpack) was caught on the
+first rotated run and pinned by a new `tests/test_live_eval_gate.py`. 615
+tests green (up from 602), ruff clean. **Next:** Phase 6 items 5-6
+(cognition-aware eval; the decisive evolution-vs-random rerun) remain — see
+[`PHASE6.md`](docs/PHASE6.md).
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

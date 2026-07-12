@@ -1177,7 +1177,7 @@ the first-real-write nit this item's own deferred bullet responds to), the
 
 ---
 
-## Item 4 — Richer eval scenarios: a second scenario-supported profession ⏳
+## Item 4 — Richer eval scenarios: a second scenario-supported profession ✅
 
 **Give `foundry/evolve.py::op_profession` a genuine second candidate.**
 `PROFESSION_SCENARIO` (`evolve.py`) has exactly one entry today
@@ -1317,6 +1317,145 @@ unset), rerun targeting `fishing`:
   `foundry/uoconst.py`'s existing skill-category mapping), not `NONE` or
   `"mining"` — a cheap, independent confirmation that the harness is
   actually scoring what it claims to be staging.
+
+### As landed (live-verified)
+
+Landed to spec on the schema and wiring, but the live gate forced the harness
+one deliberate step **beyond** the original Scope — documented here rather than
+left implicit, because that step turned out to be the whole substance of the
+item's live proof.
+
+**Landed as specified.** `foundry/eval.py::Scenario` gained the `nodes:
+tuple[tuple[int, int, int, int], ...] | None = None` field (default `None`, the
+`"mining"`/`"mining_50"` entries untouched); `run_eval` seeds
+`agent.memory["harvest_nodes"]` from it exactly as `village.py`'s own `if
+p["nodes"]:` fisher wiring does; `SCENARIOS["fishing"]` is the new entry
+(`spot`/`nodes` drawn from `FISHING_SPOTS[0]` as a matched shore/water pair,
+`Fishing 35`, `FishingPole`, `work_skill=Fish`); and
+`foundry/evolve.py::PROFESSION_SCENARIO` gained its second entry (`{"miner":
+"mining", "fisher": "fishing"}`), which — with no further `evolve.py` change,
+both `op_profession` and `_active_mutation_operators` already being written
+against `len(PROFESSION_SCENARIO)` — makes `op_profession` a real, non-no-op
+mutation operator for the first time.
+
+**The tripwire test was consciously updated, not left to bit-rot.** As "Key
+design decisions" above predicted, adding `"fisher"` to the module-global
+`PROFESSION_SCENARIO` permanently falsifies the old
+`test_op_profession_*`'s precondition (`set(PROFESSION_SCENARIO) ==
+{"miner"}`). It was rewritten to exercise the original "one candidate degrades
+`op_profession` to a same-value swap" intent against a **locally
+monkeypatched** single-entry dict, alongside the new paired assertions that
+two entries make `_active_mutation_operators` *include* `op_profession` and
+that many seeded `op_profession` calls visit both professions — two tests,
+two both-still-true claims, exactly as planned.
+
+**Beyond Scope — the `EvalConfig.nodes` override + `run_eval_multi(nodes_pool=)`,
+forced by the live gate.** The Scope anticipated a single fixed fishing spot
+(`FISHING_SPOTS[0]`), so it needed only `Scenario.nodes`. The live gate proved
+that insufficient: a fishing water tile drains its 8×8 `HarvestBank` exactly as
+an ore vein does (`MinTotal`/`MaxTotal` 5–15 fish, 10–20-minute respawn —
+verified directly against `../servuo/Scripts/Services/Harvest/Fishing.cs`, not
+assumed), and three back-to-back with-pole seeds at one spot starved the bank by
+the third. Fixing it meant rotating each with-pole seed onto a *distinct* spot —
+and because a fishing spot is a **matched `(shore-stand, water-node)` pair**,
+both the stand `spot` and the water node must move together. `run_eval_multi`'s
+existing `spot_pool=` only rotates the stand tile, so this item added a
+symmetric companion: an `EvalConfig.nodes` per-seed override (mirroring the
+existing `spot` override) that `run_eval` prefers over `scenario.nodes`, and a
+`run_eval_multi(nodes_pool=)` that rotates it in lockstep with `spot_pool`
+(same length, index-aligned). Both default to `None` — a byte-for-byte no-op
+for every existing mining caller and for a plain single-spot fishing
+`run_eval`. `live_eval_gate.py::_fishing_gate` now rotates its three with-pole
+seeds across `FISHING_SPOTS[1..3]` (index 0 deliberately skipped to let it
+respawn; the no-pole side stays at the scenario default — it provably cannot
+fish, drains no bank, and its spot is immaterial).
+
+**Key decision: `produce_value_rate`, not the descriptor cell, is the decisive
+"the harness scored real fishing" signal.** The Scope's own "descriptor sanity"
+leg expected the with-pole `descriptor_cell`'s `profession_focus` to read the
+Fishing skill category, not `NONE`. Live reality, observed directly on every
+run: it reads `NONE`. `profession_focus` is computed from channel (a)'s `[Get
+Skills.Fishing.Base]` window-start/end delta, and Fishing's skill *base*
+essentially never moves within an eval-sized window even while fish are
+genuinely, repeatedly landing in the pack (`Fish`'s own module docstring
+already flags this — "fishing's output is fish, not skill, which gains very
+slowly"). So `descriptor_ok` is demoted to an INFORMATIONAL, non-gating flag,
+and the decisive check became `fitness.produce_value_rate` (channel (b), tied
+directly to confirmed fish in the pack — already computed, already persisted on
+every `EvalResult`, no kernel change): every with-pole seed must show real
+production, every no-pole seed provably zero. This is deliberately **not** a
+claim about diagnostic sessions run outside the gate — it is visible in the
+gate's own transcript, where all three with-pole cells print `NONE` beside
+clearly nonzero produce rates.
+
+**Bugs found live.**
+
+1. **The bank-drain-needs-rotation finding — the item's headline live catch.**
+   An independent gate run staged all three with-pole seeds at
+   `FISHING_SPOTS[0]` and came back `produce_value_rate=[134.6, 237.7, 0.0]` —
+   the third seed starved a bank the first two had drained. Not a capability
+   failure (the no-pole side was a perfect `[0, 0, 0]` as designed), a
+   resource-exhaustion one — the same class of finding item 2's own solo-miner
+   leg hit and resolved the same way (rotate spots), here generalized to the
+   matched-pair `nodes_pool=` rotation above. `_fishing_gate`'s own docstring
+   had already *named* this fix as the documented response should a real run
+   ever hit it; a real run hit it, so it was implemented.
+2. **A `nodes`-shape `TypeError`, caught on the first rotated run.** The first
+   cut of the gate's rotation constant made each `FISH_NODES[i]` a bare 4-tuple
+   `(x, y, z, 0)` rather than a full `EvalConfig.nodes` value (a tuple
+   *containing* one 4-tuple, matching `SCENARIOS["fishing"].nodes`'s own shape).
+   Under `run_eval`'s `list(nodes)` that flattened to `[x, y, z, 0]`, and
+   `skills/harvest.py` raised `cannot unpack non-iterable int object` unpacking
+   `2868` as if it were a node. The offline `nodes_pool` rotation test hadn't
+   caught it because that test built its own correctly-shaped pool; fixed the
+   constant and added `tests/test_live_eval_gate.py` — two tests pinning the
+   gate's own `FISH_STANDS`/`FISH_NODES` to matched pairs of the scenario-node
+   shape, so exactly this bare-4-tuple regression can't recur.
+
+**Live gate — PASSED, all four gating flags, on the rotated run:**
+
+```
+=== SCENARIO=fishing: ORDERING (differential) — fishing WITH FishingPole vs WITHOUT ===
+with-pole spot rotation: stands=((2869, 639), (2876, 636), (2894, 636)) nodes=(((2868, 638, -5, 0),), ((2873, 633, -5, 0),), ((2898, 632, -5, 0),))
+[fishing, WITH pole]: per_seed=[4.036, 4.794, 4.801] mean=4.5436 stdev=0.3591
+[fishing, NO pole (provably can't fish)]: per_seed=[2.524, 2.523, 2.525] mean=2.5241 stdev=0.0008
+gap (with - without) = 2.0195; both sides' own stdev: with=0.3591 without=0.0008
+ordering holds (with mean > without mean): True; gap dwarfs both stdevs: True
+
+=== SCENARIO=fishing: DESCRIPTOR SANITY — with-pole cells read GATHERING, not NONE ===
+with-pole descriptor cells: [('NONE', 0), ('NONE', 0), ('NONE', 0)] -> every profession_focus == 'GATHERING' (not NONE): False
+with-pole produce_value_rate: [201.785, 302.782, 303.221]; no-pole produce_value_rate: [0.0, 0.0, 0.0]
+  -> every with-pole seed produced something real, every no-pole seed provably didn't: True
+
+=== cross-process readback ===
+cross-process: mean_with=4.5436 mean_without=2.5241 -> ordering_holds=True
+
+=== GATE VERDICT (scenario=fishing) ===
+[INFO, not gating] fishing_descriptor_profession_focus_is_gathering = False
+[FLAG] fishing_ordering_holds_in_process = True
+[FLAG] fishing_ordering_holds_cross_process = True
+[FLAG] fishing_gap_dwarfs_stdev = True
+[FLAG] fishing_produced_real_output_confirmed = True
+[FLAG] GATE PASSED: scenario=fishing gap=2.0195 cells=[('NONE', 0), ('NONE', 0), ('NONE', 0)]
+```
+
+Each with-pole seed fished a **distinct** rotated spot (`FISHING_SPOTS[1..3]`)
+and landed real fish (`produce_value_rate` 201.8 / 302.8 / 303.2) — the
+drained-third-seed failure gone. The no-pole side, provably unable to fish,
+produced exactly zero on all three seeds; its nonzero ~2.52 *fitness* is a pure
+duration-driven `behavior_bonus` floor (precisely why raw fitness isn't the
+decisive signal — `produce_value_rate` is), and the ordering still holds
+decisively with the gap (2.0195) dwarfing both sides' own stdev, reproduced
+cross-process from a fresh reader of `data/eval_results.jsonl`. The three
+rotated banks (`FISHING_SPOTS[1..3]`) are drained by this run and need ~15–20
+real minutes to respawn before the gate is re-runnable at those spots.
+
+**Offline: 615 tests green (609 in the tree at this item's start + 6 new — 4 in
+`tests/test_foundry_eval.py` for the `nodes` JSONL round-trip, the `nodes_pool`
+lockstep-with-`spot_pool` rotation, the `nodes_pool=None` no-op, and
+`cfg.nodes`-overrides-`scenario.nodes`; 2 in the new `tests/test_live_eval_gate.py`
+pinning the gate's matched-pair rotation constants against the bare-4-tuple
+regression), 3 consecutive full-suite runs, `ruff check .` clean.**
 
 ### References
 

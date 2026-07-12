@@ -87,7 +87,7 @@ agent configs, landed offline), and item 4 (the evolution loop —
 `foundry/evolve.py::evolve`/`random_search`, compared live against each
 other on identical budgets; the comparative verdict came back an honest tie,
 the expected result while most of the genome's mutation space is live-inert
-under today's one eval scenario) are all done. Phase 6 items 1-3 are also
+under today's one eval scenario) are all done. Phase 6 items 1-4 are also
 live-verified — see [`docs/PHASE6.md`](docs/PHASE6.md): persistent lives
 (disk-backed `ReflectionMemory`, `village.py --persist-insights` — a
 genuinely new process resumes a persona's insights from
@@ -101,11 +101,18 @@ forum as a continuing chronicle (`forum.py`'s `compose_post`/
 code-composed and spliced in before any LLM call — a real, live-posted
 qwen-written forum entry named its blacksmith partner by exact persona name,
 grounded in a real confirmed delivery, with a negative-control solo miner's
-post naming no one). 602 tests green.
+post naming no one), and a second scenario-supported profession for the eval
+harness (item 4 — `foundry/eval.py` gains a `Fish()`-based
+`SCENARIOS["fishing"]` and `evolve.py::PROFESSION_SCENARIO` a second entry,
+making `op_profession` a real mutation axis; the `--scenario fishing` gate
+PASSED all four flags, ordering with-pole 4.5436 > no-pole 2.5241 and every
+with-pole seed landing real fish while every no-pole seed provably caught
+none, once a matched shore/water `nodes_pool=` rotation stopped back-to-back
+seeds from draining one fishing bank). 615 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 602 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 615 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
