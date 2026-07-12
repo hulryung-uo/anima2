@@ -1019,6 +1019,43 @@ resolved either by skipping the spirit of the check or by quietly loosening
 it — `live_forum_chronicle.py` prints a NOTE line to this effect in its own
 gate summary rather than reporting a silent pass or fail for this bullet.
 
+**RESOLVED (2026-07-12, human-approved opt-in) — the one-time real-`../uowiki`
+write, run once; no genuine discrepancy surfaced, nothing committed.** The
+human made the explicit decision this block deferred: rather than weakening
+`_assert_no_remote`, `live_wiki_report.py` gained a narrow, no-op-by-default
+`--allow-remote-repo` flag (relaxes ONLY the no-remote refusal — with a printed
+WARNING naming the repo — and does NOT enable pushing; `file_report` still only
+`git add` + `git commit`s) plus a `--live-llm` flag that swaps the *scripted*
+judge (`_CyclingJudgeClient`, which FABRICATES a fixed synthetic claim — valid
+only for the disposable-clone circuit-breaker proof) for the REAL Replicate
+qwen client, so any report is a genuine LLM-surfaced discrepancy over live
+mining vs the real wiki page, never a fabrication. A **safety interlock**
+refuses `--allow-remote-repo` with the scripted judge, so the synthetic claim
+can never reach a remoted repo. Four offline tests
+(`tests/test_live_wiki_report.py`): the default gate still refuses a remoted
+repo; the flag skips it with a warning; a remoteless repo is byte-for-byte
+unchanged either way; and an AST-stripped static check that `push` appears
+nowhere in `Wiki.file_report`'s executable code (complementing test_wiki.py's
+argv-spy). The genuine run (`--wiki-repo-root ../uowiki --live-llm
+--allow-remote-repo --wiki-reporter on --ticks 240`, real qwen throughout,
+against ../uowiki at `cb02d178`): healthy live mining (16 episodes, +0.8
+reward, no wedge), the real qwen judge invoked **7 times** over real Mining
+episodes vs the real `skills/mining` page — and it flagged **zero
+contradictions** (0 reports filed). ../uowiki HEAD unchanged (`cb02d178`),
+`reports/open/` still only `.gitkeep`, `status -sb` = `## main...origin/main`
+(not ahead — nothing committed, nothing pushed). This is the spec's own
+explicitly-blessed valid outcome ("if a full run surfaces NO genuine
+discrepancy... that is a valid outcome — the wiki may be accurate for what the
+agent observes"): the abstract skill-outcome episodes carry no concrete numeric
+claim the judge could contradict, and the wiki is accurate for what the miner
+saw (the very spot, Minoc east-face `(2567,493)`, is a wiki-documented mining
+location — commit `9c60974`). The judge path was confirmed genuinely functional
+(not silently failing) by an independent direct call: qwen returns a real,
+reasoned "does NOT contradict" verdict for an honest mining transcript. No
+report was fabricated or hand-written to force a commit. 619 tests green (up
+from 615), ruff clean. The anima2-side flag/test/doc changes are the deliverable
+here; the ../uowiki repo has no commit to make (nothing was surfaced).
+
 **Bug 1 (gate script only): a discarded, stalled attempt still published to
 the live forum before the retry wrapper decided to discard it.** First
 draft of `live_forum_chronicle.py::_run_forum_session` posted whenever

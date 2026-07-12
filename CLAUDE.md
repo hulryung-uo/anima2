@@ -399,7 +399,25 @@ each with-pole seed fishes a distinct `FISHING_SPOTS[1..3]` bank. A first-cut
 `nodes`-shape bug (a bare 4-tuple where a tuple-of-nodes was needed, flattened
 by `list(nodes)` into an int `harvest.py` couldn't unpack) was caught on the
 first rotated run and pinned by a new `tests/test_live_eval_gate.py`. 615
-tests green (up from 602), ruff clean. **Next:** Phase 6 items 5-6
+tests green (up from 602), ruff clean.
+**Phase 6 item 3's deferred one-time real-`../uowiki` write is now resolved
+(human-approved opt-in)**: `live_wiki_report.py` gained a no-op-by-default
+`--allow-remote-repo` flag (relaxes ONLY `_assert_no_remote`'s refusal, with a
+printed WARNING — never enables pushing; `file_report` still only commits) and
+a `--live-llm` flag that swaps the *scripted* judge (which FABRICATES a
+synthetic claim — disposable-clone proof only) for the REAL Replicate qwen
+judge, guarded by an interlock that refuses `--allow-remote-repo` with the
+scripted judge so a fabrication can never reach a remoted repo. Run once against
+the real `../uowiki` (`--live-llm --allow-remote-repo`, real qwen throughout):
+healthy live mining (16 episodes), the real judge invoked 7 times over real
+Mining episodes vs the real `skills/mining` page, and it flagged **zero
+contradictions** — nothing committed, nothing pushed, HEAD unchanged
+(`cb02d178`), `reports/open/` still only `.gitkeep`. This is the spec's own
+blessed valid outcome (no genuine discrepancy — the wiki is accurate for what
+the miner observed; no report was fabricated or hand-written to force a commit).
+Four new offline tests (`tests/test_live_wiki_report.py`); 619 tests green (up
+from 615), ruff clean — see [`PHASE6.md`](docs/PHASE6.md) item 3's "RESOLVED"
+note. **Next:** Phase 6 items 5-6
 (cognition-aware eval; the decisive evolution-vs-random rerun) remain — see
 [`PHASE6.md`](docs/PHASE6.md).
 

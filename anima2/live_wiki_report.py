@@ -38,9 +38,27 @@ disposable, remote-less clone, **never** the real `../uowiki`:
    what the judge said) — all directly inspectable in stdout, watchdog-bounded
    by `--ticks`.
 
+**The genuine one-time real-wiki write (opt-in).** The default judge is a
+*scripted* stand-in (`_CyclingJudgeClient`) that FABRICATES a fixed synthetic
+claim — perfect for the disposable-clone circuit-breaker proof, but its report
+must never reach the real wiki. Two flags gate a genuine run against the real
+`../uowiki` (which has a GitHub remote):
+
+- `--live-llm` swaps every scripted client for the real Replicate qwen client,
+  so the judge decides against LIVE mining episodes vs the REAL wiki page — any
+  report it files is a genuine, LLM-surfaced discrepancy, not a fabrication.
+- `--allow-remote-repo` relaxes `_assert_no_remote` for a repo with a remote.
+  It does NOT enable pushing — `file_report` still only commits.
+
+An interlock refuses `--allow-remote-repo` with the scripted judge, so the
+fabricated synthetic claim can never be committed into a remoted repo.
+
 Usage:
-    python -m anima2.live_wiki_report --wiki-repo-root PATH [--wiki-root PATH]
-        [--ticks N] [--wiki-reporter {on,off}]
+    # disposable-clone proof (default, scripted judge, refuses a remote):
+    python -m anima2.live_wiki_report --wiki-repo-root /tmp/uowiki-test [...]
+    # genuine one-time real-wiki write (real qwen judge, remote allowed):
+    python -m anima2.live_wiki_report --wiki-repo-root ../uowiki \\
+        --live-llm --allow-remote-repo [--ticks N] [--wiki-reporter {on,off}]
 """
 
 from __future__ import annotations
@@ -55,6 +73,7 @@ from .agent import Agent
 from .cognition import LLMCognition, LLMReflection, LLMWikiReportProducer, ReflectingCognition, ThreadedCognition
 from .control import GmControl
 from .ipc_body import IpcBody
+from .llm import ReplicateClient
 from .persona import Persona
 from .planner import Planner
 from .skills import GoTo, Mine, SpeakPending
@@ -117,21 +136,54 @@ class _CyclingJudgeClient:
         })
 
 
-def _assert_no_remote(repo_root: Path) -> None:
+class _CountingClient:
+    """Wraps a real `LLMClient` (the live Replicate qwen client) so the run's
+    stdout can report per-role call counts exactly the way the scripted
+    stand-ins already do — both expose a `.calls` counter. Delegates every
+    `complete` unchanged; it adds a counter and nothing else. Only used on the
+    `--live-llm` path (a genuine LLM judge over live observation); the default
+    path keeps the scripted stand-ins untouched."""
+
+    def __init__(self, inner: object) -> None:
+        self.inner = inner
+        self.calls = 0
+
+    def complete(self, system: str, user: str) -> str:
+        self.calls += 1
+        return self.inner.complete(system, user)  # type: ignore[attr-defined]
+
+
+def _assert_no_remote(repo_root: Path, *, allow_remote: bool = False) -> None:
     """Refuse outright if `repo_root` has ANY git remote configured — the
     disposable-clone-only safety gate this whole script exists to enforce,
-    checked before any filesystem write (report files, commits)."""
+    checked before any filesystem write (report files, commits).
+
+    `allow_remote=True` (the `--allow-remote-repo` opt-in) relaxes ONLY this
+    refusal: a repo WITH a remote is let through, but with a printed WARNING
+    naming the repo and its remote. It does NOT enable pushing — `file_report`
+    still only `git add` + `git commit`s, never `git push` (proven in
+    `wiki.py`/`tests`). A repo with no remote is unaffected either way (returns
+    silently, exactly as before — the default `allow_remote=False` path is
+    byte-for-byte unchanged)."""
     result = subprocess.run(
         ["git", "-C", str(repo_root), "remote", "-v"],
         capture_output=True, text=True, check=True,
     )
-    if result.stdout.strip():
-        sys.exit(
-            f"refusing to run: {repo_root} has a git remote configured:\n"
-            f"{result.stdout}\n"
-            "Point --wiki-repo-root at a disposable, remote-less clone — never "
-            "a repo with a remote (see this script's own module docstring)."
+    if not result.stdout.strip():
+        return  # no remote configured — always safe, nothing to warn about
+    if allow_remote:
+        print(
+            "WARNING: --allow-remote-repo set — skipping the no-remote safety gate for a "
+            f"repo that HAS a git remote:\n  {repo_root}\n{result.stdout.rstrip()}\n"
+            "  file_report still only commits (never pushes); nothing here can push."
         )
+        return
+    sys.exit(
+        f"refusing to run: {repo_root} has a git remote configured:\n"
+        f"{result.stdout}\n"
+        "Point --wiki-repo-root at a disposable, remote-less clone — never "
+        "a repo with a remote (see this script's own module docstring)."
+    )
 
 
 def main() -> None:
@@ -146,6 +198,15 @@ def main() -> None:
     ap.add_argument("--wiki-reporter", choices=("on", "off"), default="on",
                      help="off = differential-inertness leg (wiki_reporter=None)")
     ap.add_argument("--cognition-interval", type=int, default=12)
+    ap.add_argument("--live-llm", action="store_true",
+                     help="use the REAL Replicate qwen client for the goal/reflection/judge "
+                          "roles instead of the scripted stand-ins — REQUIRED for a genuine "
+                          "discrepancy against a real wiki (the scripted judge FABRICATES a "
+                          "synthetic claim, only valid for the disposable-clone proof)")
+    ap.add_argument("--allow-remote-repo", action="store_true",
+                     help="opt in to running against a repo that HAS a git remote (e.g. the "
+                          "real ../uowiki). Relaxes ONLY the no-remote refusal; it does NOT "
+                          "enable pushing — file_report still only commits, never pushes.")
     args = ap.parse_args()
 
     repo_root = Path(args.wiki_repo_root).expanduser().resolve()
@@ -154,7 +215,19 @@ def main() -> None:
                   "point --wiki-repo-root at a disposable clone, e.g.:\n"
                   f"  git clone --no-hardlinks ../uowiki {repo_root}\n"
                   f"  git -C {repo_root} remote remove origin")
-    _assert_no_remote(repo_root)  # SAFETY GATE — before any filesystem write below
+    # Safety interlock: the scripted judge FABRICATES a fixed synthetic claim
+    # ("mining yields exactly 3 ore per successful swing"). Committing that into a
+    # repo with a remote (the real wiki) would plant a fabricated report — exactly
+    # what this whole exercise must never do. Only the real LLM judge (--live-llm)
+    # produces a genuine, judge-surfaced discrepancy worth committing there.
+    if args.allow_remote_repo and args.wiki_reporter == "on" and not args.live_llm:
+        sys.exit(
+            "refusing to run: --allow-remote-repo with the SCRIPTED judge would commit a "
+            "FABRICATED synthetic claim into a repo that has a remote. Pass --live-llm to use "
+            "the real LLM judge (the only judge whose report is genuine), or drop "
+            "--allow-remote-repo to keep the scripted proof on a disposable clone."
+        )
+    _assert_no_remote(repo_root, allow_remote=args.allow_remote_repo)  # SAFETY GATE — before any filesystem write below
 
     wiki_root = Path(args.wiki_root) if args.wiki_root else repo_root / "src" / "content" / "docs"
     wiki = Wiki(root=wiki_root, repo_root=repo_root, report_cooldown_s=3600.0)
@@ -162,15 +235,35 @@ def main() -> None:
     if not wiki.available:
         sys.exit(f"refusing to run: wiki root {wiki.root} doesn't exist")
 
-    goal_client = _ScriptedGoalClient('{"say": "These veins run thin today.", "goal": "idle"}')
+    if args.live_llm:
+        # Genuine loop: one real Replicate qwen client answers every LLM role.
+        # Any report the judge files is then a real, LLM-surfaced discrepancy
+        # over live mining episodes vs the real wiki page — not a scripted
+        # fabrication. This is the only mode allowed to touch a remoted repo
+        # (enforced by the interlock above).
+        replicate = ReplicateClient.from_v1_config()
+        if replicate is None:
+            sys.exit("refusing to run: --live-llm needs the Replicate qwen client from "
+                     "~/dev/uo/anima/config.yaml (or REPLICATE_API_TOKEN) — none configured.")
+        goal_client = _CountingClient(replicate)
+        reflect_client = _CountingClient(replicate)
+        judge_client = _CountingClient(replicate)
+        print(f"live-llm: real Replicate qwen client ({replicate.model}) for goal/reflection/judge roles")
+    else:
+        goal_client = _ScriptedGoalClient('{"say": "These veins run thin today.", "goal": "idle"}')
+        reflect_client = _ScriptedReflectionClient('["A quiet, steady day at the ridge."]')
+        judge_client = _CyclingJudgeClient()
+
     goal_cog = LLMCognition(goal_client, job="miner", wiki=wiki)
-
-    reflect_client = _ScriptedReflectionClient('["A quiet, steady day at the ridge."]')
     reflect_producer = LLMReflection(reflect_client, wiki=wiki)
-
-    judge_client = _CyclingJudgeClient()
     wiki_reporter = LLMWikiReportProducer(judge_client) if args.wiki_reporter == "on" else None
-    print(f"wiki_reporter: {'LLMWikiReportProducer (cycling judge)' if wiki_reporter else 'None (inertness leg)'}")
+    if wiki_reporter is None:
+        judge_desc = "None (inertness leg)"
+    elif args.live_llm:
+        judge_desc = "LLMWikiReportProducer (REAL qwen judge — genuine discrepancies)"
+    else:
+        judge_desc = "LLMWikiReportProducer (scripted cycling judge — synthetic proof only)"
+    print(f"wiki_reporter: {judge_desc}")
 
     reflecting = ReflectingCognition(
         goal_cog, reflect_producer, every_n_reconsiders=1, min_new_episodes=1,
