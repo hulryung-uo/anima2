@@ -82,6 +82,24 @@ def _result(*, scenario_id: str = "mining", seed: int = 0, total: float = 13.6) 
     )
 
 
+def test_eval_result_speech_sent_round_trips_and_defaults_zero(tmp_path):
+    """PHASE6.md item 5's cognition-eval gate reads raw `speech_sent` off the
+    persisted result (the decisive magnitude signal for the dose-response leg,
+    not the coarse `sociability_bin`). It must survive the jsonl round-trip,
+    and a legacy line written before this field existed must read back as 0."""
+    path = tmp_path / "eval_results.jsonl"
+    cfg = EvalConfig(scenario_id="mining", ticks=200)
+    r = EvalResult(
+        scenario_id="mining", config=cfg, fitness=FitnessBreakdown(total=5.0),
+        duration_h=1.0, skill_gain_total=0.0, gold_delta=0, alive_fraction=1.0,
+        speech_sent=14,
+    )
+    write_eval_result(r, path)
+    assert read_eval_results(path)[0].speech_sent == 14
+    # a pre-item-5 ledger line (no "speech_sent" key) defaults to 0 on read
+    assert EvalResult.from_json({k: v for k, v in r.to_json().items() if k != "speech_sent"}).speech_sent == 0
+
+
 def test_eval_result_round_trips_through_jsonl(tmp_path):
     path = tmp_path / "eval_results.jsonl"
     r1 = _result(seed=0, total=13.6)
@@ -479,3 +497,122 @@ def test_run_eval_prefers_cfg_nodes_over_scenario_nodes_when_set(monkeypatch):
         monkeypatch, EvalConfig(scenario_id="fishing", ticks=0, nodes=override)
     )
     assert agent.memory["harvest_nodes"] == list(override)
+
+
+# --- PHASE6.md item 5: cognition-aware eval (the off-switch + the stub path) --
+#
+# The load-bearing regression pin below proves the off-switch really gates on
+# `cognition_provider`, NEVER on `cognition_tier`/`sociability` (both non-`None`
+# yet ignored). The stub-provider tests drive a FULLY OFFLINE `StubLLMClient`
+# (no network) end-to-end through `run_eval`'s own tick loop, proving the
+# cognition wiring produces real speech for a sociable persona and none for a
+# silent one — short of the live gate (`live_cognition_eval_gate.py`).
+
+
+def test_run_eval_cognition_provider_none_is_bare_agent_even_with_tier_and_sociability(monkeypatch):
+    """THE load-bearing pin (PHASE6.md item 5): `cognition_provider=None` (the
+    default) builds the pre-item-5 bare agent — exactly `[work_skill]`,
+    `NullCognition`, the `Persona` default `talkativeness` — EVEN WHEN
+    `cognition_tier`/`sociability` are non-`None`. Proves the off-switch gates
+    on `cognition_provider` alone, so a genome-driven eval (whose
+    `cognition_tier` is a required, never-`None` field) stays inert unless the
+    RUN-level `EvolutionConfig.cognition_provider` is set."""
+    from anima2.agent import NullCognition
+
+    agent = _run_eval_with_stub_plumbing(
+        monkeypatch,
+        EvalConfig(scenario_id="mining", ticks=0, cognition_tier="standard", sociability=0.9),
+    )
+    assert [type(s) for s in agent.planner.skills] == [Mine]
+    assert isinstance(agent.cognition, NullCognition)
+    assert agent.persona.talkativeness == 0.3  # sociability=0.9 was ignored — the off-switch is on provider
+
+
+def test_run_eval_cognition_provider_stub_builds_cognition_aware_agent(monkeypatch):
+    """A concrete `cognition_provider` builds the cognition-aware agent: the
+    full `Profession.planner()`-shaped worker planner (so `SpeakPending` can
+    voice queued lines) driven by a `ThreadedCognition(LLMCognition(...,
+    talkativeness_gate=True))`, its persona staged at `sociability`."""
+    from anima2.cognition import LLMCognition, ThreadedCognition
+    from anima2.skills import Fish, GoTo, Greet, SpeakPending, Wander
+
+    agent = _run_eval_with_stub_plumbing(
+        monkeypatch,
+        EvalConfig(scenario_id="fishing", ticks=0, cognition_provider="stub",
+                   cognition_tier="cheap", sociability=0.75),
+    )
+    assert [type(s) for s in agent.planner.skills] == [SpeakPending, GoTo, Fish, Greet, Wander]
+    assert isinstance(agent.cognition, ThreadedCognition)
+    assert isinstance(agent.cognition.inner, LLMCognition)
+    assert agent.cognition.inner.talkativeness_gate is True
+    assert agent.persona.talkativeness == 0.75
+
+
+class _SlowStubIpc(_StubIpc):
+    """`_StubIpc` whose `observe()` yields for ~2ms so `run_eval`'s tick loop
+    takes real (if small) wall-clock time. `run_eval` builds the
+    cognition-aware agent with a `ThreadedCognition` that reconsiders on a
+    BACKGROUND thread (the fast loop never blocks on cognition, by design), so
+    an instant-stub tick loop would race to the end before any async reconsider
+    could queue speech. A couple of ms per tick gives the (microsecond-fast,
+    fully offline `StubLLMClient`) reconsider ample time to land — enough for
+    `SpeakPending` to voice it, so `speech_sent` reflects real speech."""
+
+    def observe(self):
+        time.sleep(0.002)
+        return super().observe()
+
+
+def _run_eval_stub_capture_summary(monkeypatch, tmp_path, cfg: EvalConfig):
+    """Drive `run_eval`'s real tick loop against `_SlowStubIpc`/`_StubGm` (no
+    network) with a fully offline `cognition_provider="stub"` cognition, and
+    return the `TrajectorySummary` it scored — captured via a spy around
+    `eval_mod.compute_fitness` (the one place the finished summary is in
+    scope). Routes the tiered clients' usage log at a `tmp_path` so the suite
+    never touches the real `data/llm_usage.jsonl`, and no-ops `run_eval`'s own
+    login throttle (`eval_mod.login_throttle`) rather than `time.sleep`, so the
+    per-tick yields above still elapse."""
+    from anima2 import llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "_DEFAULT_USAGE_LOG", tmp_path / "usage.jsonl")
+    monkeypatch.setattr(eval_mod, "login_throttle", lambda *a, **k: None)  # skip the 4s/15s throttles
+    monkeypatch.setattr(eval_mod, "wipe_area", lambda *a, **k: None)
+    monkeypatch.setattr(eval_mod.IpcBody, "spawn", staticmethod(lambda *a, **k: _SlowStubIpc()))
+    monkeypatch.setattr(eval_mod.GmControl, "spawn", staticmethod(lambda *a, **k: _StubGm()))
+
+    captured: dict = {}
+    real_fitness = eval_mod.compute_fitness
+
+    def _spy_fitness(summary):
+        captured["summary"] = summary
+        return real_fitness(summary)
+
+    monkeypatch.setattr(eval_mod, "compute_fitness", _spy_fitness)
+    eval_mod.run_eval(cfg, kernel_repo_root=None)
+    return captured["summary"]
+
+
+def test_run_eval_stub_cognition_speaks_when_sociable(monkeypatch, tmp_path):
+    """Fully offline, no network: `cognition_provider="stub"`,
+    `sociability=1.0` — the stub always replies, the talkativeness gate always
+    passes, so `SpeakPending` voices it and `TrajectorySummary.speech_sent` is
+    nonzero (the wiring end-to-end, short of the live gate)."""
+    summary = _run_eval_stub_capture_summary(
+        monkeypatch, tmp_path,
+        EvalConfig(scenario_id="mining", ticks=160, cognition_provider="stub",
+                   cognition_tier="cheap", sociability=1.0),
+    )
+    assert summary.speech_sent > 0
+
+
+def test_run_eval_stub_cognition_silent_when_asocial(monkeypatch, tmp_path):
+    """The deterministic negative control: same fully-offline stub wiring but
+    `sociability=0.0` — every talkativeness-gate draw is `>= 0.0`, so nothing
+    is ever queued, `SpeakPending` never voices, and `speech_sent` is EXACTLY
+    zero (not merely small)."""
+    summary = _run_eval_stub_capture_summary(
+        monkeypatch, tmp_path,
+        EvalConfig(scenario_id="mining", ticks=160, cognition_provider="stub",
+                   cognition_tier="cheap", sociability=0.0),
+    )
+    assert summary.speech_sent == 0

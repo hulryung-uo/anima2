@@ -35,6 +35,7 @@ byte-for-byte no-op — no existing `ReflectingCognition` caller is affected.
 from __future__ import annotations
 
 import json
+import random
 import re
 import threading
 from collections import defaultdict
@@ -140,12 +141,38 @@ class LLMCognition:
     <excerpt>" line to the situation prompt, from a query derived from `ctx`
     (`_wiki_query`) — see `_wiki_line`. `None` (the default) keeps the prompt
     exactly as before; wiki lookups never run when there's no wiki to consult.
+
+    `talkativeness_gate` (PHASE6.md item 5) makes `Persona.talkativeness`
+    causally real: when `True`, `_queue_say` draws `rng.random()` and stays
+    quiet this tick whenever the draw is `>= persona.talkativeness`, so a
+    chatty persona voices more of its LLM lines than a taciturn one. `False`
+    (the default) is a **byte-for-byte no-op** — every line the model produces
+    is voiced exactly as before, preserving every prior live chatter proof
+    (Phase 2 through 4, all of which assumed every valid reply gets voiced —
+    an always-on gate would silently cut the default `talkativeness=0.3`
+    persona's speech rate by ~70%). `rng` defaults to a fresh
+    `random.Random()` (real randomness, matching the rest of this codebase's
+    non-fast-loop randomness); tests pass a seeded `random.Random(seed)` to
+    make the gate's pass/fail boundary exactly reproducible.
     """
 
-    def __init__(self, client: LLMClient, job: str = "adventurer", wiki: Wiki | None = None) -> None:
+    def __init__(
+        self,
+        client: LLMClient,
+        job: str = "adventurer",
+        wiki: Wiki | None = None,
+        *,
+        talkativeness_gate: bool = False,
+        rng: random.Random | None = None,
+    ) -> None:
         self.client = client
         self.job = job
         self.wiki = wiki
+        #: PHASE6.md item 5: opt-in `Persona.talkativeness` speech gate — see
+        #: the class docstring and `_queue_say`. Off by default (byte-for-byte
+        #: no-op: no `rng` draw happens at all, so RNG state is untouched too).
+        self.talkativeness_gate = talkativeness_gate
+        self.rng = rng if rng is not None else random.Random()
         #: Memoizes the formatted wiki line per query string (or `None` for a
         #: query that hit nothing) — an unchanged query across many reconsiders
         #: (the common case: same skill, same job) costs one `Wiki.search()`
@@ -195,7 +222,17 @@ class LLMCognition:
         """Stash one clean, in-character line for `SpeakPending` to voice in-game.
 
         Collapses the model's stray newlines/whitespace into a single line (UO
-        speech is one line) and drops obvious out-of-character disclosures."""
+        speech is one line) and drops obvious out-of-character disclosures.
+
+        PHASE6.md item 5: when `talkativeness_gate` is on, draw `rng.random()`
+        first — before any cleaning/stashing — and skip queuing entirely (a
+        silent no-op, the agent works quietly this tick) whenever the draw is
+        `>= persona.talkativeness`. `talkativeness=0.0` never speaks (a draw is
+        always `>= 0.0`); `talkativeness=1.0` always speaks (a draw is never
+        `>= 1.0`). Gate off (the default) never draws at all — byte for byte
+        the original behavior, RNG state included."""
+        if self.talkativeness_gate and self.rng.random() >= ctx.persona.talkativeness:
+            return
         if not isinstance(line, str):
             return
         cleaned = _clean_model_line(line)

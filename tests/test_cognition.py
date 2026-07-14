@@ -1,5 +1,6 @@
 """The slow cognition loop: LLM goal parsing, speech queueing, non-blocking wrap."""
 
+import random
 import threading
 from pathlib import Path
 
@@ -19,6 +20,14 @@ def _ctx(goal=None, memory=None) -> SkillContext:
     obs = Observation(player=PlayerView(serial=1, pos=Position(3724, 2212, 20), hits=80, hits_max=80))
     return SkillContext(obs=obs, persona=Persona(name="Grimm", title="a miner"),
                         goal=goal, memory=memory if memory is not None else {})
+
+
+def _ctx_talk(talkativeness: float) -> SkillContext:
+    """A fresh ctx (fresh, empty `memory`) whose persona has the given
+    `talkativeness` — for the PHASE6.md item 5 talkativeness-gate tests."""
+    obs = Observation(player=PlayerView(serial=1, pos=Position(3724, 2212, 20), hits=80, hits_max=80))
+    return SkillContext(obs=obs, persona=Persona(name="Grimm", talkativeness=talkativeness),
+                        goal=None, memory={})
 
 
 def test_llm_cognition_parses_goto_and_queues_speech():
@@ -75,6 +84,67 @@ def test_llm_cognition_tolerates_garbage():
     ctx = _ctx(goal=Goal(kind="goto", params={}))
     goal = LLMCognition(StubLLMClient("sorry, I cannot help")).reconsider(ctx)
     assert goal is ctx.goal  # unparseable → leaves the current goal untouched
+
+
+# --- PHASE6.md item 5: the talkativeness gate ---------------------------------
+#
+# `talkativeness_gate=False` (default) must reproduce every existing test above
+# byte-for-byte (a regression pin, below), never a new behavior. With the gate
+# ON and a seeded `rng`, the pass/fail boundary is exactly reproducible.
+
+_VALID_REPLY = '{"say": "These veins run thin today.", "goal": "idle"}'
+
+
+def test_talkativeness_gate_off_is_a_no_op_even_for_a_silent_persona():
+    """The load-bearing regression pin: gate OFF (the default) voices every
+    valid reply regardless of `talkativeness` — even a `talkativeness=0.0`
+    persona and a seeded `rng` present — i.e. no draw ever happens, byte for
+    byte the pre-item-5 behavior. An always-on gate would silently mute this
+    persona; opt-in is exactly why it doesn't."""
+    cog = LLMCognition(StubLLMClient(_VALID_REPLY), rng=random.Random(0))  # gate defaults OFF
+    ctx = _ctx_talk(0.0)
+    cog.reconsider(ctx)
+    assert ctx.memory["pending_say"] == "These veins run thin today."
+
+
+def test_talkativeness_gate_zero_never_speaks():
+    """`talkativeness=0.0` with the gate on: the seeded draw is always `>= 0.0`,
+    so `_queue_say` skips every time — never queues `pending_say` across N
+    calls with an always-valid reply."""
+    cog = LLMCognition(StubLLMClient(_VALID_REPLY), talkativeness_gate=True, rng=random.Random(1))
+    for _ in range(40):
+        ctx = _ctx_talk(0.0)
+        cog.reconsider(ctx)
+        assert "pending_say" not in ctx.memory
+
+
+def test_talkativeness_gate_one_always_speaks():
+    """`talkativeness=1.0` with the gate on: `random()` is in `[0.0, 1.0)`, so a
+    draw is never `>= 1.0` — always queues."""
+    cog = LLMCognition(StubLLMClient(_VALID_REPLY), talkativeness_gate=True, rng=random.Random(2))
+    for _ in range(40):
+        ctx = _ctx_talk(1.0)
+        cog.reconsider(ctx)
+        assert ctx.memory["pending_say"] == "These veins run thin today."
+
+
+def test_talkativeness_gate_intermediate_queues_exactly_the_seed_predicts():
+    """An intermediate `talkativeness` with a fixed-seed `rng` queues on the
+    EXACT, deterministic subset the seed predicts — asserted against the seed's
+    own known draw sequence (`_queue_say` draws once per `reconsider`), not
+    re-derived from the implementation."""
+    seed, talk, n = 20250714, 0.5, 60
+    predictor = random.Random(seed)
+    expected = [predictor.random() < talk for _ in range(n)]
+    assert any(expected) and not all(expected)  # the seed genuinely splits the calls
+
+    cog = LLMCognition(StubLLMClient(_VALID_REPLY), talkativeness_gate=True, rng=random.Random(seed))
+    actual = []
+    for _ in range(n):
+        ctx = _ctx_talk(talk)
+        cog.reconsider(ctx)
+        actual.append("pending_say" in ctx.memory)
+    assert actual == expected
 
 
 def test_speak_pending_drains_queue():

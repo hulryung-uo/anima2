@@ -43,13 +43,15 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..agent import Agent
+from ..cognition import LLMCognition, ThreadedCognition
 from ..control import GmControl
 from ..ipc_body import IpcBody, IpcError
 from ..live_common import GM_RELOGIN_COOLDOWN_S, login_throttle, wipe_area
+from ..llm import build_tiered_clients
 from ..persona import Persona
 from ..planner import Planner
 from ..profession import FISHING_SPOTS, MINING_SPOTS
-from ..skills import Fish, Mine
+from ..skills import Fish, Greet, GoTo, Mine, SpeakPending, Wander
 from ..skills.base import Skill
 from ._filelock import append_line_locked
 from .descriptor import compute_descriptor
@@ -262,6 +264,27 @@ class EvalConfig:
     failure: three with-pole seeds at `FISHING_SPOTS[0]` came back
     `[134.6, 237.7, 0.0]`, the third starved). `run_eval_multi`'s `nodes_pool=`
     rotates this per seed alongside `spot_pool=`; see its own docstring.
+
+    **Cognition-aware eval (PHASE6.md item 5).** `cognition_provider` is the
+    single, real off-switch this item's whole design hinges on: `None` (the
+    default) means `run_eval` builds the agent EXACTLY as today —
+    `Planner([scenario.work_skill()])`, no `cognition=` argument at all —
+    **regardless of what `cognition_tier`/`sociability` hold.** This matters
+    because `archive.py::Genome.cognition_tier` is a required, never-`None`
+    field, so a weaker off-switch keyed on `cognition_tier is None` would never
+    actually be `None` for a genome-driven eval; gating on `cognition_provider`
+    (which `evolve.py::evaluate_genome` populates from a RUN-level
+    `EvolutionConfig` field, never from the genome) is what keeps "unset by
+    default" true for `evolve()`/`random_search()` too, not just a bare
+    hand-built `EvalConfig()`. When `cognition_provider` IS a concrete string
+    (`"stub"` — fully offline — for tests, `"replicate"` for the live gate),
+    `run_eval` builds `build_tiered_clients(provider=cognition_provider)`, the
+    full `profession.py::Profession.planner()`-shaped worker planner
+    (`SpeakPending`/`GoTo`/work/`Greet`/`Wander` — a cognition-driven agent
+    needs `SpeakPending` to voice anything `LLMCognition` queues), and an
+    `LLMCognition(tier[cognition_tier or "cheap"], talkativeness_gate=True)`
+    whose persona's `talkativeness` is `sociability` (defaulting to `0.3`).
+    `cognition_tier` is a `llm.py::ROLE_TIER`-style tier key.
     """
 
     scenario_id: str
@@ -275,6 +298,19 @@ class EvalConfig:
     nodes: tuple[tuple[int, int, int, int], ...] | None = None
     skill_overrides: dict[str, float] = field(default_factory=dict)
     item_overrides: tuple[str, ...] | None = None
+    #: PHASE6.md item 5 — the single real off-switch. `None` (default) builds
+    #: the bare-skill agent exactly as today; a concrete provider string
+    #: (`"stub"`/`"replicate"`) activates the cognition-aware agent. See this
+    #: class's own docstring.
+    cognition_provider: str | None = None
+    #: `llm.py::ROLE_TIER`-style tier key for the cognition-aware agent's LLM
+    #: client. Ignored entirely unless `cognition_provider` is set.
+    cognition_tier: str | None = None
+    #: The persona `talkativeness` (0.0..1.0) the cognition-aware agent is
+    #: staged with — the sociability axis `LLMCognition`'s talkativeness gate
+    #: reads. Ignored entirely unless `cognition_provider` is set; `None`
+    #: falls back to `Persona`'s own `0.3` default.
+    sociability: float | None = None
 
     def account_name(self) -> str:
         return f"{self.account_prefix}{self.seed}"
@@ -299,6 +335,14 @@ class EvalResult:
     skill_gain_total: float
     gold_delta: int
     alive_fraction: float
+    #: `TrajectorySummary.speech_sent` — the raw count of in-character lines the
+    #: agent actually voiced (0 for a bare, non-cognition-aware eval, which has
+    #: no `LLMCognition` to speak). Carried alongside the other raw summary
+    #: scalars so `sociability`'s live effect can be read as a MAGNITUDE
+    #: (PHASE6.md item 5's dose-response gate — chatty vs quiet by raw count),
+    #: not just as the coarse `sociability_bin` inside `descriptor_cell`.
+    #: Defaults to `0` for backward compatibility with pre-item-5 ledger lines.
+    speech_sent: int = 0
     ts: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     #: `descriptor.py::compute_descriptor(summary).cell` — item 3's behavior
     #: cell key (Phase-0 active grid: `profession_focus x sociability_bin`),
@@ -324,6 +368,7 @@ class EvalResult:
             "skill_gain_total": self.skill_gain_total,
             "gold_delta": self.gold_delta,
             "alive_fraction": self.alive_fraction,
+            "speech_sent": self.speech_sent,
             "descriptor_cell": list(self.descriptor_cell),
         }
 
@@ -346,6 +391,7 @@ class EvalResult:
             skill_gain_total=d["skill_gain_total"],
             gold_delta=d["gold_delta"],
             alive_fraction=d["alive_fraction"],
+            speech_sent=d.get("speech_sent", 0),
             ts=d.get("ts", ""),
             descriptor_cell=tuple(d.get("descriptor_cell", ())),
         )
@@ -395,6 +441,39 @@ def read_eval_results(path: str | Path | None = None) -> list[EvalResult]:
 
 
 # --- run_eval / run_eval_multi ------------------------------------------------
+
+
+def _build_agent(body: TappedBody, cfg: EvalConfig, scenario: Scenario) -> Agent:
+    """The `Agent` `run_eval` measures. `cfg.cognition_provider is None` (the
+    default, EVERY pre-item-5 caller) builds it EXACTLY as today — a bare
+    `Planner([scenario.work_skill()])`, no `cognition=` argument at all,
+    `NullCognition` per `Agent`'s own default — regardless of
+    `cfg.cognition_tier`/`cfg.sociability`. That "regardless" is the whole
+    off-switch design (PHASE6.md item 5): see `EvalConfig`'s docstring for why
+    the gate is on `cognition_provider`, never on the required-never-`None`
+    `cognition_tier`.
+
+    A concrete `cfg.cognition_provider` instead builds the cognition-aware
+    agent: the full `profession.py::Profession.planner()`-shaped worker planner
+    (so `SpeakPending` can voice what the LLM queues) driven by a
+    `ThreadedCognition(LLMCognition(..., talkativeness_gate=True))` on the
+    chosen tier, its persona staged at `cfg.sociability` talkativeness."""
+    persona_name = f"eval-{cfg.scenario_id}-{cfg.seed}"
+    if cfg.cognition_provider is None:
+        return Agent(
+            body=body, persona=Persona(name=persona_name),
+            planner=Planner([scenario.work_skill()]),
+        )
+    tiered = build_tiered_clients(provider=cfg.cognition_provider)
+    talkativeness = cfg.sociability if cfg.sociability is not None else 0.3
+    return Agent(
+        body=body,
+        persona=Persona(name=persona_name, talkativeness=talkativeness),
+        planner=Planner([SpeakPending(), GoTo(), scenario.work_skill(), Greet(), Wander()]),
+        cognition=ThreadedCognition(LLMCognition(
+            tiered[cfg.cognition_tier or "cheap"], job=scenario.id, talkativeness_gate=True,
+        )),
+    )
 
 
 def run_eval(cfg: EvalConfig, *, kernel_repo_root: str | Path | None = ".") -> EvalResult:
@@ -463,10 +542,7 @@ def run_eval(cfg: EvalConfig, *, kernel_repo_root: str | Path | None = ".") -> E
             recorder.start()
 
             tapped = TappedBody(ipc, recorder)
-            agent = Agent(
-                body=tapped, persona=Persona(name=f"eval-{cfg.scenario_id}-{cfg.seed}"),
-                planner=Planner([scenario.work_skill()]),
-            )
+            agent = _build_agent(tapped, cfg, scenario)
             if nodes:
                 # Mirrors `village.py`'s own `if p["nodes"]: agent.memory[
                 # "harvest_nodes"] = p["nodes"]` wiring — see `Scenario.
@@ -493,6 +569,7 @@ def run_eval(cfg: EvalConfig, *, kernel_repo_root: str | Path | None = ".") -> E
         skill_gain_total=summary.skill_gain_total,
         gold_delta=summary.gold_delta,
         alive_fraction=summary.alive_fraction(),
+        speech_sent=summary.speech_sent,
         descriptor_cell=descriptor.cell,
     )
 

@@ -48,9 +48,11 @@ reruns the comparative gate on the enriched harness and reports whichever
 way it lands, honestly, per this project's own established "report a tie as
 a tie" discipline (PHASE5.md item 4).
 
-Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Items 1-3 are done
+Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Items 1-5 are done
 (persistent lives; the village chronicle relationship ledger; the forum as
-continuing chronicle — all three live-verified) — items 4-6 remain ⏳ todo.**
+continuing chronicle; a second, fishing-based eval scenario; cognition-aware
+eval making `cognition_tier`/`sociability` live — all five live-verified) —
+item 6 (the decisive evolution-vs-random rerun) remains ⏳ todo.**
 
 **Dependency order.** Threads A and B touch disjoint code (village.py/
 forum.py/memory.py vs. foundry/eval.py/evolve.py/cognition.py) and can land
@@ -1506,7 +1508,7 @@ into Phase 6" (the follow-up this item begins closing).
 
 ---
 
-## Item 5 — Cognition-aware eval: making `cognition_tier` and `sociability` live ⏳
+## Item 5 — Cognition-aware eval: making `cognition_tier` and `sociability` live ✅
 
 **Close the other two live-inert genome axes.** `foundry/evolve.py`'s own
 module docstring states plainly that `sociability`/`cognition_tier` have
@@ -1700,6 +1702,147 @@ Phase 4 item 2's own gate used, restated because the underlying constraint
 - **(b) Anthropic-specific — explicitly deferred, per Phase 4 item 2's own
   precedent:** unattempted; not provisioned in this environment. Noted, not
   silently skipped.
+
+### As landed (live-verified)
+
+Landed exactly to the Scope's five bullets, with one honest signal-substitution
+in the live gate (the persisted, cross-process observable is the descriptor's
+`sociability_bin`, not a raw `speech_sent` count) — documented below rather than
+left implicit, because it is exactly what the gate reads back from disk.
+
+**Landed as specified.** `cognition.py::LLMCognition` gained
+`talkativeness_gate: bool = False` + `rng: random.Random | None = None`;
+`_queue_say` draws `rng.random()` **before** any cleaning/stashing and stays
+quiet when the draw is `>= persona.talkativeness`, **only** when the gate is on
+— off (the default) never draws at all (byte-for-byte the pre-item-5 behavior,
+RNG state included). `foundry/eval.py::EvalConfig` gained
+`cognition_provider`/`cognition_tier`/`sociability` (all `Optional`, default
+`None`); `run_eval` (via a new `_build_agent` helper) builds the bare
+`Planner([scenario.work_skill()])` + `NullCognition` agent EXACTLY as before
+when `cognition_provider is None` — regardless of the other two — and the
+`profession.py::Profession.planner()`-shaped
+`Planner([SpeakPending(), GoTo(), work, Greet(), Wander()])` +
+`ThreadedCognition(LLMCognition(tiered[tier or "cheap"], job=scenario.id,
+talkativeness_gate=True))` agent, its persona staged at `sociability` (defaulting
+to `0.3`), when it is a concrete string. `foundry/evolve.py::EvolutionConfig`
+gained the RUN-level `cognition_provider`; `evaluate_genome` threads
+`genome.cognition_tier`/`genome.sociability` into the built `EvalConfig`
+**unconditionally** and `cfg.cognition_provider` (the `EvolutionConfig` field,
+**never** the genome) into `EvalConfig.cognition_provider`. `village.py` gained
+`--talkativeness-gate` (opt-in; wired into both the `--llm-tiers` and `--chatter`
+`LLMCognition` construction sites). `live_cognition_eval_gate.py` is the new
+live driver.
+
+**One spec typo corrected (reported, not silently absorbed).** The Scope wrote
+the construction as `LLMCognition(tiered.clients[cfg.cognition_tier or "cheap"],
+...)`, but `llm.py::build_tiered_clients` returns a `TieredClients` — a `dict`
+subclass with **no** `.clients` attribute (`tiered.clients[...]` is an
+`AttributeError`). The tier client is indexed directly, `tiered[cfg.cognition_tier
+or "cheap"]`, which is what a working build requires.
+
+**The off-switch design, load-bearing, proven live.** `cognition_provider` (not
+`cognition_tier`) is the single real gate. This matters concretely because
+`archive.py::Genome.cognition_tier` is a required, never-`None` field — a gate
+keyed on `cognition_tier is None` would never actually be `None` for a
+genome-driven eval, so every `evolve()`/`random_search()` call would silently
+opt into the cognition-aware planner the moment this item landed. Gating on
+`cognition_provider`, which `evaluate_genome` populates only from the RUN-level
+`EvolutionConfig` (never the genome), keeps "unset by default" true for a
+genome-driven eval too. The live gate's own **bare** side is the direct proof:
+its persisted `EvalConfig` carried `cognition_tier='cheap'` and `sociability=0.9`
+yet, with `cognition_provider=None`, read back `descriptor_cell=('GATHERING', 0)`
+— both fields set, both provably ignored.
+
+**Decisive signal: raw `EvalResult.speech_sent`, not the coarse
+`sociability_bin` (review-caught, strengthened before landing).** The first
+gate decided the dose-response leg on `descriptor_cell`'s `sociability_bin`
+(`sociability = speech_sent / total_actions`, binned on
+`descriptor.py::SOCIABILITY_EDGES = (0.02, 0.10)`). Adversarial review flagged
+that this reverses item 4's own stance — item 4 *demoted* `descriptor_cell` to
+informational precisely because it is too coarse to carry a magnitude claim,
+and used a raw channel-(b) scalar (`produce_value_rate`) to decide. A single
+bin-edge crossing at 0.02 would pass even a marginal straddle (chatty raw 0.021
+vs low 0.019). So `EvalResult` gained a raw `speech_sent: int` field alongside
+its other persisted summary scalars (`skill_gain_total`/`gold_delta`/
+`alive_fraction` — fully in-pattern, backward-compatible default `0`), and the
+gate now decides on the raw count: presence/absence = every chatty seed `> 0`
+and every bare seed exactly `0`; dose-response = chatty mean `>= 3x` the low
+mean **and** at least 3 more lines on average. The `sociability_bin` is still
+printed, but only as informational context. This strengthening was not
+cosmetic — see the run below, where the coarse bin would have *mis-flagged a
+genuine pass*.
+
+**Live gate — PASSED, all five flags on the raw-speech verdict, Replicate qwen
+throughout (`--ticks 200 --seeds 3 --high-soc 0.9 --low-soc 0.05`):**
+
+```
+=== SIDE=chatty: cognition_provider='replicate' cognition_tier='cheap' sociability=0.9 ===
+  sociability_bin per seed: [0, 1, 1] mean=0.6667 (coarse — informational)
+  RAW speech_sent per seed: [3, 4, 5] mean=4.0000 (the decisive magnitude signal)
+=== SIDE=bare: cognition_provider=None cognition_tier='cheap' sociability=0.9 ===
+  sociability_bin per seed: [0, 0, 0] mean=0.0000 (coarse — informational)
+  RAW speech_sent per seed: [0, 0, 0] mean=0.0000 (the decisive magnitude signal)
+=== SIDE=low: cognition_provider='replicate' cognition_tier='cheap' sociability=0.05 ===
+  sociability_bin per seed: [0, 0, 0] mean=0.0000 (coarse — informational)
+  RAW speech_sent per seed: [0, 1, 0] mean=0.3333 (the decisive magnitude signal)
+
+presence/absence: chatty speech [3, 4, 5] (all > 0: True) vs bare speech [0, 0, 0] (all == 0: True)
+dose-response: mean RAW speech high(0.9)=4.0000 vs low(0.05)=0.3333 -> high measurably higher (>=3x and >=+3 lines): True
+
+cross-process (fresh `python -c ...`, reading data/eval_results.jsonl from disk):
+  {'cogeval_chattystrong': [3, 4, 5], 'cogeval_barestrong': [0, 0, 0], 'cogeval_lowstrong': [0, 1, 0]}
+cross-process presence/absence: mean speech chatty=4.0000 bare=0.0000 -> chatty speaks & bare silent: True
+cross-process dose-response: mean speech high=4.0000 low=0.3333 -> high measurably higher (>=3x and >=+3 lines): True
+
+[FLAG] cognition_aware_speaks_in_process = True
+[FLAG] bare_off_switch_silent_in_process = True
+[FLAG] dose_response_high_over_low_in_process = True
+[FLAG] presence_absence_cross_process = True
+[FLAG] dose_response_cross_process = True
+[FLAG] GATE PASSED: raw speech means — chatty=4.0000 bare=0.0000 low=0.3333
+```
+
+**Why the strengthening mattered, concretely.** Chatty seed 0 voiced 3 lines —
+a real, cognition-driven speaker — but `3 / total_actions < 0.02`, so its
+`sociability_bin` was `0`. The old bin-based gate's `all(bin > 0)` presence
+check would therefore have **failed this genuine passing run**. The raw
+`speech_sent` verdict reads it correctly: `[3, 4, 5]` all `> 0`.
+**Leg (a) — presence/absence (`cognition_tier` is no longer inert).** Every
+chatty seed (a real Replicate qwen model called, its lines voiced) spoke;
+every `cognition_provider=None` bare seed (a `NullCognition` agent that
+structurally cannot speak) voiced exactly `0`. All three sides also did real
+mining (`profession_focus='GATHERING'`) — chatter layered on top of genuine
+work. **Dose-response — `sociability` is real.** Same tier, window, seed count:
+chatty mean `4.0` vs quiet mean `0.33` — a genuine **~12x** magnitude
+separation (a 3.67-line gap), not a bin artifact, the differential
+`op_sociability` needs to bite on. Both verdicts reproduced cross-process from
+a fresh reader of `data/eval_results.jsonl`.
+
+**Bank drain is not a threat to this gate (unlike the mining fitness gates).**
+The signal is SPEECH, not ore: an agent whose `HarvestBank` has thinned still
+ticks, reconsiders, and voices what cognition queues, so `sociability_bin` is
+independent of whether ore was actually mined. Spots are still rotated across
+`MINING_SPOTS[0..3]` (hygiene), but a drained bank can't invalidate a speech
+reading the way it invalidates a `produce_value_rate` one — so unlike item 4's
+fishing gate, no `nodes_pool` rotation or bank-respawn wait was needed. One
+transient GM-relogin flake ("connection closed by server" / "bridge closed the
+connection (EOF)") hit one seed and was absorbed by `run_eval`'s own
+`_run_eval_with_retry` (retried on a fresh connection, completed clean) — the
+same transient class item 2's harness already handles, no gate change needed.
+
+**Offline: 630 tests green** (619 at this item's start + 11 new — 4 in
+`tests/test_cognition.py` pinning the gate off (a no-op even for a
+`talkativeness=0.0` persona) plus on at `0.0`/`1.0`/an intermediate seed-exact
+subset; 5 in `tests/test_foundry_eval.py` — the load-bearing
+`cognition_provider=None`-is-bare-even-with-tier/sociability-set pin, the
+cognition-aware-agent structural check, the fully-offline `StubLLMClient`
+speech/silence pair reading `TrajectorySummary.speech_sent` directly, and the
+raw `EvalResult.speech_sent` ledger round-trip (with a legacy-line-defaults-0
+pin) the strengthened gate reads; 2 in
+`tests/test_foundry_evolve.py` pinning `evaluate_genome`'s unconditional
+genome-axis threading vs. run-level-only `cognition_provider` and a bare
+`EvolutionConfig()` staying inert), 3 consecutive full-suite runs, `ruff check .`
+clean.
 
 ### References
 

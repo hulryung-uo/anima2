@@ -390,7 +390,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 chatter: bool = False, llm_tiers: str | None = None,
                 tune_deliver_threshold: bool = False, ledger_path: str | None = None,
                 curriculum: bool = False, persist_insights: bool = False,
-                chronicle: bool = False, chronicle_path: str | None = None) -> None:
+                chronicle: bool = False, chronicle_path: str | None = None,
+                talkativeness_gate: bool = False) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[IpcBody, Profession, Persona]] = []
@@ -595,7 +596,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             from .cognition import LLMCognition, LLMReflection, ReflectingCognition, ThreadedCognition
             from .memory import load_insights
 
-            inner = LLMCognition(call_counters[ROLE_TIER["chatter"]], job=p["prof"].key)
+            inner = LLMCognition(call_counters[ROLE_TIER["chatter"]], job=p["prof"].key,
+                                 talkativeness_gate=talkativeness_gate)
             reflection = LLMReflection(call_counters[ROLE_TIER["reflection"]])
             # PHASE6.md item 1: resume this persona's distilled insights from a
             # prior session, if any — `load_insights` returns an empty (but
@@ -619,7 +621,8 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         elif chat_client is not None:
             from .cognition import LLMCognition, ThreadedCognition
 
-            cognition = ThreadedCognition(LLMCognition(chat_client, job=p["prof"].key))
+            cognition = ThreadedCognition(LLMCognition(chat_client, job=p["prof"].key,
+                                                       talkativeness_gate=talkativeness_gate))
         planner = p["prof"].planner()
 
         # PHASE4.md item 4: pick a deliver_threshold once per miner, at
@@ -831,6 +834,17 @@ def main() -> None:
                           "(Phase 6 item 2)")
     ap.add_argument("--chronicle-path", default=None,
                      help="override data/chronicle.jsonl (mainly for isolated test/live runs)")
+    # Opt-in, unset by default (Phase 6 item 5): zero effect on any currently-
+    # passing roster unless passed, and only takes effect alongside
+    # --chatter/--llm-tiers (the flags that wire an LLMCognition at all). When
+    # set, LLMCognition gates each queued line on a `random()` draw vs the
+    # persona's `talkativeness`, so chatty personas visibly out-talk quiet
+    # ones. Off by default so every prior chatter proof (which assumed every
+    # valid reply is voiced) stays byte-for-byte unchanged — see
+    # `cognition.py::LLMCognition`'s docstring for why the gate is opt-in.
+    ap.add_argument("--talkativeness-gate", action="store_true",
+                     help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
+                          "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
@@ -839,7 +853,8 @@ def main() -> None:
                 forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers,
                 tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path,
                 curriculum=args.curriculum, persist_insights=args.persist_insights,
-                chronicle=args.chronicle, chronicle_path=args.chronicle_path)
+                chronicle=args.chronicle, chronicle_path=args.chronicle_path,
+                talkativeness_gate=args.talkativeness_gate)
 
 
 if __name__ == "__main__":

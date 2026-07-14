@@ -41,22 +41,30 @@ below for what that changes and what's still inert. Against today's harness:
     still a two-choice space, not the full `profession.py::PROFESSIONS`
     roster.
   - **`sociability`** (persona talkativeness) and **`cognition_tier`** (an
-    `llm.py` tier key) have **zero effect** on `run_eval`'s trajectory: the
-    measured `Agent` there is built with no `cognition=` argument
-    (`NullCognition`, per `agent.py`'s own default) and a bare work-`Skill`
-    planner, so nothing ever reads `Persona.talkativeness` or picks an LLM
-    tier during the window. `deliver_threshold` walks
+    `llm.py` tier key) are **live as of PHASE6.md item 5** — but only when a
+    RUN-level `EvolutionConfig.cognition_provider` is set (the item-5
+    off-switch; `None` by default). With it set, `evaluate_genome` threads
+    both genome axes into `EvalConfig`, and `run_eval` stages a
+    cognition-aware `Agent` (`ThreadedCognition(LLMCognition(...,
+    talkativeness_gate=True))` on the genome's `cognition_tier`, its persona
+    at the genome's `sociability`), so a genuinely different model gets called
+    and a chattier persona speaks more — both now move the recorded
+    trajectory (`speech_sent` → the descriptor's `sociability_bin`). With
+    `cognition_provider=None` (a bare `evolve()`/`random_search()`), the
+    measured `Agent` is still built with no `cognition=` argument
+    (`NullCognition`) and a bare work-`Skill` planner, so both axes stay inert
+    — byte for byte the pre-item-5 behavior. `deliver_threshold` walks
     `skill_tuning.DELIVER_THRESHOLD_CANDIDATES`, but the scenario's own
-    work skill is `Mine` (a class with no `deliver_threshold` attribute at
-    all, not `MineSmeltDeliver`), so it too has no live effect.
+    work skill is `Mine`/`Fish` (no `deliver_threshold` attribute at all, not
+    `MineSmeltDeliver`), so it remains the one still-inert axis.
 
   **This was an honest limitation of item 2's harness, not a defect
   introduced here, and it is exactly what PHASE5.md item 4's own "profession
-  swaps between the SCENARIO-SUPPORTED professions" wording already flagged
-  — `profession` itself is no longer one of the still-inert axes (PHASE6.md
-  item 4), but `sociability`/`cognition_tier`/`deliver_threshold` remain so
-  until PHASE6.md item 5's own cognition-aware eval lands.** Consequences,
-  stated up front rather than discovered mid-gate:
+  swaps between the SCENARIO-SUPPORTED professions" wording already flagged.
+  `profession` stopped being inert at PHASE6.md item 4; `sociability`/
+  `cognition_tier` stop being inert at PHASE6.md item 5 (this table's own
+  update above), leaving only `deliver_threshold`.** Consequences, stated up
+  front rather than discovered mid-gate:
   - The offline **convergence test** (this module's own required proof,
     below) does NOT depend on any of this — it drives `evolve()`/
     `random_search()` through an injected `eval_fn` that reads a genome's
@@ -308,13 +316,15 @@ def default_eval_fn(
     kernel_repo_root: str | Path | None,
     results_path: str | Path | None,
 ) -> MultiEvalResult:
-    """The real evaluator: ignores `genome` (today's `eval.py` harness has
-    nowhere to feed sociability/deliver_threshold/cognition_tier into a live
-    scenario — see this module's own docstring) and runs
-    `foundry/eval.py::run_eval_multi` on `eval_cfg` exactly as item 2 built
-    it. Tests substitute a stub with this SAME signature (genome-aware, so an
-    offline synthetic landscape CAN key off every axis) — see
-    `tests/test_foundry_evolve.py`'s convergence test.
+    """The real evaluator: runs `foundry/eval.py::run_eval_multi` on `eval_cfg`
+    exactly as item 2 built it. It ignores its own `genome` parameter — the
+    genome's axes are already baked into `eval_cfg` by `evaluate_genome`
+    (`sociability`/`cognition_tier` since PHASE6.md item 5, staged live when
+    `EvolutionConfig.cognition_provider` is set; `deliver_threshold` still has
+    no scenario to bite on — see this module's docstring). Tests substitute a
+    stub with this SAME signature (genome-aware, so an offline synthetic
+    landscape CAN key off every axis) — see `tests/test_foundry_evolve.py`'s
+    convergence test.
     """
     return run_eval_multi(
         eval_cfg, seeds=seeds, spot_pool=spot_pool,
@@ -346,6 +356,16 @@ class EvolutionConfig:
     results_path: str | Path | None = None
     foundry_root: str | Path | None = None  # None -> this module's own directory
     rng_seed: int | None = None
+    #: PHASE6.md item 5 — a RUN-level cognition switch, deliberately NOT read
+    #: off any `Genome`: `cognition_tier` stays the per-genome axis
+    #: `op_cognition_tier` mutates, but *whether cognition runs at all* is this
+    #: separate, orchestration-level choice alone. `evaluate_genome` threads it
+    #: into `EvalConfig.cognition_provider` (never the genome's own fields), so
+    #: `None` (the default, unless a caller — e.g. item 6's CLI flag — sets it)
+    #: means every genome-driven eval still builds the pre-item-5 bare-skill
+    #: agent, byte for byte, no matter what `cognition_tier` each genome carries.
+    #: `"stub"` (offline) exercises the wiring; `"replicate"` is the live gate.
+    cognition_provider: str | None = None
 
 
 @dataclass
@@ -415,9 +435,19 @@ def evaluate_genome(
     the pool" — see that script's own module docstring).
     """
     scenario_id = PROFESSION_SCENARIO.get(g.profession, next(iter(PROFESSION_SCENARIO.values())))
+    # PHASE6.md item 5: thread the genome's own `cognition_tier`/`sociability`
+    # UNCONDITIONALLY (harmless — `run_eval` ignores both unless
+    # `cognition_provider` is set) and `cfg.cognition_provider` — the RUN-level
+    # `EvolutionConfig` field, NEVER the genome — into the eval config. A bare
+    # `EvolutionConfig()` leaves `cognition_provider=None`, so every
+    # genome-driven eval still builds the pre-item-5 bare-skill agent whatever
+    # `cognition_tier` each genome happens to carry (see that field's docstring).
     eval_cfg = EvalConfig(
         scenario_id=scenario_id, ticks=cfg.scenario_ticks,
         account_prefix=_account_suffix_for(cfg.account_prefix, n),
+        cognition_provider=cfg.cognition_provider,
+        cognition_tier=g.cognition_tier,
+        sociability=g.sociability,
     )
     effective_spot_pool = spot_pool if spot_pool is not None else cfg.spot_pool
     multi = eval_fn(

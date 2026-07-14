@@ -520,3 +520,54 @@ def test_evaluate_genome_even_seed_count_picks_lower_of_the_middle_pair(tmp_path
     out = evolve.evaluate_genome(g, evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None), n=0, eval_fn=fn)
 
     assert tuple(out.eval["cell"]) == ("A", 0)  # the lower-fitness of the two (index 0 after sort)
+
+
+# =============================================================================
+# PHASE6.md item 5: cognition-aware eval threading through evaluate_genome
+# =============================================================================
+
+
+def _capture_eval_cfg(g: Genome, cfg: evolve.EvolutionConfig) -> EvalConfig:
+    """Run `evaluate_genome` with a spy `eval_fn` (the same technique the
+    convergence test uses) and return the `EvalConfig` it built."""
+    captured: dict = {}
+
+    def spy(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path):
+        captured["cfg"] = eval_cfg
+        return _multi_result(eval_cfg.scenario_id, [1.0, 2.0], ("MINER", 0))
+
+    evolve.evaluate_genome(g, cfg, n=0, eval_fn=spy)
+    return captured["cfg"]
+
+
+def test_evaluate_genome_threads_genome_axes_and_run_level_provider():
+    """PHASE6.md item 5: the genome's `cognition_tier`/`sociability` reach the
+    built `EvalConfig` (from the GENOME), and `cognition_provider` reaches it
+    from the RUN-level `EvolutionConfig` — NOT the genome (a genome carrying a
+    concrete `cognition_tier` must not leak a non-`None` provider on its own)."""
+    g = _base_genome(profession="miner", cognition_tier="heavy", sociability=0.42)
+    cfg = evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None, cognition_provider="replicate")
+
+    eval_cfg = _capture_eval_cfg(g, cfg)
+
+    assert eval_cfg.cognition_tier == "heavy"          # from the genome
+    assert eval_cfg.sociability == 0.42                # from the genome
+    assert eval_cfg.cognition_provider == "replicate"  # from the EvolutionConfig, never the genome
+
+
+def test_evaluate_genome_bare_config_stays_inert_but_still_threads_genome_axes():
+    """THE regression pin: a bare `EvolutionConfig()` (its default
+    `cognition_provider=None`) builds an `EvalConfig` whose
+    `cognition_provider is None` — so a plain `evolve()`/`random_search()` call
+    stays byte-for-byte inert by default, whatever `cognition_tier` a genome
+    carries. The genome axes are still threaded UNCONDITIONALLY (harmless —
+    `run_eval` ignores them when the provider is `None`), proving the threading
+    is unconditional and only the provider gates behavior."""
+    g = _base_genome(cognition_tier="standard", sociability=0.7)
+    cfg = evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None)  # provider defaults None
+
+    eval_cfg = _capture_eval_cfg(g, cfg)
+
+    assert eval_cfg.cognition_provider is None         # bare config -> inert, the off-switch default
+    assert eval_cfg.cognition_tier == "standard"       # genome axis still threaded regardless
+    assert eval_cfg.sociability == 0.7

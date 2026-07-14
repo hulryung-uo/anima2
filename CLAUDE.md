@@ -417,8 +417,23 @@ blessed valid outcome (no genuine discrepancy — the wiki is accurate for what
 the miner observed; no report was fabricated or hand-written to force a commit).
 Four new offline tests (`tests/test_live_wiki_report.py`); 619 tests green (up
 from 615), ruff clean — see [`PHASE6.md`](docs/PHASE6.md) item 3's "RESOLVED"
-note. **Next:** Phase 6 items 5-6
-(cognition-aware eval; the decisive evolution-vs-random rerun) remain — see
+note.
+
+**Phase 6 item 5 — cognition-aware eval — is live-verified**: the eval harness
+can now make `cognition_tier`/`sociability` genuinely move the recorded
+trajectory. `EvalConfig.cognition_provider` (default `None`) is the single real
+off-switch — when `None`, `run_eval` builds the bare pre-item-5 agent
+regardless of the other two fields (load-bearing, since `Genome.cognition_tier`
+is required/never-`None`); a concrete provider builds a cognition-aware
+`Planner` + `ThreadedCognition(LLMCognition(..., talkativeness_gate=True))`.
+`LLMCognition`'s new opt-in `talkativeness_gate` finally makes
+`Persona.talkativeness` causal (nothing had ever read it). The live gate
+decides on RAW `EvalResult.speech_sent` (a new persisted field — review caught
+the first draft deciding on the too-coarse `sociability_bin`, which would have
+mis-flagged a genuine pass): chatty (`0.9`) mean 4.0 lines vs quiet (`0.05`)
+0.33 vs bare off-switch exactly 0 — a real ~12x dose-response, cross-process
+confirmed. 630 tests green (up from 619), ruff clean. **Next:** Phase 6 item 6
+(the decisive evolution-vs-random rerun) remains — see
 [`PHASE6.md`](docs/PHASE6.md).
 
 ## Dev

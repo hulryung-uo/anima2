@@ -108,7 +108,10 @@ making `op_profession` a real mutation axis; the `--scenario fishing` gate
 PASSED all four flags, ordering with-pole 4.5436 > no-pole 2.5241 and every
 with-pole seed landing real fish while every no-pole seed provably caught
 none, once a matched shore/water `nodes_pool=` rotation stopped back-to-back
-seeds from draining one fishing bank). 615 tests green.
+seeds from draining one fishing bank), and cognition-aware eval — making
+`cognition_tier`/`sociability` genuinely move the recorded trajectory behind a
+real `cognition_provider` off-switch (a chatty persona provably speaks ~12x a
+quiet one, live). 630 tests green.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
