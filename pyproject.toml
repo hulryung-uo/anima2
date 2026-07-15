@@ -2,10 +2,15 @@
 name = "anima2"
 version = "0.0.0"
 description = "Autonomous AI agent that plays Ultima Online — the Brain, on top of anima-core."
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pyyaml>=6.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/hulryung-uo/anima2"
+"Body (anima-core)" = "https://github.com/hulryung-uo/anima-client"
 
 [project.optional-dependencies]
 dev = [

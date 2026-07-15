@@ -3,8 +3,8 @@
 > *Anima (Latin: soul)* — a real character living in Britannia.
 
 An **autonomous AI agent that plays Ultima Online** — the **Brain** that drives a
-body. A clean redesign of [`anima`](../anima) (v1), built on top of
-[`anima-core`](../anima-client) (the new Rust headless UO client).
+body. A clean redesign of [`anima`](https://github.com/hulryung-uo/anima) (v1), built on top of
+[`anima-core`](https://github.com/hulryung-uo/anima-client) (the new Rust headless UO client).
 
 > **New here? Read [`docs/DESIGN.md`](docs/DESIGN.md)** — the full design & handoff
 > doc (what anima2 is, why, architecture, roadmap, what to reuse from v1). This
@@ -30,92 +30,53 @@ is the *car*.
 
 ## Status
 
-**Phase 3 complete** (economy & interaction loop; see
-[`docs/PHASE3.md`](docs/PHASE3.md) — all four items done). Phase 2 (cognition +
-memory) closed out — see [`docs/PHASE2.md`](docs/PHASE2.md). The Python brain
-drives **live ServUO characters** through the `anima-agent` IPC bridge:
-perceive → reflexes → planner → skill → act. It scales from a single agent to
-a working **village** of agents each holding down a profession — miner (mine +
-smelt ingots, and **deliver** them to a blacksmith), lumberjack (grove-aware
-chopping), fisher, blacksmith (gump-driven crafting, **fetch** dropped ingots
-when starved, and **sell daggers to a vendor + bank the gold**), hunter
-(engage weak creatures, then **loot their corpses**), townsfolk — staged by
-the Control plane. The slow LLM cognition loop steers with in-character
-chatter and a clamped `goal:goto`, periodically reflects on episodic memory
-into persistent insights that feed back into later prompts, consults a local
-read-only index of the companion wiki (`../uowiki`) for a grounding excerpt,
-and can write in-character posts to the uotavern forum.
-**The economy loop is live-verified end to end**: a miner hauls smelted ingots
-to a co-located blacksmith that's run dry, drops them, and the blacksmith
-picks them up, crafts again, sells the surplus daggers to a vendor (right-click
-context menu → `SellItems`), and banks the proceeds — see `live_trade.py` /
-`live_market.py`. **Hunt/loot is live-verified too**: a bare-handed hunter
-engages weak creatures (Mongbats) at a calibrated field, and once one dies,
-opens its corpse and loots the gold into its pack — repeated, corpse-tied
-cycles, with loot provenance — see `live_hunt.py`. **A* navigate is
-live-verified too**: `GoTo` now delegates to the bridge's non-blocking route
-driver instead of greedy tile-by-tile stepping — a differential live proof
-shows a forced-greedy control run wedging on a rock-blocked Minoc-ridge
-course a straight line can't cross, while the real `GoTo` crosses it both
-ways (round trip) — see `live_navigate.py`. **Phase 4 item 2 (cognition cost
-tiering + prompt caching) is live-verified**: `village.py --llm-tiers
-{anthropic,replicate,stub}` routes each cognition role through a cost tier
-(`llm.py::ROLE_TIER`/`build_tiered_clients`), degrading to one reused
-`ReplicateClient` when Anthropic isn't provisioned, and logs every call to
-`data/llm_usage.jsonl`. **Phase 4 item 1 (the wiki write loop) is
-live-verified too**: `wiki.py::Wiki.file_report()` writes and commits a
-discrepancy report (never pushes) when an LLM judge — never trusted with
-*which* page, only *whether* one contradicts — flags a contradiction, guarded
-by a filing circuit breaker; proven live against a disposable, remote-less
-clone of `../uowiki` with a non-vacuous multi-cycle proof (57 judge calls
-collapsing to exactly 2 commits) — see `live_wiki_report.py`. **Phase 4 item
-3 (skill library v0)** adds `skill_library.py::SkillLibrary`: a registry
-over every hand-written skill plus a persisted, cross-process outcome
-ledger (`data/skill_ledger.jsonl`). **Phase 4 item 4 (`deliver_threshold`
-bandit tuning) is live-verified**: `skill_tuning.py::ParamTuner` (UCB1)
-picks a `MineSmeltDeliver.deliver_threshold` per miner and learns from
-item 3's ledger — a live control pair established one value as better on a
-fixed-window reward metric, and an 8-session tuner run concentrated 7/8 of
-its picks on that same value, confirmed by a fresh process reading the
-ledger from disk — see `live_trade.py --tuner`. **Phase 5 (independent
-measurement + evolution) is complete** — see [`docs/PHASE5.md`](docs/PHASE5.md):
-item 1 (an independent fitness oracle — a separate GM connection's `[Get`
-reads, so the agent's own self-reported reward can't game it), item 2
-(a repeatable eval harness — `foundry/eval.py::run_eval`/`run_eval_multi`,
-fixed-window/no-early-stop/multi-seed), item 3 (a MAP-Elites archive over
-agent configs, landed offline), and item 4 (the evolution loop —
-`foundry/evolve.py::evolve`/`random_search`, compared live against each
-other on identical budgets; the comparative verdict came back an honest tie,
-the expected result while most of the genome's mutation space is live-inert
-under today's one eval scenario) are all done. Phase 6 items 1-4 are also
-live-verified — see [`docs/PHASE6.md`](docs/PHASE6.md): persistent lives
-(disk-backed `ReflectionMemory`, `village.py --persist-insights` — a
-genuinely new process resumes a persona's insights from
-`data/insights.jsonl` before its first tick), the village chronicle (an
-inter-agent relationship ledger mined from confirmed trade/market/hunt
-interactions, `village.py --chronicle` — two independent live sessions each
-produced exactly 2 confirmed deliveries whose count and amount matched an
-independent episode-transcript oracle, cross-process-verified), and the
-forum as a continuing chronicle (`forum.py`'s `compose_post`/
-`compose_post_llm` gain optional `yesterday`/`chronicle_events` grounding,
-code-composed and spliced in before any LLM call — a real, live-posted
-qwen-written forum entry named its blacksmith partner by exact persona name,
-grounded in a real confirmed delivery, with a negative-control solo miner's
-post naming no one), and a second scenario-supported profession for the eval
-harness (item 4 — `foundry/eval.py` gains a `Fish()`-based
-`SCENARIOS["fishing"]` and `evolve.py::PROFESSION_SCENARIO` a second entry,
-making `op_profession` a real mutation axis; the `--scenario fishing` gate
-PASSED all four flags, ordering with-pole 4.5436 > no-pole 2.5241 and every
-with-pole seed landing real fish while every no-pole seed provably caught
-none, once a matched shore/water `nodes_pool=` rotation stopped back-to-back
-seeds from draining one fishing bank), and cognition-aware eval — making
-`cognition_tier`/`sociability` genuinely move the recorded trajectory behind a
-real `cognition_provider` off-switch (a chatty persona provably speaks ~12x a
-quiet one, live). 630 tests green.
+**Phase 6 (the living village) — items 1–5 live-verified, item 6 (the decisive
+evolution-vs-random rerun) remaining.** 630 tests green, ruff clean. The Python
+brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
+a single agent up to a working **village** of profession-holding agents. Every
+milestone below is verified against a real ServUO shard with a non-vacuous live
+gate — differential where applicable, provenance-aware, cross-process-read — not
+just an offline test.
+
+| Phase | What landed | Verified |
+|-------|-------------|----------|
+| **2** — cognition + memory | Observation/Action contract, episodic memory, reflection loop, wiki semantic memory | ✅ closed out |
+| **3** — economy & interaction | Miner→blacksmith ingot trade, sell-to-vendor + bank the gold, hunt/loot corpses, A\* navigation | ✅ all 4 items |
+| **4** — the learning stack | Wiki write loop (LLM-judged discrepancy reports), cognition cost tiering, skill library, UCB1 bandit tuning, automatic curriculum | ✅ all 5 items |
+| **5** — measurement & evolution | Independent "agents can't lie" fitness oracle, repeatable eval harness, MAP-Elites archive, config-space evolution loop | ✅ all 4 items |
+| **6** — the living village | Persistent lives (insights survive the session), inter-agent relationship chronicle, forum as continuing chronicle, richer eval scenarios (fisher + cognition-aware) | 🚧 items 1–5 done |
+
+A few of the live proofs, to give the flavor of the verification culture:
+
+- **The economy loop closes into gold, end to end.** A miner mines, smelts, and
+  hauls ingots to a co-located blacksmith that has run its own stock dry; the
+  blacksmith picks them up, crafts, sells the surplus daggers to a vendor
+  (right-click context menu → `SellItems`), and banks the proceeds — every gold
+  piece provably a sale (starting gold GM-deleted). See `live_trade.py` /
+  `live_market.py`.
+- **A\* navigation, proven differentially.** `GoTo` delegates to the bridge's
+  route driver; a forced-greedy control run wedges on a rock-blocked Minoc-ridge
+  course a straight line can't cross, while the real `GoTo` crosses it both ways
+  (round trip). See `live_navigate.py`.
+- **Evolution is measured, not asserted.** A config-space MAP-Elites loop runs
+  against a random-search baseline on an identical budget, scored by an
+  independent GM-read fitness oracle the agent's own code can never write — and a
+  tie is reported honestly as a tie, not dressed up as a win.
+- **The village remembers.** Reflection insights persist to disk so a brand-new
+  process resumes a persona's inner life before its first tick; a chronicle
+  ledger records real inter-agent events (who delivered to whom), cross-checked
+  against an independent episode-transcript oracle; and forum posts are grounded
+  in those real events (a qwen-written entry named its blacksmith partner by
+  exact persona name, from a real confirmed delivery).
+
+See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
+[`docs/DESIGN.md`](docs/DESIGN.md) §10 for the full roadmap.
+
+## Run it
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 615 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 630 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -146,20 +107,11 @@ python -m anima2.live_hunt      # bare-handed hunter kills weak creatures, loots
 python -m anima2.live_navigate  # differential proof: greedy wedges, WalkTo-delegated GoTo crosses (round trip)
 ```
 
-Next: Phase 6 — society scale-out (persistent lives, inter-agent
-relationships, the forum as village chronicle), plus a richer eval-scenario
-follow-up item 4's own live gate surfaced (today's harness leaves most of the
-evolution genome's axes live-inert). **Work breakdown written** — see
-[`docs/PHASE6.md`](docs/PHASE6.md): six items starting with persistent lives
-(disk-backed reflection memory across sessions); see also
-[`docs/PHASE5.md`](docs/PHASE5.md)'s "Notes carried into Phase 6" section and
-[`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap.
-
 ## Family
 
 | Project | Role |
 |---------|------|
-| [`anima-core`](../anima-client/crates/anima-core) | Body — UO protocol, world, assets, path (Rust, headless) |
-| [`anima-client`](../anima-client) | Cross-platform client wrapping anima-core (+ web renderer) |
-| [`anima`](../anima) (v1) | Original Python AI player + Foundry evolution (mined for assets/lessons) |
+| [`anima-core`](https://github.com/hulryung-uo/anima-client/tree/main/crates/anima-core) | Body — UO protocol, world, assets, path (Rust, headless) |
+| [`anima-client`](https://github.com/hulryung-uo/anima-client) | Cross-platform client wrapping anima-core (+ web renderer) |
+| [`anima`](https://github.com/hulryung-uo/anima) (v1) | Original Python AI player + Foundry evolution (mined for assets/lessons) |
 | **anima2** | **Brain** — this project |

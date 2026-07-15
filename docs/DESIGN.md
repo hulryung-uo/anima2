@@ -70,20 +70,20 @@ breakdowns.
 ## 1. What anima2 is (one paragraph)
 
 anima2 is a **new, from-scratch autonomous AI agent that lives in Ultima Online** —
-the **Brain** that drives a body. The body is [`anima-core`](../../anima-client)
+the **Brain** that drives a body. The body is [`anima-core`](https://github.com/hulryung-uo/anima-client)
 (the Rust headless UO client we're building). anima2 perceives the world through a
 structured **Observation/Action contract**, decides what to do with a **hierarchy
 of skills + planner + LLM cognition**, remembers, talks in character, and **gets
 better over time** by accumulating skills and following a curriculum. It is a
-clean redesign of the original [`anima`](../../anima) (v1, Python) — same soul
+clean redesign of the original [`anima`](https://github.com/hulryung-uo/anima) (v1, Python) — same soul
 ("real characters living in Britannia"), better-separated architecture.
 
 ### The family (4 projects, one system)
 | Project | Role | Lang | Status |
 |---------|------|------|--------|
-| [`anima-core`](../../anima-client/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
-| [`anima-client`](../../anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
-| [`anima`](../../anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
+| [`anima-core`](https://github.com/hulryung-uo/anima-client/tree/main/crates/anima-core) | **Body** — UO protocol, world model, assets, pathfinding (no rendering) | Rust | login/framing + contract (target/cast/drop-equip/gump) + skills/gump/container observation + A\* pathfinding module + non-blocking `navigate` bridge command (`Action::WalkTo` / `Session::advance_route`) landed |
+| [`anima-client`](https://github.com/hulryung-uo/anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
+| [`anima`](https://github.com/hulryung-uo/anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 complete (independent
 fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 in progress (items 1-4 — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation; cognition-aware eval making `cognition_tier`/`sociability` genuinely move the trajectory behind a `cognition_provider` off-switch — items 1-5 live-verified); 630 tests green |
 
@@ -528,7 +528,7 @@ Still open:
 
 ## 12. References
 
-- **Sibling docs:** [`anima-client/docs/DESIGN.md`](../../anima-client/docs/DESIGN.md) (the body; has the original Observation/Action + three-plane sketch), [`anima/CLAUDE.md`](../../anima/CLAUDE.md), [`anima/docs/FOUNDRY.md`](../../anima/docs/FOUNDRY.md).
+- **Sibling docs:** [`anima-client/docs/DESIGN.md`](../../anima-client/docs/DESIGN.md) (the body; has the original Observation/Action + three-plane sketch), [`anima/CLAUDE.md`](../../anima/CLAUDE.md), [`anima/docs/FOUNDRY.md`](https://github.com/hulryung-uo/anima/blob/main/docs/FOUNDRY.md).
 - **Papers/ideas:** Voyager (skill library + automatic curriculum, arXiv 2305.16291); Generative Agents (Stanford Smallville — memory/reflection/social); AlphaStar / OpenAI Five (structured interface > pixels).
 - **Knowledge base:** `../uowiki` (companion wiki + MCP `wiki_search`/`wiki_read_page`/`wiki_file_report`).
 - **Server for testing:** local ServUO shard (`../servuo`).

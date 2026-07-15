@@ -7,7 +7,7 @@ from `anima` (v1). This project is designed to be resumable from that doc alone.
 
 ## What this is
 A new, from-scratch **autonomous AI agent** that plays Ultima Online — the
-**Brain**. It drives a body, [`anima-core`](../anima-client/crates/anima-core)
+**Brain**. It drives a body, [`anima-core`](https://github.com/hulryung-uo/anima-client/tree/main/crates/anima-core)
 (Rust headless UO client), through a structured **Observation/Action contract**.
 Clean redesign of `../anima` (v1, Python); mines v1 for assets and lessons.
 
