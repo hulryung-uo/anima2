@@ -432,9 +432,25 @@ decides on RAW `EvalResult.speech_sent` (a new persisted field — review caught
 the first draft deciding on the too-coarse `sociability_bin`, which would have
 mis-flagged a genuine pass): chatty (`0.9`) mean 4.0 lines vs quiet (`0.05`)
 0.33 vs bare off-switch exactly 0 — a real ~12x dose-response, cross-process
-confirmed. 630 tests green (up from 619), ruff clean. **Next:** Phase 6 item 6
-(the decisive evolution-vs-random rerun) remains — see
-[`PHASE6.md`](docs/PHASE6.md).
+confirmed. 630 tests green (up from 619), ruff clean.
+
+**Phase 6 item 6 — the decisive evolution-vs-random rerun — is live-verified,
+and Phase 6 is COMPLETE.** `foundry/evolve.py` threads a defaulted-`None`
+`professions` pool uniformly through every genome-generation surface (seed/
+random draw AND the mutation operators, so a `--scenario-pool mining` run can't
+leak a `fisher` genome by any path); `live_evolve_gate.py` gains
+`--scenario-pool {mining,all}`/`--cognition-provider {stub,replicate}` and the
+`--suffix`-to-ledger-path fix. With items 4-5 landed the genome's axes finally
+move live (the gate's ENRICHMENT SANITY confirmed both `miner` and `fisher`
+sampled and cognition firing). The comparative verdict came back honest and
+unfavorable: **random search decisively beat the evolution loop** (margin
+−29.3, outside the ±22.0 noise band) — evolution's best stayed a bootstrap seed
+while its five mutations wasted budget on drained-fishing-bank `fisher` swaps,
+and 8 genomes is far too few for MAP-Elites to exploit. Infrastructure +
+enrichment gates both passed; the loss is reported as-is, not re-rolled (larger
+budget + fishing-spot rotation named as Phase 7 candidates). 637 tests green (up
+from 630), ruff clean. **Next:** Phase 7 — see [`PHASE6.md`](docs/PHASE6.md)
+item 6's follow-ups and its "Out of scope this phase" section.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

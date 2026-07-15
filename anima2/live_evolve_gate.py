@@ -85,6 +85,25 @@ CANONICAL_ARCHIVE_NAME = "archive.jsonl"
 RESULTS_NAME = "eval_results.jsonl"
 
 
+def _gate_paths(suffix: str | None, data_dir: Path = Path("data")) -> dict[str, Path]:
+    """PHASE6.md item 6's `--suffix`-to-path plumbing (the housekeeping nit
+    Phase 5 item 4 recorded): the gate's own evolve/random archive files and
+    its `results_path` carry `suffix`, so two runs (or a reader inspecting
+    them cold afterward) never confuse whose rows are whose. An omitted suffix
+    (`None`/`""`) reproduces the ORIGINAL fixed names byte for byte — the
+    regression pin against Phase 5 item 4's own gate having used them. The
+    canonical `archive.jsonl` is deliberately NOT suffixed (it stays the real
+    default path both searches also mirror into — see its constant's own
+    comment)."""
+    sfx = suffix or ""
+    return {
+        "evo": data_dir / f"archive_evolve_gate{sfx}.jsonl",
+        "rand": data_dir / f"archive_random_gate{sfx}.jsonl",
+        "canon": data_dir / CANONICAL_ARCHIVE_NAME,
+        "results": data_dir / f"eval_results{sfx}.jsonl" if sfx else data_dir / RESULTS_NAME,
+    }
+
+
 def _spot_window(cursor: int, width: int) -> list[tuple[int, int]]:
     """`width` consecutive spots from `POOL`, starting at `cursor mod
     len(POOL)`, wrapping. Called with `cursor` advancing by exactly ONE per
@@ -145,10 +164,12 @@ def _prove_kill_switch_live(foundry_root: Path) -> bool:
 def _run_interleaved(args: argparse.Namespace) -> dict:
     data_dir = Path("data")
     data_dir.mkdir(parents=True, exist_ok=True)
-    evo_path = data_dir / EVOLVE_ARCHIVE_NAME
-    rand_path = data_dir / RANDOM_ARCHIVE_NAME
-    canon_path = data_dir / CANONICAL_ARCHIVE_NAME
-    results_path = data_dir / RESULTS_NAME
+    paths = _gate_paths(args.suffix, data_dir)
+    evo_path, rand_path, canon_path, results_path = (
+        paths["evo"], paths["rand"], paths["canon"], paths["results"])
+    # PHASE6.md item 6: --scenario-pool restricts the profession axis for the
+    # WHOLE run; None (--scenario-pool all) draws the full PROFESSION_SCENARIO.
+    pool = ("miner",) if args.scenario_pool == "mining" else None
 
     # Clear every ledger this gate writes to FIRST, so the cross-process
     # readback at the end reflects ONLY this proof — mirrors
@@ -161,16 +182,18 @@ def _run_interleaved(args: argparse.Namespace) -> dict:
     archive_rand = Archive(rand_path)
     archive_canon = Archive(canon_path)  # mirror of both searches' genomes
 
-    step_evo = evolve_mod.make_mutation_step(rng_seed=args.evo_seed)
-    step_rand = evolve_mod.make_random_step(rng_seed=args.rand_seed)
+    step_evo = evolve_mod.make_mutation_step(rng_seed=args.evo_seed, professions=pool)
+    step_rand = evolve_mod.make_random_step(rng_seed=args.rand_seed, professions=pool)
 
     cfg_evo = evolve_mod.EvolutionConfig(
         scenario_ticks=args.ticks, seeds_per_genome=args.seeds, max_genomes=args.genomes,
         account_prefix=f"evoE{args.suffix}", kernel_repo_root=None, results_path=results_path,
+        cognition_provider=args.cognition_provider, profession_pool=pool,
     )
     cfg_rand = evolve_mod.EvolutionConfig(
         scenario_ticks=args.ticks, seeds_per_genome=args.seeds, max_genomes=args.genomes,
         account_prefix=f"evoR{args.suffix}", kernel_repo_root=None, results_path=results_path,
+        cognition_provider=args.cognition_provider, profession_pool=pool,
     )
 
     foundry_root = Path(__file__).resolve().parent / "foundry"
@@ -349,6 +372,15 @@ def main() -> None:
     ap.add_argument("--suffix", default=None)
     ap.add_argument("--evo-seed", type=int, default=1001)
     ap.add_argument("--rand-seed", type=int, default=2002)
+    ap.add_argument("--scenario-pool", choices=("mining", "all"), default="mining",
+                     help="PHASE6.md item 6: 'mining' (default) restricts the profession axis to "
+                          "('miner',) — reproducing Phase 5 item 4's original mining-only gate; 'all' "
+                          "draws from the full PROFESSION_SCENARIO (miner + fisher), the decisive rerun")
+    ap.add_argument("--cognition-provider", choices=("stub", "replicate"), default=None,
+                     help="PHASE6.md item 6: omitted (default) leaves EvolutionConfig.cognition_provider "
+                          "None — the bare pre-item-5 agent, reproducing Phase 5 item 4's shape; "
+                          "'replicate' threads real qwen cognition so the sociability/tier axes are live "
+                          "(the decisive rerun); 'stub' exercises the cognition wiring offline")
     args = ap.parse_args()
     args.suffix = args.suffix or fresh_suffix()
 
@@ -437,7 +469,27 @@ def main() -> None:
         print(f"  cross-process margin = {xr_margin:.4f} -> margin_ok={xr_margin_ok}")
 
     eval_results = read_eval_results(run["results_path"])
-    print(f"\n  data/eval_results.jsonl: {len(eval_results)} lines written this run")
+    print(f"\n  {run['results_path'].name}: {len(eval_results)} lines written this run")
+
+    # --- enrichment sanity (PHASE6.md item 6) ----------------------------
+    # Items 4-5 are what make this a DECISIVE rerun rather than Phase 5 item
+    # 4's honest tie: the profession axis and the cognition axes must actually
+    # move during THIS run, not just be theoretically available. Only asserted
+    # when the enriching flag is on (a --scenario-pool mining / no-provider run
+    # is the reproduce-item-4 baseline and legitimately samples neither).
+    canon_genomes = run["archive_canon"].all_genomes()
+    professions_sampled = sorted({g.profession for g in canon_genomes})
+    soc_bins = [g.cell[1] for g in canon_genomes if len(g.cell) > 1]
+    both_professions = {"miner", "fisher"} <= set(professions_sampled)
+    cognition_fired = any(b > 0 for b in soc_bins)
+    print("\n=== enrichment sanity (item 6) ===")
+    print(f"  professions actually sampled this run: {professions_sampled}")
+    print(f"  sociability_bins across genomes: {soc_bins} (any > low: {cognition_fired})")
+    enrich_flags: dict[str, bool] = {}
+    if args.scenario_pool == "all":
+        enrich_flags["both_professions_sampled"] = both_professions
+    if args.cognition_provider == "replicate":
+        enrich_flags["cognition_fired_live_sociability_bin_above_low"] = cognition_fired
 
     print("\n=== GATE VERDICT ===")
     print("NOTE: 'comparative_margin_beats_noise_band' is the HONEST decisive flag (per PHASE5.md item "
@@ -455,6 +507,13 @@ def main() -> None:
         label="INFRASTRUCTURE GATE",
         detail="the mechanics that must hold regardless of which search wins",
     )
+    if enrich_flags:
+        print_gate_verdict(
+            enrich_flags,
+            label="ENRICHMENT SANITY",
+            detail=f"items 4-5 axes actually moved this run (scenario-pool={args.scenario_pool}, "
+                   f"cognition-provider={args.cognition_provider})",
+        )
     print(f"[FLAG] comparative_margin = {margin}")
     print(f"[FLAG] comparative_noise_band = {noise_band:.4f}")
     print(f"[FLAG] comparative_margin_beats_noise_band = {bool(margin is not None and beats_noise and margin > 0)}")

@@ -571,3 +571,78 @@ def test_evaluate_genome_bare_config_stays_inert_but_still_threads_genome_axes()
     assert eval_cfg.cognition_provider is None         # bare config -> inert, the off-switch default
     assert eval_cfg.cognition_tier == "standard"       # genome axis still threaded regardless
     assert eval_cfg.sociability == 0.7
+
+
+# =============================================================================
+# PHASE6.md item 6: --scenario-pool / profession_pool restriction, threaded
+# through the seed/random draw AND the mutation side (op_profession).
+# =============================================================================
+
+
+def test_random_genome_and_seeds_default_professions_are_byte_for_byte_unchanged():
+    """Regression pin: `professions=None` (the default) reproduces today's
+    behavior — `random_genome` draws from the full `PROFESSION_SCENARIO`,
+    `default_seed_genomes` are all-miner exactly as before."""
+    arc = Archive("/tmp/does-not-matter")  # next_id() needs no file until add()
+    rng = random.Random(11)
+    drawn = {evolve.random_genome(arc, rng).profession for _ in range(50)}
+    assert drawn <= set(evolve.PROFESSION_SCENARIO)          # only real professions
+    assert [g.profession for g in evolve.default_seed_genomes()] == ["miner", "miner", "miner"]
+
+
+def test_profession_pool_restricts_random_and_seeds_both_directions(monkeypatch):
+    """`professions=("miner",)` restricts every random draw and every seed to
+    miner — even against a fixture `PROFESSION_SCENARIO` that genuinely holds
+    both — and the mirror `("fisher",)` restricts to fisher (proving it isn't
+    a one-directional accident that just happens to match the default)."""
+    monkeypatch.setattr(evolve, "PROFESSION_SCENARIO", {"miner": "mining", "fisher": "fishing"})
+    arc = Archive("/tmp/does-not-matter")
+    rng = random.Random(3)
+    assert {evolve.random_genome(arc, rng, professions=("miner",)).profession for _ in range(50)} == {"miner"}
+    assert {evolve.random_genome(arc, rng, professions=("fisher",)).profession for _ in range(50)} == {"fisher"}
+    assert {g.profession for g in evolve.default_seed_genomes(professions=("miner",))} == {"miner"}
+    assert {g.profession for g in evolve.default_seed_genomes(professions=("fisher",))} == {"fisher"}
+
+
+def test_op_profession_honors_the_pool_never_leaks_a_fisher_into_a_mining_run(monkeypatch):
+    """THE load-bearing regression this item exists to add: with the global
+    dict genuinely holding both professions, `op_profession(g, rng,
+    professions=("miner",))` called many times NEVER produces a `"fisher"`
+    genome. A version that silently ignores its `professions` argument (the
+    mutation-side leak "Key design decisions" names) fails this — the exact
+    path by which a `--scenario-pool mining` baseline could otherwise get a
+    fisher genome staged and evaluated live."""
+    monkeypatch.setattr(evolve, "PROFESSION_SCENARIO", {"miner": "mining", "fisher": "fishing"})
+    rng = random.Random(5)
+    g = _base_genome(profession="miner")
+    assert {evolve.op_profession(g, rng, professions=("miner",)).profession for _ in range(100)} == {"miner"}
+
+
+def test_active_mutation_operators_excludes_op_profession_when_pool_has_one_entry(monkeypatch):
+    """The POOL, not the global dict's size, decides `op_profession`'s
+    inclusion: even with a 2-entry `PROFESSION_SCENARIO`, a `("miner",)` pool
+    excludes `op_profession` (it would be a guaranteed no-op)."""
+    monkeypatch.setattr(evolve, "PROFESSION_SCENARIO", {"miner": "mining", "fisher": "fishing"})
+    active = evolve._active_mutation_operators(professions=("miner",))
+    assert evolve.op_profession not in active
+    # with the pool holding both, op_profession is active again
+    assert evolve.op_profession in evolve._active_mutation_operators(professions=("miner", "fisher"))
+
+
+def test_evolve_end_to_end_with_mining_pool_produces_only_miner_genomes(monkeypatch, tmp_path):
+    """`evolve()` driven with `cfg.profession_pool=("miner",)` against a
+    genuinely-both `PROFESSION_SCENARIO` fixture: EVERY genome produced —
+    bootstrap seeds, random draws (none here; this is evolve), and mutated
+    children alike — is `profession == "miner"`, across the whole run, zero
+    leaks. A stubbed `eval_fn` keeps it offline."""
+    monkeypatch.setattr(evolve, "PROFESSION_SCENARIO", {"miner": "mining", "fisher": "fishing"})
+
+    def _stub_eval(g, cfg, *, seeds, spot_pool=None, kernel_repo_root=None, results_path=None):
+        return _multi_result(cfg.scenario_id, [10.0] * seeds, ("GATHERING", 0))
+
+    arc = Archive(tmp_path / "archive.jsonl")
+    cfg = evolve.EvolutionConfig(max_genomes=12, seeds_per_genome=2, kernel_repo_root=None,
+                                 rng_seed=7, profession_pool=("miner",))
+    evolve.evolve(arc, cfg, eval_fn=_stub_eval)
+    assert [g.profession for g in arc.all_genomes()] == ["miner"] * len(arc.all_genomes())
+    assert len(arc.all_genomes()) == 12  # full budget, no early halt

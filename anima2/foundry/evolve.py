@@ -183,76 +183,108 @@ def _nearest_index(candidates: Sequence[float], value: float) -> int:
     return min(range(len(candidates)), key=lambda i: abs(candidates[i] - value))
 
 
-def op_deliver_threshold(g: Genome, rng: random.Random) -> Genome:
+def _profession_pool(professions: Sequence[str] | None) -> Sequence[str]:
+    """The pool `op_profession`/`random_genome`/`default_seed_genomes` draw a
+    profession from: an explicit `professions` restriction (PHASE6.md item 6's
+    `--scenario-pool`) when given, else the full module-global
+    `PROFESSION_SCENARIO` — deliberately the live dict, not a hardcoded pair,
+    so a future third profession needs no change here."""
+    return professions if professions is not None else list(PROFESSION_SCENARIO)
+
+
+#: Every mutation operator takes a uniform `(g, rng, professions)` shape so
+#: `mutate()`'s call site stays generic (`op(parent, rng, professions)`) — the
+#: three axis operators below ignore `professions`; only `op_profession` reads
+#: it. PHASE6.md item 6's `--scenario-pool` restriction MUST reach the mutation
+#: side (not just the seed/random draw) or a `mining`-only run could still
+#: mutate a mining elite into a `fisher` genome that `evaluate_genome` would
+#: then stage and evaluate live — a mislabeled baseline, not a real one.
+def op_deliver_threshold(g: Genome, rng: random.Random,
+                         professions: Sequence[str] | None = None) -> Genome:
     """Walk `deliver_threshold` one step along
     `skill_tuning.DELIVER_THRESHOLD_CANDIDATES` (snapping to the nearest grid
     value first if `g`'s current value is off-grid), one step up or down,
-    clamped at either end of the grid."""
+    clamped at either end of the grid. Ignores `professions`."""
     idx = _nearest_index(DELIVER_THRESHOLD_CANDIDATES, g.deliver_threshold)
     new_idx = max(0, min(len(DELIVER_THRESHOLD_CANDIDATES) - 1, idx + rng.choice((-1, 1))))
     return replace(g, deliver_threshold=float(DELIVER_THRESHOLD_CANDIDATES[new_idx]))
 
 
-def op_sociability(g: Genome, rng: random.Random) -> Genome:
+def op_sociability(g: Genome, rng: random.Random,
+                   professions: Sequence[str] | None = None) -> Genome:
     """Nudge `sociability` by up to `SOCIABILITY_STEP` in either direction,
     clamped within `SOCIABILITY_BOUNDS` (`Persona.talkativeness`'s own
-    documented range)."""
+    documented range). Ignores `professions`."""
     lo, hi = SOCIABILITY_BOUNDS
     delta = rng.uniform(-SOCIABILITY_STEP, SOCIABILITY_STEP)
     return replace(g, sociability=max(lo, min(hi, g.sociability + delta)))
 
 
-def op_cognition_tier(g: Genome, rng: random.Random) -> Genome:
+def op_cognition_tier(g: Genome, rng: random.Random,
+                      professions: Sequence[str] | None = None) -> Genome:
     """Swap to a different `llm.py` cognition tier (never a no-op swap to the
-    same tier, unless `COGNITION_TIERS` has only one member)."""
+    same tier, unless `COGNITION_TIERS` has only one member). Ignores
+    `professions`."""
     choices = [t for t in COGNITION_TIERS if t != g.cognition_tier] or list(COGNITION_TIERS)
     return replace(g, cognition_tier=rng.choice(choices))
 
 
-def op_profession(g: Genome, rng: random.Random) -> Genome:
-    """Swap to a different scenario-supported profession (see
-    `PROFESSION_SCENARIO`; never a no-op swap, unless there is only one
-    candidate today)."""
-    choices = [p for p in PROFESSION_SCENARIO if p != g.profession] or list(PROFESSION_SCENARIO)
+def op_profession(g: Genome, rng: random.Random,
+                  professions: Sequence[str] | None = None) -> Genome:
+    """Swap to a different scenario-supported profession, drawn from
+    `professions` (PHASE6.md item 6's pool restriction) when given, else the
+    full `PROFESSION_SCENARIO`; never a no-op swap, unless there is only one
+    candidate in the pool."""
+    pool = _profession_pool(professions)
+    choices = [p for p in pool if p != g.profession] or list(pool)
     return replace(g, profession=rng.choice(choices))
 
 
 #: Every mutation touches exactly ONE axis per call — standard MAP-Elites
 #: practice (small local steps from an elite explore its neighborhood rather
 #: than jumping to an unrelated point every generation).
-MUTATION_OPERATORS: tuple[Callable[[Genome, random.Random], Genome], ...] = (
+MUTATION_OPERATORS: tuple[Callable[..., Genome], ...] = (
     op_deliver_threshold, op_sociability, op_cognition_tier, op_profession,
 )
 
 
-def _active_mutation_operators() -> tuple[Callable[[Genome, random.Random], Genome], ...]:
+def _active_mutation_operators(
+    professions: Sequence[str] | None = None,
+) -> tuple[Callable[..., Genome], ...]:
     """`MUTATION_OPERATORS` filtered to operators that can currently produce
     a genuinely different genome. Concretely: `op_profession` is excluded
-    while `PROFESSION_SCENARIO` has fewer than 2 candidates (true before
-    PHASE6.md item 4 landed; `PROFESSION_SCENARIO` now has 2, so
-    `op_profession` is active) — otherwise it is a GUARANTEED no-op every
-    single call (there is nothing else to swap to), which would waste a full
-    quarter of every mutation budget on evaluating an exact duplicate of its
-    parent's config (live-caught while tuning this module's own convergence
-    test: a wasted quarter of a 24-genome budget is not a rounding error).
-    Recomputed per `mutate()` call rather than cached at import time, so a
-    future THIRD scenario-supported profession needs no further change here
-    either."""
-    if len(PROFESSION_SCENARIO) < 2:
+    while the effective profession pool (`professions` if given, else the
+    module-global `PROFESSION_SCENARIO`) has fewer than 2 candidates —
+    otherwise it is a GUARANTEED no-op every single call (there is nothing
+    else to swap to), which would waste a full quarter of every mutation
+    budget on evaluating an exact duplicate of its parent's config
+    (live-caught while tuning this module's own convergence test: a wasted
+    quarter of a 24-genome budget is not a rounding error). PHASE6.md item 6:
+    a `--scenario-pool mining` run passes `professions=("miner",)` so
+    `op_profession` is excluded even though the real global dict now has 2
+    entries — the POOL, not the dict's size, decides inclusion. Recomputed
+    per `mutate()` call rather than cached, so a future THIRD profession needs
+    no change here either."""
+    pool = professions if professions is not None else PROFESSION_SCENARIO
+    if len(pool) < 2:
         return tuple(op for op in MUTATION_OPERATORS if op is not op_profession)
     return MUTATION_OPERATORS
 
 
-def mutate(parent: Genome, rng: random.Random, archive: Archive) -> tuple[Genome, str]:
+def mutate(parent: Genome, rng: random.Random, archive: Archive,
+           professions: Sequence[str] | None = None) -> tuple[Genome, str]:
     """Apply one randomly chosen operator (from `_active_mutation_operators`
     — see its own docstring for why that can be a strict subset of
     `MUTATION_OPERATORS`) to `parent`, returning `(child, operator_name)`.
+    `professions` (PHASE6.md item 6) is threaded uniformly into both the
+    operator-selection filter and the chosen operator itself, so a pool
+    restriction reaches `op_profession`, not just the seed/random draw.
     The child gets a fresh `archive.next_id()`, `parent` pointing at the
     parent's id, a `hypothesis` naming which operator ran, a fresh
     timestamp, and a cleared `eval` dict (the caller fills it in after
     evaluating)."""
-    op = rng.choice(_active_mutation_operators())
-    child = op(parent, rng)
+    op = rng.choice(_active_mutation_operators(professions))
+    child = op(parent, rng, professions)
     child.id = archive.next_id()
     child.parent = parent.id
     child.hypothesis = op.__name__
@@ -261,15 +293,17 @@ def mutate(parent: Genome, rng: random.Random, archive: Archive) -> tuple[Genome
     return child, op.__name__
 
 
-def random_genome(archive: Archive, rng: random.Random) -> Genome:
-    """A genome sampled UNIFORMLY from the full config space — the random-
-    search baseline's own generator (never derived from an elite/parent,
-    unlike `mutate()`). Same four-axis space `MUTATION_OPERATORS` covers, so
-    the comparative gate's "SAME mutation space" constraint holds by
-    construction."""
+def random_genome(archive: Archive, rng: random.Random,
+                  professions: Sequence[str] | None = None) -> Genome:
+    """A genome sampled UNIFORMLY from the config space — the random-search
+    baseline's own generator (never derived from an elite/parent, unlike
+    `mutate()`). The profession is drawn from `professions` (item 6's pool)
+    when given, else the full `PROFESSION_SCENARIO`; the other three axes span
+    the same space `MUTATION_OPERATORS` covers, so the comparative gate's
+    "SAME mutation space" constraint holds by construction."""
     return Genome(
         id=archive.next_id(),
-        profession=rng.choice(list(PROFESSION_SCENARIO)),
+        profession=rng.choice(list(_profession_pool(professions))),
         sociability=rng.uniform(*SOCIABILITY_BOUNDS),
         deliver_threshold=float(rng.choice(DELIVER_THRESHOLD_CANDIDATES)),
         cognition_tier=rng.choice(COGNITION_TIERS),
@@ -279,18 +313,24 @@ def random_genome(archive: Archive, rng: random.Random) -> Genome:
     )
 
 
-def default_seed_genomes() -> list[Genome]:
+def default_seed_genomes(professions: Sequence[str] | None = None) -> list[Genome]:
     """A small, hand-picked set of genomes spanning the config space —
     `evolve()`'s bootstrap population when the archive is still empty (no
     elite exists yet to mutate from). `id`/`ts` are placeholders; `evolve()`
     assigns a real archive id before evaluating each one, exactly like a
-    mutated child."""
+    mutated child. With `professions` given (item 6's pool), each seed's
+    profession is drawn from that pool (cycling to span it) instead of the
+    default `"miner"` — so a `--scenario-pool mining` run's bootstrap stays
+    all-miner while a hypothetical fisher-only pool would seed fisher."""
+    pool = list(professions) if professions is not None else None
+    def prof(i: int) -> str:
+        return pool[i % len(pool)] if pool else "miner"
     return [
-        Genome(id="seed", profession="miner", sociability=0.3, deliver_threshold=8.0,
+        Genome(id="seed", profession=prof(0), sociability=0.3, deliver_threshold=8.0,
                cognition_tier="cheap", hypothesis="seed"),
-        Genome(id="seed", profession="miner", sociability=0.6, deliver_threshold=5.0,
+        Genome(id="seed", profession=prof(1), sociability=0.6, deliver_threshold=5.0,
                cognition_tier="standard", hypothesis="seed"),
-        Genome(id="seed", profession="miner", sociability=0.1, deliver_threshold=20.0,
+        Genome(id="seed", profession=prof(2), sociability=0.1, deliver_threshold=20.0,
                cognition_tier="heavy", hypothesis="seed"),
     ]
 
@@ -366,6 +406,14 @@ class EvolutionConfig:
     #: agent, byte for byte, no matter what `cognition_tier` each genome carries.
     #: `"stub"` (offline) exercises the wiring; `"replicate"` is the live gate.
     cognition_provider: str | None = None
+    #: PHASE6.md item 6 — restrict the profession axis to this pool for the
+    #: whole run (seed genomes, random draws, AND `op_profession` mutations),
+    #: threaded through every genome-generation surface so the restriction is
+    #: airtight (a `mining`-only run never produces a `fisher` genome by any
+    #: path). `None` (the default, `--scenario-pool all`) draws from the full
+    #: `PROFESSION_SCENARIO`; `("miner",)` (`--scenario-pool mining`)
+    #: reproduces Phase 5 item 4's original mining-only gate byte for byte.
+    profession_pool: Sequence[str] | None = None
 
 
 @dataclass
@@ -482,6 +530,7 @@ def evaluate_genome(
 
 def make_mutation_step(
     rng_seed: int | None, seed_genomes: Sequence[Genome] | None = None,
+    professions: Sequence[str] | None = None,
 ) -> Callable[[Archive], tuple[Genome, str]]:
     """Returns a STATEFUL step function implementing `evolve()`'s own
     policy: evaluate EVERY seed genome as-is FIRST (bootstrapping the
@@ -504,7 +553,7 @@ def make_mutation_step(
     starting diversity.
     """
     rng = random.Random(rng_seed)
-    seeds = list(seed_genomes) if seed_genomes is not None else default_seed_genomes()
+    seeds = list(seed_genomes) if seed_genomes is not None else default_seed_genomes(professions)
     seed_cursor = {"i": 0}
 
     def step(archive: Archive) -> tuple[Genome, str]:
@@ -518,20 +567,22 @@ def make_mutation_step(
             )
             return child, "seed"
         parent = select_parent(archive, seeds, rng)
-        return mutate(parent, rng, archive)
+        return mutate(parent, rng, archive, professions)
 
     return step
 
 
-def make_random_step(rng_seed: int | None) -> Callable[[Archive], tuple[Genome, str]]:
+def make_random_step(rng_seed: int | None,
+                     professions: Sequence[str] | None = None) -> Callable[[Archive], tuple[Genome, str]]:
     """Returns a STATEFUL (only for RNG continuity — no bootstrap/cursor)
     step function implementing `random_search()`'s policy: every genome is
-    drawn UNIFORMLY from the full config space (`random_genome`), never
-    derived from an elite."""
+    drawn UNIFORMLY from the config space (`random_genome`), never derived
+    from an elite. `professions` (item 6's pool) restricts the profession
+    axis, forwarded unchanged into `random_genome`."""
     rng = random.Random(rng_seed)
 
     def step(archive: Archive) -> tuple[Genome, str]:
-        return random_genome(archive, rng), "random"
+        return random_genome(archive, rng, professions), "random"
 
     return step
 
@@ -572,7 +623,9 @@ def evolve(
     `cfg.max_genomes` and the `STOP` kill switch, checked between evals — see
     this module's own docstring and `make_mutation_step`'s for the bootstrap
     policy."""
-    return _drive(archive, cfg, make_mutation_step(cfg.rng_seed, seed_genomes), eval_fn)
+    return _drive(archive, cfg,
+                  make_mutation_step(cfg.rng_seed, seed_genomes, professions=cfg.profession_pool),
+                  eval_fn)
 
 
 def random_search(
@@ -587,4 +640,5 @@ def random_search(
     matching call signature with `evolve()` (unused here — random search has
     no bootstrap phase, every draw is already unguided)."""
     del seed_genomes
-    return _drive(archive, cfg, make_random_step(cfg.rng_seed), eval_fn)
+    return _drive(archive, cfg,
+                  make_random_step(cfg.rng_seed, professions=cfg.profession_pool), eval_fn)

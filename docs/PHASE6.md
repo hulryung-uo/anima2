@@ -48,11 +48,16 @@ reruns the comparative gate on the enriched harness and reports whichever
 way it lands, honestly, per this project's own established "report a tie as
 a tie" discipline (PHASE5.md item 4).
 
-Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Items 1-5 are done
-(persistent lives; the village chronicle relationship ledger; the forum as
-continuing chronicle; a second, fishing-based eval scenario; cognition-aware
-eval making `cognition_tier`/`sociability` live — all five live-verified) —
-item 6 (the decisive evolution-vs-random rerun) remains ⏳ todo.**
+Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Phase 6 is COMPLETE — all
+six items live-verified** (persistent lives; the village chronicle relationship
+ledger; the forum as continuing chronicle; a second, fishing-based eval
+scenario; cognition-aware eval making `cognition_tier`/`sociability` live; and
+the decisive evolution-vs-random rerun). Item 6's comparative verdict came back
+honest and unfavorable — random search decisively beat the evolution loop at
+this small budget on the now-enriched harness (infrastructure + enrichment
+gates both passed; see item 6's "As landed" for why, and the Phase 7 follow-ups
+that names). "Report a tie as a tie" here means **a loss reported as a loss**,
+not re-rolled for a friendlier result.
 
 **Dependency order.** Threads A and B touch disjoint code (village.py/
 forum.py/memory.py vs. foundry/eval.py/evolve.py/cognition.py) and can land
@@ -1861,7 +1866,7 @@ this item closes).
 
 ---
 
-## Item 6 — The decisive evolution-vs-random differential, rerun ⏳
+## Item 6 — The decisive evolution-vs-random differential, rerun ✅
 
 **Rerun Phase 5 item 4's comparative gate against the now-richer harness,
 and fix the one small housekeeping nit that gate's own write-up flagged.**
@@ -2062,6 +2067,75 @@ design Phase 5 item 4 established.
 formula this item reuses, and the `--suffix` nit this item fixes),
 PHASE5.md's "Notes carried into Phase 6" (the follow-up this item
 completes).
+
+### As landed (live-verified)
+
+**What landed.** The `professions` pool parameter is threaded, uniformly and
+defaulted-`None`, through every genome-generation surface in
+`foundry/evolve.py`: `random_genome`/`default_seed_genomes`, all four mutation
+operators, `mutate`/`_active_mutation_operators`, `make_mutation_step`/
+`make_random_step`, and the one-line `cfg.profession_pool` forward in
+`evolve()`/`random_search()`. `_drive`/`Archive`/the reliability-discounted
+promotion rule/the kill switch are untouched. `EvolutionConfig.profession_pool`
+is the new field. `live_evolve_gate.py` gains `--scenario-pool {mining,all}`,
+`--cognition-provider {stub,replicate}` (omitted → `None`, the item-5
+off-switch that reproduces Phase 5 item 4's bare shape — a deliberate
+correction of an earlier "default stub" draft, since item 5 made *any*
+concrete provider activate cognition), and the `_gate_paths` suffix plumbing
+that fixes Phase 5 item 4's own recorded nit (evolve/random/results ledgers
+carry `--suffix`; the canonical `archive.jsonl` stays the shared default).
+Every default is byte-for-byte backward-compatible — the 25 pre-existing
+evolve tests pass unchanged; 7 new offline tests pin the restriction (both
+directions, the load-bearing `op_profession`-never-leaks-a-fisher mutation-side
+test, pool-based operator exclusion, an end-to-end mining-only `evolve()` run,
+and the `_gate_paths` regression pins). 637 tests green, ruff clean.
+
+**Live gate — INFRASTRUCTURE and ENRICHMENT passed; the comparative verdict is
+reported honestly, and it is not the one the doc hoped for**
+(`--genomes 8 --seeds 2 --ticks 200 --scenario-pool all --cognition-provider
+replicate`, real qwen throughout, fresh accounts, interleaved E/R):
+
+- **Infrastructure (unconditional bar) — all five flags PASSED:** spot fairness
+  (4 spots × 4 uses each, perfectly even at this budget),
+  `kill_switch_live_proven`, kernel-guard (offline-proven), no early halt,
+  per-cell elite recompute matches. 32 seed-evals written, cross-process
+  readback reproduced the verdict from disk.
+- **Enrichment sanity (new to this item) — PASSED:** both `miner` AND `fisher`
+  were actually sampled (`['fisher', 'miner']`), and cognition fired live
+  (`sociability_bins = [0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,1]` — several above
+  `low`). Items 4-5's axes genuinely *move* during a real run — this rerun is
+  no longer the degenerate single-scenario harness Phase 5 item 4 honestly
+  tied on.
+- **Comparative verdict — RANDOM WON, decisively:** margin (evo − rand best
+  reliability) = **−29.32**, *outside* the data-derived noise band of ±21.99.
+  Evolution's best stayed a bootstrap seed (`g_00002`, reliability 71.3);
+  random search drew two lucky high miners (reliability 100.6 and 86.9).
+
+**Why — the honest read, not a bug.** Evolution ran exactly as designed
+(verified from the trajectory: all three seeds bootstrapped, then five
+mutations firing all four operators). It lost for two compounding reasons, both
+real: (1) **8 genomes is far too small for MAP-Elites to exploit** — only five
+mutations, where evolution's edge (compounding gains off elites) needs
+generations; random's eight uniform draws just have more chances to get lucky
+at that budget. (2) **The enrichment cut both ways:** un-inerting the profession
+axis (item 4) added a large *low-value* region — `op_profession` swaps land in
+the fishing scenario, whose single pinned `HarvestBank` is drained by
+back-to-back fisher evals (the exact bank-drain item 4's own gate documented,
+which the evolve gate does **not** rotate away from), so those mutations scored
+~4 fitness and wasted a chunk of evolution's tiny budget exploring a dead
+region. Both arms hit the drained banks symmetrically (interleaved), so this
+adds noise, not bias — the verdict is sound, just unfavorable.
+
+This is the "report a tie as a tie" discipline (PHASE5.md item 4) taken to its
+logical end: **a loss is reported as a loss.** Per this item's own "not
+silently retried until it produces the answer the doc wants" clause, the run
+was **not** re-rolled for a friendlier seed. The honest next steps — a larger
+eval budget so evolution has enough generations to exploit, and `nodes_pool`
+fishing-spot rotation in the evolve gate so a fisher genome isn't scored on a
+bank an earlier fisher genome just drained — are named as **Phase 7
+candidates**, not invented on the spot. Item 6, and Phase 6, land here: the
+mechanism is correct, the axes provably move, and the measured result is
+reported exactly as it came back.
 
 ---
 

@@ -30,8 +30,8 @@ is the *car*.
 
 ## Status
 
-**Phase 6 (the living village) — items 1–5 live-verified, item 6 (the decisive
-evolution-vs-random rerun) remaining.** 630 tests green, ruff clean. The Python
+**Phase 6 (the living village) — complete, all six items live-verified.**
+637 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -44,7 +44,7 @@ just an offline test.
 | **3** — economy & interaction | Miner→blacksmith ingot trade, sell-to-vendor + bank the gold, hunt/loot corpses, A\* navigation | ✅ all 4 items |
 | **4** — the learning stack | Wiki write loop (LLM-judged discrepancy reports), cognition cost tiering, skill library, UCB1 bandit tuning, automatic curriculum | ✅ all 5 items |
 | **5** — measurement & evolution | Independent "agents can't lie" fitness oracle, repeatable eval harness, MAP-Elites archive, config-space evolution loop | ✅ all 4 items |
-| **6** — the living village | Persistent lives (insights survive the session), inter-agent relationship chronicle, forum as continuing chronicle, richer eval scenarios (fisher + cognition-aware) | 🚧 items 1–5 done |
+| **6** — the living village | Persistent lives (insights survive the session), inter-agent relationship chronicle, forum as continuing chronicle, richer eval scenarios (fisher + cognition-aware), and the decisive evolution-vs-random rerun (honest result: random won at this budget) | ✅ all 6 items |
 
 A few of the live proofs, to give the flavor of the verification culture:
 
