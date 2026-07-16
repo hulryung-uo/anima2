@@ -449,8 +449,17 @@ while its five mutations wasted budget on drained-fishing-bank `fisher` swaps,
 and 8 genomes is far too few for MAP-Elites to exploit. Infrastructure +
 enrichment gates both passed; the loss is reported as-is, not re-rolled (larger
 budget + fishing-spot rotation named as Phase 7 candidates). 637 tests green (up
-from 630), ruff clean. **Next:** Phase 7 — see [`PHASE6.md`](docs/PHASE6.md)
-item 6's follow-ups and its "Out of scope this phase" section.
+from 630), ruff clean. **Work breakdown written** — see
+[`PHASE7.md`](docs/PHASE7.md): four items, none landed yet. Redeeming item
+6's loss (thread B) comes first, before closing the skill-ledger honesty gap
+and sharpening insight retrieval; the LLM-authored skill DSL stays
+explicitly out of scope, gated on item 2's own verdict — see PHASE7.md's
+intro. **Next:** Phase 7 item 1 — fix a profession-conditional
+pool-routing bug this design pass's own re-read of `evolve.py`/
+`live_evolve_gate.py` found (a fisher genome's session can land at a mining
+coordinate) and thread the fishing `nodes_pool` through `evolve.py`/
+`live_evolve_gate.py` (PHASE6.md item 6's own named follow-up), before item
+2's larger-budget rerun.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

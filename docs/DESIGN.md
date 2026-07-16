@@ -5,7 +5,18 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
-Last updated: 2026-07-15 · Status: **Phase 6 COMPLETE (the living village) —
+Last updated: 2026-07-16 · Status: **Phase 7 begun (redeem the evolution
+loop, close the skill-ledger honesty gap, sharpen memory retrieval) — work
+breakdown written, see [`PHASE7.md`](PHASE7.md); all four items ⏳, none
+landed yet. Item 1 (up first) fixes a profession-conditional pool-routing bug
+this design pass's own re-read of `evolve.py`/`live_evolve_gate.py` found (a
+fisher genome's session can land at a mining coordinate) alongside the
+fishing-`nodes_pool` rotation PHASE6.md item 6 already named, before item 2
+reruns item 6's own comparative gate at a larger budget; items 3-4 close
+DESIGN.md §11's standing skill-ledger-independence gap and PHASE6.md item 1's
+literal recency-only retrieval gap. The LLM-authored skill DSL stays
+explicitly out of scope, gated on item 2's own verdict — see PHASE7.md's
+intro.** Phase 6 COMPLETE (the living village) —
 all six items live-verified: persistent lives (disk-backed `ReflectionMemory`),
 the village chronicle relationship ledger, and the forum as a continuing
 chronicle (thread A); plus a second, fishing-based eval scenario, cognition-
@@ -86,7 +97,7 @@ clean redesign of the original [`anima`](https://github.com/hulryung-uo/anima) (
 | [`anima-client`](https://github.com/hulryung-uo/anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](https://github.com/hulryung-uo/anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 complete (independent
-fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 complete (all six items live-verified — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation; cognition-aware eval making `cognition_tier`/`sociability` genuinely move the trajectory behind a `cognition_provider` off-switch; and the decisive evolution-vs-random rerun, whose honest verdict was that random beat evolution decisively at this small budget on the enriched harness); 637 tests green |
+fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 complete (all six items live-verified — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation; cognition-aware eval making `cognition_tier`/`sociability` genuinely move the trajectory behind a `cognition_provider` off-switch; and the decisive evolution-vs-random rerun, whose honest verdict was that random beat evolution decisively at this small budget on the enriched harness); Phase 7 begun (work breakdown written, see [`PHASE7.md`](PHASE7.md) — four items, none landed yet); 637 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -452,15 +463,40 @@ The original analysis, kept as the decision record:
   a cognition-aware eval mode that finally gives `sociability`/
   `cognition_tier` real live signal, and a rerun of the evolution-vs-random
   comparative gate on the enriched harness (thread B). No item is expected
-  to touch the Observation/Action contract. **Items 1-3 ✅ live-verified**
-  (item 1: `memory.py::ReflectionMemory`'s optional `persist_path`/
-  `agent_key` + `load_insights()`, `village.py --persist-insights`; item 2:
-  `chronicle.py::ChronicleLedger`, `village.py --chronicle`; item 3:
-  `forum.py`'s optional `yesterday`/`chronicle_events` grounding,
-  `village.py`'s existing `--forum` block) — completing thread A. See each
-  item's own "As landed" section in [`PHASE6.md`](PHASE6.md) for its
-  live-gate transcript. Items 4-6 (thread B, richer eval scenarios) ⏳ not
-  yet started.
+  to touch the Observation/Action contract. **All six items ✅ live-verified,
+  Phase 6 COMPLETE** (item 1: `memory.py::ReflectionMemory`'s optional
+  `persist_path`/`agent_key` + `load_insights()`, `village.py
+  --persist-insights`; item 2: `chronicle.py::ChronicleLedger`, `village.py
+  --chronicle`; item 3: `forum.py`'s optional `yesterday`/`chronicle_events`
+  grounding, `village.py`'s existing `--forum` block — completing thread A;
+  item 4: `foundry/eval.py::SCENARIOS["fishing"]` + `evolve.py::
+  PROFESSION_SCENARIO`'s second entry; item 5: cognition-aware eval making
+  `cognition_tier`/`sociability` live behind a `cognition_provider`
+  off-switch; item 6: the decisive evolution-vs-random rerun on the enriched
+  harness, an honest loss — completing thread B). See each item's own "As
+  landed" section in [`PHASE6.md`](PHASE6.md) for its live-gate transcript.
+
+- **Phase 7 — Redeem the evolution loop, close the skill-ledger honesty gap,
+  sharpen memory retrieval** *(work breakdown written — see
+  [`PHASE7.md`](PHASE7.md) for the itemized status)*: four independently-
+  landable items, all no-op-by-default. Items 1-2 redo item 6's comparative
+  gate with its diagnosed root causes fixed (a profession-conditional
+  pool-routing bug this design pass's own re-read of the code found, on top
+  of the drained-fishing-bank cause PHASE6.md item 6 already named) and a
+  larger `--genomes` budget, reporting whichever verdict comes back,
+  honestly. Item 3 closes DESIGN.md §11's standing "skill-ledger reward
+  independence" gap by reusing Phase 5 item 1's independent-channel pattern
+  (`foundry/trajectory.py`'s GM-read channel (a)) at a new call site. Item 4
+  replaces `ReflectingCognition`'s unconditional `recent(3)` insight read
+  with a keyword-relevance ranking reusing `_textindex.py`'s already-shipped
+  scoring, falling back to `recent(k)` whenever it can't determine
+  relevance. The LLM-authored skill DSL (§6 item 3) stays explicitly out of
+  scope this phase — its own stated escalation precondition (config-space
+  evolution proven to beat random, live) is not yet met, since item 6 came
+  back a loss; items 1-2 exist to give that precondition a fair,
+  confound-free test, and the DSL is carried into Phase 8 as the named next
+  escalation only if they succeed. No item is expected to touch the
+  Observation/Action contract.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane
@@ -514,6 +550,14 @@ Still open:
   than A6's "agents can't lie" standard, which describes v1 Foundry's
   wire-level packet-parsed fitness. Flagged for a cheap partial mitigation
   (an advisory GM gold/skill readback) in PHASE4.md item 3, not solved.
+  **Targeted by PHASE7.md item 3** (work breakdown written, ⏳ not yet
+  landed): a sibling `data/skill_ledger_corroboration.jsonl` ledger, reusing
+  Phase 5 item 1's independent-channel pattern (`foundry/trajectory.py`'s
+  GM-read channel (a), never the corroborating-only channel (b)) at a new,
+  standalone-gate call site — deliberately not wired into `village.py`'s
+  concurrent multi-agent roster, so this remains a partial mitigation
+  (proven sound at single-agent granularity) even once item 3 lands, not a
+  full resolution of production village runs.
 - **Skill-ledger multi-process concurrency** (opened by PHASE4.md item 3):
   append-only single-process writes are GIL-safe; a fleet of villages
   writing the same ledger file simultaneously is untested and needs an
@@ -524,6 +568,19 @@ Still open:
   picks. A safe-by-construction composition DSL (never `eval`/`exec`, a
   whitelist of existing primitives) is flagged in PHASE4.md as the natural
   next step once item 3's registry/ledger is proven live, not designed here.
+  Restated by PHASE6.md's own "Notes carried into Phase 7": the natural next
+  escalation once config-space evolution (Phase 5) **and** its richer eval
+  harness (Phase 6) are **both proven live** — not yet true, since Phase 6
+  item 6's own comparative rerun came back an honest **loss** for evolution,
+  not proof. PHASE7.md items 1-2 exist specifically to give that precondition
+  a fair, confound-free retest (Phase 6 item 6's own diagnosed causes, plus a
+  third this design pass found, fixed; a larger budget); the DSL itself
+  stays out of PHASE7.md's own scope either way, carried into Phase 8 as the
+  named next escalation **only if** PHASE7.md item 2 reports a decisive
+  evolution win — see PHASE7.md's intro and its "Notes carried into Phase 8"
+  section for the DSL's own sketched, safe-by-construction shape (a closed
+  vocabulary off `skill_library.py::REGISTRY`, a non-Turing-complete
+  tick-capped grammar, never `eval`/`exec`).
 
 ---
 
