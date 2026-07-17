@@ -10,6 +10,14 @@ from .base import Skill, SkillContext, SkillResult, Status
 HOSTILE_NOTORIETY = frozenset({3, 4, 5, 6})
 
 
+def is_hostile(mobile: MobileView) -> bool:
+    """Shared target/flee population: attackable and not observably dead."""
+    return (
+        mobile.notoriety in HOSTILE_NOTORIETY
+        and not (mobile.hits_max > 0 and mobile.hits <= 0)
+    )
+
+
 class Combat(Skill):
     """Toggle war mode and attack the nearest hostile within `engage_range`.
 
@@ -36,6 +44,6 @@ class Combat(Skill):
     def _target(self, ctx: SkillContext) -> MobileView | None:
         # obs.mobiles is sorted by distance, so the first match is the nearest.
         for m in ctx.obs.mobiles:
-            if m.notoriety in HOSTILE_NOTORIETY and m.distance <= self.engage_range:
+            if is_hostile(m) and m.distance <= self.engage_range:
                 return m
         return None

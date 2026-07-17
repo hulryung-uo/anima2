@@ -42,6 +42,13 @@ def test_combat_ignores_innocents():
     assert not Combat().can_run(ctx)
 
 
+def test_combat_ignores_observably_dead_hostile():
+    corpse_lag = MobileView(0xBC, "rat", Position(101, 100, 0), body=0x10, notoriety=6,
+                            hits=0, hits_max=10, distance=1)
+    ctx = _ctx(_obs([corpse_lag]), Persona(name="Ash", combat_disposition="aggressive"))
+    assert not Combat().can_run(ctx)
+
+
 def test_greet_says_hello_once_per_person():
     human = MobileView(0xCC, "Bob", Position(102, 100, 0), body=0x190, notoriety=1,
                        hits=50, hits_max=50, distance=2)

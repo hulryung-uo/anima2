@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, Skill, SpeakPending, Wander
+from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, Skill, SpeakPending, Survive, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -207,7 +207,7 @@ class Profession:
         sets a goto goal, so offline/heuristic agents behave exactly as before. On
         arrival the goal clears and the worker falls back to its trade.
         """
-        skills: list[Skill] = [SpeakPending(), GoTo()]
+        skills: list[Skill] = [Survive(), SpeakPending(), GoTo()]
         if self.work_skill is not None:
             skills.append(self.work_skill())
         skills += [Greet(), Wander()]
@@ -288,8 +288,9 @@ PROFESSIONS: dict[str, Profession] = {
     # Wrestling alone reliably kills a Mongbat in one or two swings
     # (live-verified, `live_hunt.py`); Tactics raises the hit chance so
     # engagements don't drag on. No `structures` (unlike mining/blacksmithing,
-    # hunting needs no forge/anvil/tree) and no starting weapon `items` (bare
-    # hands *are* the weapon here). `HUNTING_SPOT` is a single calibrated
+    # hunting needs no forge/anvil/tree). Bandages + Healing/Anatomy make the
+    # universal `Survive` skill live for the combat profession, but there is no
+    # starting weapon (bare hands *are* the weapon here). `HUNTING_SPOT` is a single calibrated
     # pocket (see its own comment) — every hunter shares it, matching
     # `TRADE_SMITH_SPOT`'s single-workplace shape rather than the per-agent
     # pools miners/fishers/lumberjacks draw from (a village today only ever
@@ -298,7 +299,8 @@ PROFESSIONS: dict[str, Profession] = {
     "hunter": Profession(
         key="hunter",
         persona_name="Ragnar",
-        skills={"Wrestling": 50, "Tactics": 50},
+        skills={"Wrestling": 50, "Tactics": 50, "Healing": 50, "Anatomy": 50},
+        items=["Bandage 50"],
         needs_workplace=True,
         workplace=HUNTING_SPOT,
         work_skill=Hunt,

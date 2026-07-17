@@ -30,9 +30,15 @@ is the *car*.
 
 ## Status
 
+**Autonomy track begun:** the roadmap has been re-centered on turning the
+staged worker into a self-sustaining UO player; see
+[`docs/AUTONOMY-ROADMAP.md`](docs/AUTONOMY-ROADMAP.md). The first survival
+slice is live-verified: below 40% HP an agent retreats from a hostile group,
+then applies exactly one self-bandage and confirms recovery from live state.
+
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 648 tests green, ruff clean. The Python
+threading) — live-verified.** 672 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live

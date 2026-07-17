@@ -9,6 +9,7 @@ from .market import BlacksmithMarket
 from .movement import GoTo, Wander
 from .smelt import MineAndSmelt, MineSmeltDeliver
 from .social import Greet, SpeakPending
+from .survival import Survive
 
 __all__ = [
     "Goal",
@@ -29,5 +30,6 @@ __all__ = [
     "MineAndSmelt",
     "MineSmeltDeliver",
     "SpeakPending",
+    "Survive",
     "Wander",
 ]
