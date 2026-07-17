@@ -103,9 +103,8 @@ pass already found by reading the code, not testing anything new. Items 3 and
 both in parallel; nothing in this phase requires a specific interleaving
 beyond item 1 → item 2.
 
-Status legend: ✅ done · 🚧 in progress · ⏳ todo. **All four items below are
-⏳ — this document is the work breakdown only; nothing in this phase has
-landed yet.**
+Status legend: ✅ done · 🚧 in progress · ⏳ todo. **Items 1 and 4 are done;
+items 2 and 3 remain.**
 
 ---
 
@@ -770,7 +769,7 @@ mechanism this item reuses wholesale).
 
 ---
 
-## Item 4 — Situation-relevant insight retrieval — replace unconditional `recent(3)` with relevance ranking, reusing `_textindex.py`'s existing scoring ⏳
+## Item 4 — Situation-relevant insight retrieval — replace unconditional `recent(3)` with relevance ranking, reusing `_textindex.py`'s existing scoring ✅
 
 **Close the literal gap PHASE6.md item 1 left standing.** `ReflectionMemory`
 (`memory.py`) has zero retrieval logic beyond pure recency (`recent(n)`), and
@@ -932,6 +931,24 @@ connection at all, or can construct its `ctx` purely in-process/subprocess
 (mirroring PHASE6.md item 3's own `session2` leg, which needed zero live
 connection for an identical prompt-construction claim), is the implementer's
 own choice at landing time.
+
+### As landed ✅
+
+`ReflectionMemory.relevant()` ranks insights with the shared `_textindex.py`
+tokenizer and scorer, using newest-first ordering only to break equal scores.
+A zero-overlap or empty query returns `recent(k)` exactly, preserving the old
+behavior as the safety baseline.
+
+`ReflectingCognition` accepts `insight_retrieval="recent" | "relevant"`; the
+default remains `"recent"`, while the opt-in mode composes its query in code
+from the current goal and last three episode summaries. No LLM call, file I/O,
+fast-loop work, or contract change was added. The prompt-construction property
+was verified offline, as explicitly permitted by the gate above: the same
+memory containing an older mining insight and a newer vendor insight feeds the
+mining insight into `LLMCognition` only in relevant mode. Five new regression
+tests cover topical-vs-recent selection, exact fallback, shared-scorer reuse,
+deterministic query composition, and the existing prompt seam. Full baseline:
+**653 tests green, Ruff clean**.
 
 ### References
 

@@ -40,7 +40,7 @@ import re
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from .contract import Position
 from .llm import LLMClient
@@ -561,6 +561,16 @@ class LLMWikiReportProducer:
         )
 
 
+def _insight_query(ctx: SkillContext) -> str:
+    """Compose an insight-retrieval query from code-owned current context."""
+    parts: list[str] = []
+    if ctx.goal is not None:
+        parts.append(ctx.goal.kind)
+        parts.extend(str(value) for value in ctx.goal.params.values())
+    parts.extend(ep.summary for ep in ctx.episodes[-3:])
+    return " ".join(parts)
+
+
 class ReflectingCognition:
     """Wraps a `Cognition`; periodically distills recent episodes into short
     `Insight`s that persist and feed back into later goal/speech decisions
@@ -604,7 +614,10 @@ class ReflectingCognition:
         episode_window: int = 20,
         insights: ReflectionMemory | None = None,
         wiki_reporter: WikiReportProducer | None = None,
+        insight_retrieval: Literal["recent", "relevant"] = "recent",
     ) -> None:
+        if insight_retrieval not in ("recent", "relevant"):
+            raise ValueError("insight_retrieval must be 'recent' or 'relevant'")
         self.inner = inner
         self.reflection = reflection
         self.every_n_reconsiders = every_n_reconsiders
@@ -614,6 +627,7 @@ class ReflectingCognition:
         #: `None` (default) is a byte-for-byte no-op — see module docstring and
         #: `_reflect_bg`, which only ever consults this when it's not `None`.
         self.wiki_reporter = wiki_reporter
+        self.insight_retrieval = insight_retrieval
         self._reconsiders_since = 0
         self._episode_count_at_last = 0
         # Non-overlap guard for the background reflection thread (`_reflecting`,
@@ -627,7 +641,10 @@ class ReflectingCognition:
     def reconsider(self, ctx: SkillContext) -> Goal | None:
         # Insights from *prior* reflection rounds inform this round's decision —
         # not any reflection this call might itself trigger below.
-        ctx.insights = self.insights.recent(3)
+        if self.insight_retrieval == "relevant":
+            ctx.insights = self.insights.relevant(_insight_query(ctx), k=3)
+        else:
+            ctx.insights = self.insights.recent(3)
         goal = self.inner.reconsider(ctx)
 
         self._reconsiders_since += 1

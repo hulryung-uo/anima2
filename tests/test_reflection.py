@@ -28,6 +28,7 @@ from anima2.mock_body import MockBody
 from anima2.persona import Persona
 from anima2.planner import Planner
 from anima2.skills.base import Skill, SkillContext, SkillResult, Status
+from anima2.skills.base import Goal
 from anima2.wiki import Wiki
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "wiki"
@@ -194,6 +195,56 @@ def test_insight_reaches_next_situation_prompt():
 
     reflecting.reconsider(ctx)  # next round: the fresh insight is now in the prompt
     assert "mine has paid off" in client.calls[1][1]
+
+
+def test_relevant_insight_query_is_composed_from_goal_and_recent_episodes(monkeypatch):
+    captured = []
+    insights = ReflectionMemory()
+    insights.record(Insight("old mining lesson", (1, 2), 2))
+
+    def capture(query, k=3):
+        captured.append((query, k))
+        return insights.recent(k)
+
+    monkeypatch.setattr(insights, "relevant", capture)
+    cog = ReflectingCognition(
+        HeuristicCognition(), HeuristicReflection(), insights=insights,
+        insight_retrieval="relevant",
+    )
+    episodes = [
+        Episode(tick=1, kind="skill", summary="wander → success"),
+        Episode(tick=2, kind="skill", summary="mine → success"),
+        Episode(tick=3, kind="journal", summary="found rich ore"),
+        Episode(tick=4, kind="skill", summary="smelt → success"),
+    ]
+    ctx = _ctx(episodes=episodes, episode_count=4,
+               goal=Goal(kind="goto", params={"target": "east mine"}))
+
+    cog.reconsider(ctx)
+
+    assert captured == [("goto east mine mine → success found rich ore smelt → success", 3)]
+
+
+def test_relevant_insights_reach_llm_situation_prompt():
+    client = StubLLMClient('{"goal": "idle"}')
+    insights = ReflectionMemory()
+    insights.record(Insight("Ore is richer near the mining ridge.", (1, 2), 2))
+    insights.record(Insight("Vendor dagger prices fell today.", (3, 4), 2))
+    cog = ReflectingCognition(
+        LLMCognition(client, job="miner"), HeuristicReflection(), insights=insights,
+        insight_retrieval="relevant",
+    )
+    ctx = _ctx(
+        episodes=[Episode(tick=5, kind="skill", summary="mine ore → success")],
+        episode_count=1,
+        goal=Goal(kind="mine", params={}),
+    )
+
+    cog.reconsider(ctx)
+
+    prompt = client.calls[0][1]
+    assert "Lessons learned: Ore is richer near the mining ridge." in prompt
+    assert "Vendor dagger prices" not in prompt
 
 
 def test_reflecting_cognition_composes_with_threaded_cognition():

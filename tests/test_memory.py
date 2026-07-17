@@ -7,6 +7,7 @@ from anima2.cognition import LLMCognition
 from anima2.contract import Observation, PlayerView, Position
 from anima2.llm import StubLLMClient
 from anima2.memory import Episode, EpisodicMemory, Insight, ReflectionMemory, load_insights
+from anima2._textindex import _terms, score_terms, weighted_terms
 from anima2.mock_body import MockBody
 from anima2.persona import Persona
 from anima2.planner import Planner
@@ -20,6 +21,45 @@ def test_memory_records_recent_and_reward():
     assert len(m) == 3  # bounded
     assert [e.tick for e in m.recent(2)] == [3, 4]
     assert m.total_reward() == 3.0  # only the 3 retained
+
+
+def test_reflection_memory_relevant_prefers_older_topical_insights():
+    mem = ReflectionMemory(capacity=30)
+    for i in range(17):
+        mem.record(Insight(f"ordinary day {i}", (i, i), 1))
+    mem.record(Insight("Ore is richer near the mining ridge at dawn.", (17, 17), 1))
+    mem.record(Insight("Vendor dagger prices fell today.", (18, 18), 1))
+    mem.record(Insight("The tailor pays well for cloth.", (19, 19), 1))
+
+    relevant = mem.relevant("mining ore", k=3)
+
+    assert [i.text for i in relevant] == ["Ore is richer near the mining ridge at dawn."]
+    assert relevant != mem.recent(3)
+
+
+def test_reflection_memory_relevant_falls_back_exactly_to_recent():
+    mem = ReflectionMemory()
+    for i in range(5):
+        mem.record(Insight(f"mining lesson {i}", (i, i), 1))
+    assert mem.relevant("zzz unmatched nonsense", k=3) == mem.recent(3)
+    assert mem.relevant("", k=3) == mem.recent(3)
+
+
+def test_reflection_memory_relevant_uses_shared_text_index_scoring(monkeypatch):
+    mem = ReflectionMemory()
+    insight = Insight("Mining ore along the eastern ridge.", (1, 2), 2)
+    mem.record(insight)
+    expected = score_terms(_terms("mine ore"), weighted_terms((insight.text, 1)))
+    seen = []
+
+    def capture(query_terms, counts):
+        score = score_terms(query_terms, counts)
+        seen.append(score)
+        return score
+
+    monkeypatch.setattr("anima2.memory.score_terms", capture)
+    assert mem.relevant("mine ore", k=1) == [insight]
+    assert seen == [expected]
 
 
 class _RewardOnce(Skill):

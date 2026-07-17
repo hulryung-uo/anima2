@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ._textindex import _terms, score_terms, weighted_terms
+
 
 @dataclass
 class Episode:
@@ -155,6 +157,26 @@ class ReflectionMemory:
         if n <= 0:
             return []
         return list(self._insights)[-n:]
+
+    def relevant(self, query: str, k: int = 3) -> list[Insight]:
+        """Return the most topically relevant insights, with recency as a tie-break.
+
+        When the shared keyword index finds no overlap at all, preserve the
+        existing recency behavior exactly. This keeps relevance retrieval a
+        safe opt-in over the established ``recent()`` baseline.
+        """
+        if k <= 0:
+            return []
+        query_terms = _terms(query)
+        insights = list(self._insights)
+        scored = [
+            (score_terms(query_terms, weighted_terms((insight.text, 1))), index, insight)
+            for index, insight in enumerate(insights)
+        ]
+        if not any(score for score, _, _ in scored):
+            return self.recent(k)
+        scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return [insight for score, _, insight in scored if score > 0][:k]
 
     def __len__(self) -> int:
         return len(self._insights)
