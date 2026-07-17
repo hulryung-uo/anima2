@@ -109,7 +109,7 @@ landed yet.**
 
 ---
 
-## Item 1 — Fix profession-conditional pool routing + thread the fishing `nodes_pool` through `evolve.py`/`live_evolve_gate.py` ⏳
+## Item 1 — Fix profession-conditional pool routing + thread the fishing `nodes_pool` through `evolve.py`/`live_evolve_gate.py` ✅
 
 **Redeem the loss's first diagnosed cause (drained fishing banks) and the
 third, undiagnosed one this design pass's own re-read of the code found (a
@@ -318,6 +318,103 @@ already-shipped `nodes_pool=`), `anima2/live_evolve_gate.py`,
 PHASE6.md item 4 (the `nodes_pool` mechanism this item threads one layer
 higher), PHASE6.md item 6 (the loss this item redeems, and its own two
 named causes).
+
+### As landed ✅
+
+**What landed, exactly as scoped.** `EvolutionConfig` gained two both-optional
+fields — `nodes_pool` (`Scenario.nodes`-shaped) and `fishing_spot_pool`
+(shore-stand coords) — both defaulting `None`, so every existing
+`EvolutionConfig()` construction is byte-for-byte unchanged. The fix itself
+lives in `evaluate_genome` (defense-in-depth, the lowest shared function, so no
+future caller can reintroduce the leak by a different path): after resolving
+`scenario_id`, it computes `is_fishing = SCENARIOS[scenario_id].nodes is not
+None` — a **generic structural** check, never a hardcoded `"fisher"`/`"fishing"`
+string (proven by `test_is_fishing_is_structural_not_a_profession_name_string`,
+which monkeypatches a third `"angler"` profession onto the `nodes`-bearing
+fishing scenario and confirms it routes as fishing purely from the scenario's
+structure). A fishing genome resolves its pools ONLY from the fishing-specific
+fields (`fishing_spot_pool`/`nodes_pool`, falling back to
+`cfg.fishing_spot_pool`/`cfg.nodes_pool`); a non-fishing genome resolves
+`effective_spot_pool` exactly as before AND has `effective_nodes_pool` **forced
+to `None` regardless of what was passed** — the actual defense-in-depth half: a
+`nodes_pool` can now never reach a mining eval by any call path (`Mine`/`Fish`
+both read `ctx.memory["harvest_nodes"]` generically, confirmed against
+`skills/harvest.py::Harvest._current_node`, so a leaked mining `nodes_pool` would
+silently corrupt a mining eval's staging, not just be inert). `default_eval_fn`
+gained a `nodes_pool=None` passthrough into `run_eval_multi` (which has accepted
+it since item 4) — the last mile of plumbing. `live_evolve_gate.py` gained
+`FISH_POOL = tuple(FISHING_SPOTS[:4])`, `_fish_window` (mirroring `_spot_window`'s
+exact non-degenerate wraparound, returning matched `(stand_window, nodes_window)`
+pairs where each node is `((water_x, water_y, water_z, 0),)`), a
+`_prove_fish_spot_fairness` (mirroring `_prove_spot_fairness`), and — the
+necessary-not-optional part — **two independent cursors**: the existing mining
+`cursor` now advances only on miner rounds and a new `fish_cursor` only on fisher
+rounds (the genome's profession is known once `step_fn(archive)` returns, before
+`evaluate_genome`). No new CLI flag: the fishing path activates automatically
+under `--scenario-pool all`.
+
+**The RED-first regression evidence.** The load-bearing regression
+(`test_mining_shaped_spot_pool_never_reaches_a_fisher_eval`) was written against
+the CURRENT pre-fix code FIRST and confirmed to fail RED before the fix landed —
+a mining-shaped `spot_pool` handed to a fisher genome reached the fisher's
+eval-cfg-building call unconditionally:
+
+```
+    assert captured["spot_pool"] != mining_pool
+E   assert [(2567, 493), (2611, 474)] != [(2567, 493), (2611, 474)]
+```
+
+The Minoc mining coordinate `[(2567, 493), (2611, 474)]` reaching a fisher's eval
+is the exact routing bug this design pass's own re-read named. After the fix the
+same call resolves the fisher's pool from the (unset here) fishing fields, so the
+mining pool is never applied — the test goes green. Plus the mirror
+(`test_nodes_pool_never_reaches_a_miner_eval` — a `nodes_pool`/`cfg.nodes_pool`
+passed while evaluating a miner is forced `None` by any path), the fisher
+forward-and-rotate index-aligned test, a cfg-fallback resolution test, a
+new-fields-default-`None`/miner-path-unchanged regression pin, and — in
+`test_live_evolve_gate.py` — `_fish_window` matched-pair/wraparound/non-degeneracy
+proofs and two `_prove_fish_spot_fairness` arithmetic proofs (one asserting its
+counts match `_prove_spot_fairness`'s exactly, anti-drift).
+
+**The live SMOKE gate** (`--ticks 150 --seeds 2 --genomes 6 --scenario-pool all
+--cognition-provider stub --suffix phase7item1smoke`, real ServUO, fresh
+accounts) passed all five decisive checks, read from a FRESH subprocess parsing
+`data/eval_resultsphase7item1smoke.jsonl` (24 rows: 8 fishing, 16 mining):
+
+1. **Every fishing row's `config.spot` ∈ `FISHING_SPOTS[:4]` stands, never a
+   `MINING_SPOTS` coord.** All 8 fishing rows landed at `(2866, 647)` /
+   `(2869, 639)` / `(2876, 636)` / `(2894, 636)` — each with its **matched water
+   node** in `config.nodes` (`((2865, 646, -5, 0),)`, `((2868, 638, -5, 0),)`,
+   `((2873, 633, -5, 0),)`, `((2898, 632, -5, 0),)` respectively), index-aligned.
+   The direct, cross-process proof the fisher-at-mining-coord leak is gone.
+2. **≥2 distinct fishing stands** — in fact all four appeared (`fish_cursor`
+   rotated cleanly through the whole pool).
+3. **≥1 fishing row materially nonzero `produce_value_rate`** — all 8 were
+   nonzero (`[331.9, 165.8, 276.4, 281.1, 280.9, 224.6, 225.0, 225.2]`); no bank
+   starved, which is the whole point of the rotation fix.
+4. **Every mining row's `config.spot` ∈ `MINING_SPOTS[:4]`** (all 16), each with
+   `config.nodes = None` — the defense-in-depth forcing confirmed live, and the
+   already-working mining path undisturbed.
+5. **Both offline fairness proofs printed `True` before any live eval**
+   (`spot_fairness_ok = True`, `fish_spot_fairness_ok = True`, each 3/3/3/3 across
+   its four spots).
+
+The decisive live moment is EVO round 4: `op=op_profession genome=g_00005
+prof=fisher spots=[(2876, 636), (2894, 636)] nodes=[((2873, 633, -5, 0),),
+((2898, 632, -5, 0),)]` — a MAP-Elites mutation swapping a miner elite into a
+fisher, staged at fishing stands with matched water nodes rather than the Minoc
+ridge it would have hit pre-fix. Infrastructure gate PASSED
+(`spot_fairness_design_ok`, `fish_spot_fairness_design_ok`,
+`kill_switch_live_proven`, kernel-guard offline-proven, no early halt, per-cell
+elite recompute all `True`); enrichment sanity PASSED (`both_professions_sampled
+= True`). The comparative verdict came back `RANDOM WON` (margin −28.0, outside
+the noise band) — **expected and irrelevant to item 1**: this is item 1's own
+SMOKE at a tiny 6-genome budget, not item 2's decisive larger-budget rerun; item
+1's job is the routing/infrastructure correctness above, which held completely,
+not the evolution-vs-random verdict (that is item 2). 648 tests green (up from
+637 — 6 new in `test_foundry_evolve.py`, 5 new in `test_live_evolve_gate.py`;
+the 7 pre-existing evolve stub `eval_fn`s gained a mechanical `nodes_pool=None`
+param forced by the new passthrough, assertions unchanged), ruff clean.
 
 ---
 

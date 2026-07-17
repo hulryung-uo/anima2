@@ -284,7 +284,7 @@ def _synthetic_score(g: Genome) -> tuple[float, tuple]:
 
 
 def _synthetic_eval_fn(genome: Genome, eval_cfg: EvalConfig, *, seeds: int, spot_pool, kernel_repo_root,
-                        results_path) -> MultiEvalResult:
+                        results_path, nodes_pool=None) -> MultiEvalResult:
     fitness, cell = _synthetic_score(genome)
     # A little per-seed jitter around the same underlying config score (a
     # real multi-seed eval never returns identical numbers twice), still
@@ -421,11 +421,12 @@ def test_evolve_halts_between_evals_once_stop_appears_mid_run(tmp_path):
     stop_path = tmp_path / "STOP"
     calls = {"n": 0}
 
-    def eval_fn_that_stops_after_three(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path):
+    def eval_fn_that_stops_after_three(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root,
+                                       results_path, nodes_pool=None):
         calls["n"] += 1
         if calls["n"] == 3:
             stop_path.touch()
-        return _synthetic_eval_fn(genome, eval_cfg, seeds=seeds, spot_pool=spot_pool,
+        return _synthetic_eval_fn(genome, eval_cfg, seeds=seeds, spot_pool=spot_pool, nodes_pool=nodes_pool,
                                    kernel_repo_root=kernel_repo_root, results_path=results_path)
 
     cfg = evolve.EvolutionConfig(max_genomes=10, foundry_root=tmp_path, kernel_repo_root=None)
@@ -441,11 +442,12 @@ def test_random_search_halts_between_evals_too(tmp_path):
     stop_path = tmp_path / "STOP"
     calls = {"n": 0}
 
-    def eval_fn_that_stops_after_two(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path):
+    def eval_fn_that_stops_after_two(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root,
+                                     results_path, nodes_pool=None):
         calls["n"] += 1
         if calls["n"] == 2:
             stop_path.touch()
-        return _synthetic_eval_fn(genome, eval_cfg, seeds=seeds, spot_pool=spot_pool,
+        return _synthetic_eval_fn(genome, eval_cfg, seeds=seeds, spot_pool=spot_pool, nodes_pool=nodes_pool,
                                    kernel_repo_root=kernel_repo_root, results_path=results_path)
 
     cfg = evolve.EvolutionConfig(max_genomes=10, foundry_root=tmp_path, kernel_repo_root=None)
@@ -482,7 +484,7 @@ def test_random_search_respects_max_genomes_cap(tmp_path):
 def test_evaluate_genome_picks_descriptor_cell_from_the_median_fitness_seed(tmp_path):
     g = _base_genome(id="g_00099")
 
-    def fn(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path):
+    def fn(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path, nodes_pool=None):
         # 3 seeds, fitness 10/20/30 with distinct cells so the choice is observable.
         cfg = EvalConfig(scenario_id=eval_cfg.scenario_id)
         multi = MultiEvalResult(scenario_id=eval_cfg.scenario_id, base_config=cfg)
@@ -506,7 +508,7 @@ def test_evaluate_genome_picks_descriptor_cell_from_the_median_fitness_seed(tmp_
 def test_evaluate_genome_even_seed_count_picks_lower_of_the_middle_pair(tmp_path):
     g = _base_genome(id="g_00100")
 
-    def fn(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path):
+    def fn(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path, nodes_pool=None):
         cfg = EvalConfig(scenario_id=eval_cfg.scenario_id)
         multi = MultiEvalResult(scenario_id=eval_cfg.scenario_id, base_config=cfg)
         for v, cell in ((10.0, ("A", 0)), (20.0, ("B", 1))):  # 2 seeds -> sorted[(2-1)//2] = sorted[0]
@@ -532,7 +534,7 @@ def _capture_eval_cfg(g: Genome, cfg: evolve.EvolutionConfig) -> EvalConfig:
     convergence test uses) and return the `EvalConfig` it built."""
     captured: dict = {}
 
-    def spy(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path):
+    def spy(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path, nodes_pool=None):
         captured["cfg"] = eval_cfg
         return _multi_result(eval_cfg.scenario_id, [1.0, 2.0], ("MINER", 0))
 
@@ -637,7 +639,7 @@ def test_evolve_end_to_end_with_mining_pool_produces_only_miner_genomes(monkeypa
     leaks. A stubbed `eval_fn` keeps it offline."""
     monkeypatch.setattr(evolve, "PROFESSION_SCENARIO", {"miner": "mining", "fisher": "fishing"})
 
-    def _stub_eval(g, cfg, *, seeds, spot_pool=None, kernel_repo_root=None, results_path=None):
+    def _stub_eval(g, cfg, *, seeds, spot_pool=None, nodes_pool=None, kernel_repo_root=None, results_path=None):
         return _multi_result(cfg.scenario_id, [10.0] * seeds, ("GATHERING", 0))
 
     arc = Archive(tmp_path / "archive.jsonl")
@@ -646,3 +648,150 @@ def test_evolve_end_to_end_with_mining_pool_produces_only_miner_genomes(monkeypa
     evolve.evolve(arc, cfg, eval_fn=_stub_eval)
     assert [g.profession for g in arc.all_genomes()] == ["miner"] * len(arc.all_genomes())
     assert len(arc.all_genomes()) == 12  # full budget, no early halt
+
+
+# =============================================================================
+# PHASE7.md item 1: profession-conditional pool routing +
+# fishing nodes_pool/fishing_spot_pool threading through evaluate_genome.
+# =============================================================================
+
+
+def _capture_pools_eval_fn(captured: dict):
+    """A spy `eval_fn` that records the `spot_pool`/`nodes_pool` it actually
+    received — the direct, cross-checkable proof of what `evaluate_genome`
+    resolved and forwarded. Accepts `nodes_pool=None` so the SAME spy is
+    runnable against BOTH the pre-fix code (which never passes `nodes_pool`)
+    and the post-fix code (which does) — the load-bearing RED-then-green
+    regression below depends on that."""
+    def spy(genome, eval_cfg, *, seeds, spot_pool, kernel_repo_root, results_path, nodes_pool=None):
+        captured["scenario_id"] = eval_cfg.scenario_id
+        captured["spot_pool"] = spot_pool
+        captured["nodes_pool"] = nodes_pool
+        return _multi_result(eval_cfg.scenario_id, [1.0, 2.0], ("GATHERING", 0))
+    return spy
+
+
+def test_mining_shaped_spot_pool_never_reaches_a_fisher_eval():
+    """THE load-bearing regression — written to fail RED against the PRE-FIX
+    code, before the fix landed. A mining-shaped `spot_pool` handed to a
+    FISHER genome's `evaluate_genome` reached the fisher's eval-cfg-building
+    call unconditionally in the pre-fix code (`effective_spot_pool = spot_pool
+    if spot_pool is not None else cfg.spot_pool`, with no profession check) —
+    the exact leak that (plausibly) sent PHASE6.md item 6's fisher genomes to a
+    Minoc mining coordinate. After the fix, `evaluate_genome`'s `is_fishing`
+    branch resolves a fisher's pool ONLY from the fishing-specific fields, so
+    the mining pool is never applied (here: no fishing pool given -> `None`)."""
+    g = _base_genome(profession="fisher")
+    cfg = evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None)
+    mining_pool = [(2567, 493), (2611, 474)]  # MINING_SPOTS-shaped
+    captured: dict = {}
+    evolve.evaluate_genome(g, cfg, n=0, eval_fn=_capture_pools_eval_fn(captured), spot_pool=mining_pool)
+
+    assert captured["scenario_id"] == "fishing"  # fisher -> fishing scenario
+    # The leak is gone: a mining-shaped spot_pool NEVER reaches a fisher eval.
+    assert captured["spot_pool"] != mining_pool
+    assert captured["spot_pool"] is None  # resolved from the (unset) fishing fields, not the mining pool
+
+
+def test_nodes_pool_never_reaches_a_miner_eval():
+    """The mirror of the defense-in-depth: a `nodes_pool` (or a
+    `cfg.nodes_pool`) passed while evaluating a MINER genome is FORCED to
+    `None` — it never reaches the eval-cfg-building call, whatever was passed.
+    `Mine`/`Fish` both read `ctx.memory["harvest_nodes"]` generically, so a
+    leaked mining `nodes_pool` would corrupt a mining eval's staging (target a
+    fixed water/ore tile instead of probing), not merely be inert — this is
+    why forcing it to `None` for a non-`nodes` scenario is load-bearing."""
+    g = _base_genome(profession="miner")
+    fishing_nodes = [((2865, 646, -5, 0),)]  # a FISHING water-node cluster, wrong for a miner
+    # Passed both ways it could arrive: the direct arg AND the cfg field.
+    cfg = evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None, nodes_pool=fishing_nodes)
+    captured: dict = {}
+    evolve.evaluate_genome(g, cfg, n=0, eval_fn=_capture_pools_eval_fn(captured), nodes_pool=fishing_nodes)
+
+    assert captured["scenario_id"] == "mining"
+    assert captured["nodes_pool"] is None  # forced None for a mining (non-nodes) scenario, by any path
+
+
+def test_fisher_genome_fishing_pool_and_nodes_pool_forwarded_and_rotate_index_aligned():
+    """A fisher genome's `fishing_spot_pool`/`nodes_pool` ARE forwarded, and
+    reach the eval-cfg-building call as the SAME index-aligned matched pairs
+    (mirrors the existing `spot_pool` passthrough for mining genomes) — the
+    other half of the routing fix: fishing pools get through, mining pools
+    don't."""
+    g = _base_genome(profession="fisher")
+    cfg = evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None)
+    stands = [(2869, 639), (2876, 636)]                       # FISHING_SPOTS[1..2] shore stands
+    nodes = [((2868, 638, -5, 0),), ((2873, 633, -5, 0),)]    # their matched water nodes
+    captured: dict = {}
+    evolve.evaluate_genome(
+        g, cfg, n=0, eval_fn=_capture_pools_eval_fn(captured),
+        fishing_spot_pool=stands, nodes_pool=nodes,
+        spot_pool=[(2567, 493)],  # a mining pool also present — must be ignored for a fisher
+    )
+
+    assert captured["scenario_id"] == "fishing"
+    assert captured["spot_pool"] == stands          # from fishing_spot_pool, NOT the mining spot_pool
+    assert captured["nodes_pool"] == nodes          # matched water nodes forwarded
+    assert len(captured["spot_pool"]) == len(captured["nodes_pool"])  # index-aligned pairs
+
+
+def test_fisher_genome_falls_back_to_cfg_fishing_fields_when_direct_args_none():
+    """When no per-genome `fishing_spot_pool`/`nodes_pool` is passed, a fisher
+    resolves them from the `EvolutionConfig` fields (the same
+    direct-arg-overrides-cfg precedence `spot_pool` already has for mining)."""
+    g = _base_genome(profession="fisher")
+    stands = [(2869, 639)]
+    nodes = [((2868, 638, -5, 0),)]
+    cfg = evolve.EvolutionConfig(
+        seeds_per_genome=2, kernel_repo_root=None, fishing_spot_pool=stands, nodes_pool=nodes,
+    )
+    captured: dict = {}
+    evolve.evaluate_genome(g, cfg, n=0, eval_fn=_capture_pools_eval_fn(captured))
+
+    assert captured["spot_pool"] == stands   # from cfg.fishing_spot_pool
+    assert captured["nodes_pool"] == nodes   # from cfg.nodes_pool
+
+
+def test_is_fishing_is_structural_not_a_profession_name_string():
+    """`is_fishing` keys off the scenario's own `nodes` field, never a
+    hardcoded profession string — proven by monkeypatching a THIRD, oddly-named
+    profession onto a `nodes`-bearing scenario: it routes as fishing (its
+    `nodes_pool` is honored) purely because its scenario has `nodes`, with zero
+    change to `evaluate_genome`. A future third profession is covered for free."""
+    from anima2.foundry import eval as eval_mod
+    # A made-up profession whose scenario is the existing (nodes-bearing) fishing one.
+    orig = dict(evolve.PROFESSION_SCENARIO)
+    try:
+        evolve.PROFESSION_SCENARIO["angler"] = "fishing"
+        assert eval_mod.SCENARIOS["fishing"].nodes is not None  # the structural fact routing relies on
+        g = _base_genome(profession="angler")
+        cfg = evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None)
+        stands = [(2869, 639)]
+        nodes = [((2868, 638, -5, 0),)]
+        captured: dict = {}
+        evolve.evaluate_genome(
+            g, cfg, n=0, eval_fn=_capture_pools_eval_fn(captured),
+            fishing_spot_pool=stands, nodes_pool=nodes,
+        )
+        assert captured["spot_pool"] == stands  # routed as fishing, structurally
+        assert captured["nodes_pool"] == nodes
+    finally:
+        evolve.PROFESSION_SCENARIO.clear()
+        evolve.PROFESSION_SCENARIO.update(orig)
+
+
+def test_new_evolution_config_fields_default_none_and_miner_path_unchanged():
+    """Regression pin: both new `EvolutionConfig` fields default `None`, and a
+    bare (mining) genome eval forwards `spot_pool` exactly as before with
+    `nodes_pool` forced `None` — the byte-for-byte no-op guarantee for every
+    existing caller."""
+    cfg = evolve.EvolutionConfig()
+    assert cfg.nodes_pool is None
+    assert cfg.fishing_spot_pool is None
+
+    g = _base_genome(profession="miner")
+    cfg2 = evolve.EvolutionConfig(seeds_per_genome=2, kernel_repo_root=None, spot_pool=[(2567, 493)])
+    captured: dict = {}
+    evolve.evaluate_genome(g, cfg2, n=0, eval_fn=_capture_pools_eval_fn(captured))
+    assert captured["spot_pool"] == [(2567, 493)]  # cfg.spot_pool still applies for a miner
+    assert captured["nodes_pool"] is None

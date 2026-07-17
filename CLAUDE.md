@@ -454,12 +454,39 @@ from 630), ruff clean. **Work breakdown written** — see
 6's loss (thread B) comes first, before closing the skill-ledger honesty gap
 and sharpening insight retrieval; the LLM-authored skill DSL stays
 explicitly out of scope, gated on item 2's own verdict — see PHASE7.md's
-intro. **Next:** Phase 7 item 1 — fix a profession-conditional
-pool-routing bug this design pass's own re-read of `evolve.py`/
-`live_evolve_gate.py` found (a fisher genome's session can land at a mining
-coordinate) and thread the fishing `nodes_pool` through `evolve.py`/
-`live_evolve_gate.py` (PHASE6.md item 6's own named follow-up), before item
-2's larger-budget rerun.
+intro.
+**Phase 7 item 1 — profession-conditional pool routing + fishing `nodes_pool`
+threading — is live-verified**: `EvolutionConfig` gains both-optional
+`nodes_pool`/`fishing_spot_pool` (default `None`, byte-for-byte no-op for every
+existing construction); the fix is pushed into `evaluate_genome` itself
+(defense-in-depth) — `is_fishing = SCENARIOS[scenario_id].nodes is not None` (a
+GENERIC structural check, never a hardcoded profession string) routes a fisher
+genome's pools from the fishing-specific fields, while a non-fishing genome
+resolves `spot_pool` as before AND has `nodes_pool` FORCED to `None` by any path
+(so a leaked `nodes_pool` can never corrupt a mining eval's staging — `Mine`/
+`Fish` both read `ctx.memory["harvest_nodes"]` generically). `default_eval_fn`
+gains a `nodes_pool=` passthrough into `run_eval_multi` (which has accepted it
+since item 4); `live_evolve_gate.py` gains `FISH_POOL=tuple(FISHING_SPOTS[:4])`,
+`_fish_window` (matched `(stand, nodes)` windows), `_prove_fish_spot_fairness`,
+and TWO independent cursors (the mining `cursor` advances only on miner rounds,
+a new `fish_cursor` only on fisher rounds), activating automatically under
+`--scenario-pool all`. The load-bearing regression was written RED-first against
+the pre-fix code (a mining-shaped `spot_pool` — `[(2567, 493), (2611, 474)]`, a
+Minoc coord — reached a fisher genome's eval-cfg call), confirmed failing, then
+made green. The live smoke gate (`--genomes 6 --scenario-pool all
+--cognition-provider stub`, real ServUO, fresh accounts) passed all five decisive
+checks via a fresh-subprocess readback of `data/eval_resultsphase7item1smoke.jsonl`
+(24 rows): every fishing row staged at a `FISHING_SPOTS[:4]` stand with its
+matched water node (all four stands appeared, `produce_value_rate` nonzero on all
+8 — no bank starved), never a mining coord; every mining row at `MINING_SPOTS[:4]`
+with `nodes=None`; both fairness proofs `True`. The decisive live moment: an EVO
+`op_profession` mutation swapped a miner elite into a fisher and staged it at
+fishing stands with matched water nodes, not the Minoc ridge it would have hit
+pre-fix. Comparative verdict `RANDOM WON` (margin −28) is expected/irrelevant at
+this 6-genome smoke budget — item 2 is the decisive larger-budget rerun. 648
+tests green (up from 637), ruff clean. **Next:** Phase 7 item 2 — the decisive
+evolution-vs-random redemption rerun at a larger (`--genomes 20`) budget,
+exercising item 1's fix at item 6's own full scale.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

@@ -31,7 +31,8 @@ is the *car*.
 ## Status
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
-637 tests green, ruff clean. The Python
+**Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
+threading) — live-verified.** 648 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live

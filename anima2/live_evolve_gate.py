@@ -67,12 +67,22 @@ from .foundry import evolve as evolve_mod
 from .foundry.archive import Archive
 from .foundry.eval import read_eval_results
 from .live_common import fresh_suffix, login_throttle, print_gate_verdict
-from .profession import MINING_SPOTS
+from .profession import FISHING_SPOTS, MINING_SPOTS
 
 #: The only four confirmed-viable mining spots (item 2/4's own precedent —
 #: `[4:]` are calibration dead ends, see PHASE4.md item 4's "Resolved" note
 #: and the `anima2-live-verification` memory note).
 POOL = tuple(MINING_SPOTS[:4])
+
+#: PHASE7.md item 1: the fishing counterpart to `POOL`, mirroring it exactly —
+#: the four `FISHING_SPOTS` entries with the strongest live track record
+#: (`[0]` is the scenario's own default and the spot PHASE6.md item 4's first,
+#: pre-rotation-fix run used; `[1..3]` are the three item 4's own rotated live
+#: gate confirmed produce real fish). `FISHING_SPOTS[4:8]` are untested in any
+#: live gate so far and are deliberately EXCLUDED (widening onto untested
+#: geometry is a named Phase 8+ risk, not silently done here). Each entry is a
+#: MATCHED `((stand_x, stand_y), (water_x, water_y, water_z))` pair.
+FISH_POOL = tuple(FISHING_SPOTS[:4])
 
 EVOLVE_ARCHIVE_NAME = "archive_evolve_gate.jsonl"
 RANDOM_ARCHIVE_NAME = "archive_random_gate.jsonl"
@@ -139,6 +149,60 @@ def _prove_spot_fairness(n_rounds: int, width: int) -> dict:
     return {"evo_spot_counts": evo_spots, "rand_spot_counts": rand_spots}
 
 
+def _fish_window(cursor: int, width: int) -> tuple[list[tuple[int, int]], list[tuple[tuple[int, int, int, int], ...]]]:
+    """The FISHING counterpart to `_spot_window` (PHASE7.md item 1): `width`
+    consecutive fishing spots from `FISH_POOL`, starting at `cursor mod
+    len(FISH_POOL)`, wrapping — returning MATCHED `(stand_window, nodes_window)`
+    lists (a fishing spot is a `((shore-stand), (water-node))` pair, so rotating
+    the stand alone isn't enough; the water node the agent actually casts at
+    must move with it — see `run_eval_multi`'s own `nodes_pool=` docstring).
+
+    Called with `cursor` advancing by exactly ONE per FISHER genome eval (its
+    own `fish_cursor`, independent of the mining cursor — see
+    `_run_interleaved`), NOT by `width`. The identical non-degenerate
+    wraparound arithmetic as `_spot_window`: advancing by 1 is coprime with the
+    4-spot pool for `width==2`, so both searches' fisher windows drift across
+    ALL FOUR fishing banks over the run rather than pinning to a fixed
+    partition (proven by `_prove_fish_spot_fairness`).
+
+    `nodes_window[i]` is a FULL `EvalConfig.nodes` value — a tuple CONTAINING one
+    4-tuple `(water_x, water_y, water_z, 0)` land-target node — exactly the shape
+    `live_eval_gate.py`'s own `FISH_NODES` builds and `run_eval_multi`'s
+    `nodes_pool=` consumes, index-aligned with `stand_window[i]`."""
+    stands: list[tuple[int, int]] = []
+    nodes: list[tuple[tuple[int, int, int, int], ...]] = []
+    for i in range(width):
+        stand, water = FISH_POOL[(cursor + i) % len(FISH_POOL)]
+        stands.append(stand)
+        nodes.append((water + (0,),))
+    return stands, nodes
+
+
+def _prove_fish_spot_fairness(n_rounds: int, width: int) -> dict:
+    """The fishing parallel to `_prove_spot_fairness` (PHASE7.md item 1) —
+    proves the identical `(cursor, width)` arithmetic property for
+    `_fish_window`/`FISH_POOL`: how many CALLS visit each fishing stand evenly
+    for BOTH searches, in isolation. `n_rounds` is `args.genomes` — an upper
+    bound on how many times either cursor could possibly advance (the
+    worst case: every round draws the same profession). It is deliberately NOT
+    a claim about how many of a live run's rounds turn out to be FISHER rounds
+    (stochastic, unknowable before the run) — just that the window arithmetic
+    itself is fair. Offline, no shard; asserted before any live eval runs."""
+    evo_spots: dict[tuple[int, int], int] = {stand: 0 for stand, _water in FISH_POOL}
+    rand_spots: dict[tuple[int, int], int] = {stand: 0 for stand, _water in FISH_POOL}
+    cursor = 0
+    for round_i in range(n_rounds):
+        stands, _nodes = _fish_window(cursor, width)
+        for stand in stands:
+            evo_spots[stand] += 1
+        cursor += 1
+        stands, _nodes = _fish_window(cursor, width)
+        for stand in stands:
+            rand_spots[stand] += 1
+        cursor += 1
+    return {"evo_fish_spot_counts": evo_spots, "rand_fish_spot_counts": rand_spots}
+
+
 def _prove_kill_switch_live(foundry_root: Path) -> bool:
     """A cheap, REAL (not mocked) live exercise of the kill switch: touches
     an actual `STOP` file on disk next to `foundry/evolve.py`, confirms
@@ -199,7 +263,16 @@ def _run_interleaved(args: argparse.Namespace) -> dict:
     foundry_root = Path(__file__).resolve().parent / "foundry"
     trajectory_evo: list[evolve_mod.EvolutionStepRecord] = []
     trajectory_rand: list[evolve_mod.EvolutionStepRecord] = []
+    # PHASE7.md item 1: TWO independent cursors, not one. Once mining and
+    # fishing genomes stop sharing one pool, leaving the mining cursor advancing
+    # on every round (including fisher rounds that no longer touch a mining spot
+    # at all) would silently distort the mining-only fairness proof by consuming
+    # cursor positions no mining eval actually used. The mining `cursor`
+    # advances only on miner rounds; the new `fish_cursor` only on fisher rounds.
+    # The genome's profession is known as soon as `step_fn(archive)` returns
+    # (before `evaluate_genome`), so the loop computes the right window per draw.
     cursor = 0
+    fish_cursor = 0
     halted_early = False
 
     for round_i in range(args.genomes):
@@ -212,13 +285,36 @@ def _run_interleaved(args: argparse.Namespace) -> dict:
                       f"after evo={len(trajectory_evo)} rand={len(trajectory_rand)} genomes")
                 halted_early = True
                 break
-            spot_pool = _spot_window(cursor, args.seeds)
-            cursor += 1
             login_throttle()
             candidate, operator = step_fn(archive)
-            candidate = evolve_mod.evaluate_genome(
-                candidate, cfg, n=round_i, eval_fn=evolve_mod.default_eval_fn, spot_pool=spot_pool,
-            )
+            # NOTE (forward-compat, review-flagged): this gate's own cursor
+            # dispatch is name-based ("fisher") while the SHIPPED routing in
+            # evaluate_genome is generic-structural (`is_fishing =
+            # SCENARIOS[id].nodes is not None`). They agree perfectly for
+            # today's {miner, fisher} pool. A future THIRD nodes-bearing
+            # profession would take this branch's mining path here (wrong
+            # cursor / a mining spot_pool passed) — but evaluate_genome would
+            # still route it structurally and IGNORE that pool (falling back to
+            # its own default node, no rotation): a fairness degradation for
+            # that future profession, never a mining-coord mis-stage. Widen
+            # this dispatch structurally when a third such profession lands.
+            if candidate.profession == "fisher":
+                fish_stands, fish_nodes = _fish_window(fish_cursor, args.seeds)
+                fish_cursor += 1
+                candidate = evolve_mod.evaluate_genome(
+                    candidate, cfg, n=round_i, eval_fn=evolve_mod.default_eval_fn,
+                    fishing_spot_pool=fish_stands, nodes_pool=fish_nodes,
+                )
+                spots_desc: object = fish_stands
+                nodes_desc: object = fish_nodes
+            else:
+                spot_pool = _spot_window(cursor, args.seeds)
+                cursor += 1
+                candidate = evolve_mod.evaluate_genome(
+                    candidate, cfg, n=round_i, eval_fn=evolve_mod.default_eval_fn, spot_pool=spot_pool,
+                )
+                spots_desc = spot_pool
+                nodes_desc = None
             result = archive.add(candidate)
             # Mirror into the canonical ledger under a FRESH id from
             # `archive_canon`'s own counter, never `candidate.id` as-is —
@@ -242,8 +338,9 @@ def _run_interleaved(args: argparse.Namespace) -> dict:
             )
             traj.append(rec)
             print(f"  [{which} round={round_i}] op={operator} genome={candidate.id} "
+                  f"prof={candidate.profession} "
                   f"dt={candidate.deliver_threshold} soc={candidate.sociability:.3f} "
-                  f"tier={candidate.cognition_tier} spots={spot_pool} "
+                  f"tier={candidate.cognition_tier} spots={spots_desc} nodes={nodes_desc} "
                   f"per_seed={[round(v, 3) for v in rec.per_seed_fitness]} "
                   f"fitness={rec.fitness:.3f} reliability={rec.reliability:.3f} "
                   f"cell={rec.cell} status={rec.insert_status}")
@@ -399,6 +496,25 @@ def main() -> None:
     )
     print(f"  spot_fairness_ok = {spot_fairness_ok}")
 
+    # PHASE7.md item 1: the fishing pool's own fairness proof — activates
+    # automatically under --scenario-pool all (the only mode that can draw a
+    # fisher genome); a --scenario-pool mining run never exercises it and its
+    # gate is byte-for-byte as before. Vacuously True otherwise.
+    fish_spot_fairness_ok = True
+    if args.scenario_pool == "all":
+        print(f"FISHING pool (stands): {tuple(stand for stand, _w in FISH_POOL)}")
+        print("--- offline FISH spot-fairness proof (no shard needed) ---")
+        fish_fairness = _prove_fish_spot_fairness(args.genomes, args.seeds)
+        print(f"  evo fish spot counts:  {fish_fairness['evo_fish_spot_counts']}")
+        print(f"  rand fish spot counts: {fish_fairness['rand_fish_spot_counts']}")
+        fish_spot_fairness_ok = (
+            len(set(fish_fairness["evo_fish_spot_counts"].values())) <= 2
+            and len(set(fish_fairness["rand_fish_spot_counts"].values())) <= 2
+            and all(c > 0 for c in fish_fairness["evo_fish_spot_counts"].values())
+            and all(c > 0 for c in fish_fairness["rand_fish_spot_counts"].values())
+        )
+        print(f"  fish_spot_fairness_ok = {fish_spot_fairness_ok}")
+
     foundry_root = Path(__file__).resolve().parent / "foundry"
     print("--- live kill-switch proof ---")
     kill_switch_ok = _prove_kill_switch_live(foundry_root)
@@ -496,14 +612,19 @@ def main() -> None:
           "4's own preference for a reported tie over a dressed-up win) — a False here at a small live "
           "budget is an EXPECTED, VALID outcome, not a failure of this script; see the printed verdict "
           "above for the actual margin/noise numbers.")
+    infra_flags: dict[str, bool] = {
+        "spot_fairness_design_ok": spot_fairness_ok,
+        "kill_switch_live_proven": kill_switch_ok,
+        "kernel_guard_offline_proven_live_skipped_per_item2_precedent": True,
+        "run_completed_without_early_halt": not run["halted_early"],
+        "per_cell_elites_recompute_matches": recompute_canon["all_match"],
+    }
+    # PHASE7.md item 1: under --scenario-pool all, the fishing pool's own
+    # fairness (its independent fish_cursor) must hold on its own terms too.
+    if args.scenario_pool == "all":
+        infra_flags["fish_spot_fairness_design_ok"] = fish_spot_fairness_ok
     print_gate_verdict(
-        {
-            "spot_fairness_design_ok": spot_fairness_ok,
-            "kill_switch_live_proven": kill_switch_ok,
-            "kernel_guard_offline_proven_live_skipped_per_item2_precedent": True,
-            "run_completed_without_early_halt": not run["halted_early"],
-            "per_cell_elites_recompute_matches": recompute_canon["all_match"],
-        },
+        infra_flags,
         label="INFRASTRUCTURE GATE",
         detail="the mechanics that must hold regardless of which search wins",
     )

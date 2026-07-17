@@ -118,7 +118,7 @@ from typing import Callable, Sequence
 from ..llm import _TIER_MODEL  # {tier: model} — cognition tier keys, single source of truth
 from ..skill_tuning import DELIVER_THRESHOLD_CANDIDATES
 from .archive import Archive, Genome, InsertResult
-from .eval import EvalConfig, MultiEvalResult, run_eval_multi
+from .eval import SCENARIOS, EvalConfig, MultiEvalResult, run_eval_multi
 
 # --- run guards (ported in spirit from v1 foundry/kernel/safety.py) --------
 
@@ -353,6 +353,7 @@ def default_eval_fn(
     *,
     seeds: int,
     spot_pool: Sequence[tuple[int, int]] | None,
+    nodes_pool: Sequence[tuple[tuple[int, int, int, int], ...]] | None = None,
     kernel_repo_root: str | Path | None,
     results_path: str | Path | None,
 ) -> MultiEvalResult:
@@ -361,13 +362,17 @@ def default_eval_fn(
     genome's axes are already baked into `eval_cfg` by `evaluate_genome`
     (`sociability`/`cognition_tier` since PHASE6.md item 5, staged live when
     `EvolutionConfig.cognition_provider` is set; `deliver_threshold` still has
-    no scenario to bite on — see this module's docstring). Tests substitute a
+    no scenario to bite on — see this module's docstring). `nodes_pool`
+    (PHASE7.md item 1) is forwarded unchanged into `run_eval_multi`, which has
+    accepted it since PHASE6.md item 4 to rotate the fishing water node in
+    lockstep with `spot_pool`'s shore stand — this is the last mile of the
+    plumbing this module's own docstring named as missing. Tests substitute a
     stub with this SAME signature (genome-aware, so an offline synthetic
     landscape CAN key off every axis) — see `tests/test_foundry_evolve.py`'s
     convergence test.
     """
     return run_eval_multi(
-        eval_cfg, seeds=seeds, spot_pool=spot_pool,
+        eval_cfg, seeds=seeds, spot_pool=spot_pool, nodes_pool=nodes_pool,
         kernel_repo_root=kernel_repo_root, results_path=results_path,
     )
 
@@ -414,6 +419,19 @@ class EvolutionConfig:
     #: `PROFESSION_SCENARIO`; `("miner",)` (`--scenario-pool mining`)
     #: reproduces Phase 5 item 4's original mining-only gate byte for byte.
     profession_pool: Sequence[str] | None = None
+    #: PHASE7.md item 1 — the FISHING counterparts to `spot_pool`, threaded only
+    #: for a fishing (nodes-bearing) scenario. `fishing_spot_pool` is the
+    #: shore-stand coords (`FISHING_SPOTS[i][0]`-shaped); `nodes_pool` the
+    #: matched water nodes (`Scenario.nodes`-shaped — the exact shape
+    #: `run_eval_multi` already accepts, PHASE6.md item 4). Fishing needs its
+    #: OWN spot field, not `spot_pool` reused for both professions — reusing one
+    #: field for both is exactly PHASE6.md item 6's bug. Both default `None`, so
+    #: every existing `EvolutionConfig()` construction (every Phase 5/6 test and
+    #: gate) is byte-for-byte unchanged; `evaluate_genome` resolves them ONLY for
+    #: a fishing genome and FORCES `nodes_pool` to `None` for a mining one
+    #: (defense-in-depth — see its own docstring).
+    nodes_pool: Sequence[tuple[tuple[int, int, int, int], ...]] | None = None
+    fishing_spot_pool: Sequence[tuple[int, int]] | None = None
 
 
 @dataclass
@@ -452,6 +470,8 @@ def evaluate_genome(
     n: int,
     eval_fn: EvalFn = default_eval_fn,
     spot_pool: Sequence[tuple[int, int]] | None = None,
+    nodes_pool: Sequence[tuple[tuple[int, int, int, int], ...]] | None = None,
+    fishing_spot_pool: Sequence[tuple[int, int]] | None = None,
 ) -> Genome:
     """Runs `cfg.seeds_per_genome` seeds of `g`'s scenario (via
     `PROFESSION_SCENARIO`), and fills in `g.eval` with the shape
@@ -481,6 +501,24 @@ def evaluate_genome(
     needs (a fixed, static `cfg.spot_pool` can't express "this specific
     genome, wherever it falls in a shared E/R sequence, gets THIS window of
     the pool" — see that script's own module docstring).
+
+    **PHASE7.md item 1 — profession-conditional pool routing, pushed into this
+    lowest shared function (defense-in-depth).** `is_fishing` is a GENERIC
+    STRUCTURAL check — the scenario's own `nodes` field is set — never a
+    hardcoded `"fisher"`/`"fishing"` string, so a future third `nodes`-bearing
+    scenario is covered automatically and a future `Mine`-shaped scenario
+    without `nodes` is excluded automatically. For a fishing genome the pools
+    resolve ONLY from the fishing-specific fields (`fishing_spot_pool`/
+    `nodes_pool`, falling back to `cfg.fishing_spot_pool`/`cfg.nodes_pool`); a
+    mining-shaped `spot_pool`/`cfg.spot_pool` still reaching this call for a
+    fisher is silently ignored (the correct pool was resolved elsewhere — the
+    routing bug that sent PHASE6.md item 6's fishers to a Minoc coordinate).
+    For a NON-fishing genome, `effective_spot_pool` resolves exactly as before
+    AND `effective_nodes_pool` is FORCED to `None` regardless of what was
+    passed — the actual defense-in-depth half: a `nodes_pool` can now never
+    reach a mining eval by any call path (`Mine`/`Fish` both read
+    `ctx.memory["harvest_nodes"]` generically, so a leaked `nodes_pool` would
+    silently corrupt a mining eval's staging, not just be inert).
     """
     scenario_id = PROFESSION_SCENARIO.get(g.profession, next(iter(PROFESSION_SCENARIO.values())))
     # PHASE6.md item 5: thread the genome's own `cognition_tier`/`sociability`
@@ -497,9 +535,20 @@ def evaluate_genome(
         cognition_tier=g.cognition_tier,
         sociability=g.sociability,
     )
-    effective_spot_pool = spot_pool if spot_pool is not None else cfg.spot_pool
+    # PHASE7.md item 1: route by the scenario's own STRUCTURE (does it have a
+    # `nodes` cluster?), never by the profession NAME — see this function's
+    # docstring.
+    is_fishing = SCENARIOS[scenario_id].nodes is not None
+    if is_fishing:
+        effective_spot_pool = fishing_spot_pool if fishing_spot_pool is not None else cfg.fishing_spot_pool
+        effective_nodes_pool = nodes_pool if nodes_pool is not None else cfg.nodes_pool
+    else:
+        effective_spot_pool = spot_pool if spot_pool is not None else cfg.spot_pool
+        # Forced None: a nodes_pool must never reach a mining (non-nodes) eval.
+        effective_nodes_pool = None
     multi = eval_fn(
         g, eval_cfg, seeds=cfg.seeds_per_genome, spot_pool=effective_spot_pool,
+        nodes_pool=effective_nodes_pool,
         kernel_repo_root=cfg.kernel_repo_root, results_path=cfg.results_path,
     )
     results = sorted(multi.results, key=lambda r: r.score)
