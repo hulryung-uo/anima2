@@ -22,7 +22,7 @@ def main():
     emit(
         {
             "event": "ready",
-            "schema_version": 7,
+            "schema_version": 8,
             "player": {
                 "serial": 1,
                 "name": "Fake",
@@ -41,9 +41,13 @@ def main():
                 {
                     "ok": True,
                     "obs": {
-                        "player": {"serial": 1, "name": "Fake",
-                                   "pos": {"x": px, "y": py, "z": 0},
-                                   "hits": 80, "hits_max": 80},
+                        "player": {
+                            "serial": 1,
+                            "name": "Fake",
+                            "pos": {"x": px, "y": py, "z": 0},
+                            "hits": 80,
+                            "hits_max": 80,
+                        },
                         "mobiles": [],
                         "items": [],
                         "new_journal": [{"name": "System", "text": f"acted {len(acted)}"}],

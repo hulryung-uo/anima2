@@ -64,10 +64,14 @@ def test_buy_items_json_shape_matches_json_rs():
     # amount] pairs (see `json.rs`'s `shop_items_from_json`, which also accepts
     # {"serial":..,"amount":..} but this is what `to_dict` emits).
     assert BuyItems(vendor=5, items=[(1, 2)]).to_dict() == {
-        "type": "BuyItems", "vendor": 5, "items": [[1, 2]],
+        "type": "BuyItems",
+        "vendor": 5,
+        "items": [[1, 2]],
     }
     assert SellItems(vendor=5, items=[(1, 3)]).to_dict() == {
-        "type": "SellItems", "vendor": 5, "items": [[1, 3]],
+        "type": "SellItems",
+        "vendor": 5,
+        "items": [[1, 3]],
     }
 
 
@@ -84,9 +88,7 @@ def test_observation_skills_parsed():
 
 
 def test_player_survival_state_roundtrip_and_backward_defaults():
-    player = PlayerView.from_dict(
-        {"serial": 1, "body": 0x192, "poisoned": True, "dead": True}
-    )
+    player = PlayerView.from_dict({"serial": 1, "body": 0x192, "poisoned": True, "dead": True})
     assert player.body == 0x192
     assert player.poisoned is True
     assert player.dead is True
@@ -136,7 +138,8 @@ def test_observation_shop_buy_roundtrip():
         {
             "player": {"serial": 1},
             "shop_buy": {
-                "vendor": 0xAAA, "container": 0xBBB,
+                "vendor": 0xAAA,
+                "container": 0xBBB,
                 "entries": [{"price": 16, "name": "iron ingot"}, {"price": 14, "name": "tongs"}],
             },
         }
@@ -158,7 +161,14 @@ def test_observation_shop_sell_roundtrip():
             "shop_sell": {
                 "vendor": 0xCCC,
                 "items": [
-                    {"serial": 0x700, "graphic": 0x0F52, "hue": 0, "amount": 5, "price": 10, "name": "dagger"},
+                    {
+                        "serial": 0x700,
+                        "graphic": 0x0F52,
+                        "hue": 0,
+                        "amount": 5,
+                        "price": 10,
+                        "name": "dagger",
+                    },
                 ],
             },
         }
@@ -167,7 +177,13 @@ def test_observation_shop_sell_roundtrip():
     assert obs.shop_sell.vendor == 0xCCC
     assert len(obs.shop_sell.items) == 1
     item = obs.shop_sell.items[0]
-    assert (item.serial, item.graphic, item.amount, item.price, item.name) == (0x700, 0x0F52, 5, 10, "dagger")
+    assert (item.serial, item.graphic, item.amount, item.price, item.name) == (
+        0x700,
+        0x0F52,
+        5,
+        10,
+        "dagger",
+    )
     assert Observation.from_dict({"player": {}}).shop_sell is None
 
 
@@ -204,7 +220,10 @@ def test_observation_corpse_of_roundtrip():
     obs = Observation.from_dict(
         {
             "player": {"serial": 1},
-            "corpse_of": [{"corpse": 0x4001, "killed": 0x2001}, {"corpse": 0x4002, "killed": 0x2002}],
+            "corpse_of": [
+                {"corpse": 0x4001, "killed": 0x2001},
+                {"corpse": 0x4002, "killed": 0x2002},
+            ],
         }
     )
     assert len(obs.corpse_of) == 2
@@ -222,7 +241,10 @@ def test_observation_corpse_equip_roundtrip():
         {
             "player": {"serial": 1},
             "corpse_equip": [
-                {"corpse": 0x4001, "entries": [{"layer": 1, "serial": 0x9001}, {"layer": 7, "serial": 0x9002}]},
+                {
+                    "corpse": 0x4001,
+                    "entries": [{"layer": 1, "serial": 0x9001}, {"layer": 7, "serial": 0x9002}],
+                },
             ],
         }
     )
@@ -245,13 +267,52 @@ def test_observation_without_corpse_keys_still_parses():
     assert obs.corpse_equip == []
 
 
+def test_observation_waypoints_and_map_index_roundtrip():
+    obs = Observation.from_dict(
+        {
+            "player": {"serial": 1},
+            "map_index": 1,
+            "waypoints": [
+                {
+                    "serial": 0x1234,
+                    "pos": {"x": 105, "y": 98, "z": -7},
+                    "map": 1,
+                    "kind": 6,
+                    "ignore_object": True,
+                    "cliloc": 1078035,
+                    "name": "Britain Healer",
+                    "distance": 5,
+                }
+            ],
+        }
+    )
+
+    assert obs.map_index == 1
+    assert len(obs.waypoints) == 1
+    waypoint = obs.waypoints[0]
+    assert waypoint.serial == 0x1234
+    assert waypoint.pos.x == 105
+    assert waypoint.pos.y == 98
+    assert waypoint.pos.z == -7
+    assert waypoint.map == 1
+    assert waypoint.kind == 6
+    assert waypoint.ignore_object is True
+    assert waypoint.cliloc == 1078035
+    assert waypoint.name == "Britain Healer"
+    assert waypoint.distance == 5
+
+
+def test_observation_without_waypoint_keys_uses_backward_compatible_defaults():
+    obs = Observation.from_dict({"player": {"serial": 1}})
+    assert obs.waypoints == []
+    assert obs.map_index == 0
+
+
 def test_observation_from_dict():
     obs = Observation.from_dict(
         {
             "player": {"serial": 1, "name": "Anima", "pos": {"x": 10, "y": 20, "z": 0}, "hits": 50},
-            "mobiles": [
-                {"serial": 2, "name": "rat", "pos": {"x": 12, "y": 20}, "distance": 2}
-            ],
+            "mobiles": [{"serial": 2, "name": "rat", "pos": {"x": 12, "y": 20}, "distance": 2}],
             "items": [],
             "new_journal": [{"name": "System", "text": "hello"}],
         }

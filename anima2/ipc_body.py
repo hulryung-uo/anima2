@@ -11,7 +11,7 @@ Wire protocol (one JSON object per line), defined by `anima-net/src/bin/agent.rs
   → {"cmd":"pump","ms":N}        ← {"ok":true,"applied":N}
   → {"cmd":"quit"}               ← {"ok":true,"bye":true}
 First line emitted by the bridge:
-{"event":"ready","schema_version":7,"player":{...}}.
+{"event":"ready","schema_version":8,"player":{...}}.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import fcntl
 
 from .contract import Action, Observation
 
-SUPPORTED_SCHEMA_VERSION = 7
+SUPPORTED_SCHEMA_VERSION = 8
 
 
 def default_bridge_path() -> Path:
@@ -248,16 +248,12 @@ class IpcBody:
 
     def _write_line(self, obj: dict[str, Any]) -> None:
         if not self.connected:
-            raise IpcTransportError(
-                "bridge process is not running", request_sent=False
-            )
+            raise IpcTransportError("bridge process is not running", request_sent=False)
         try:
             self._stdin.write(json.dumps(obj) + "\n")
             self._stdin.flush()
         except (BrokenPipeError, ConnectionError, OSError) as exc:
-            raise IpcTransportError(
-                f"bridge write failed: {exc}", request_sent=None
-            ) from exc
+            raise IpcTransportError(f"bridge write failed: {exc}", request_sent=None) from exc
 
     def _read_line(self) -> dict[str, Any]:
         timeout = self._response_timeout_s
@@ -266,9 +262,7 @@ class IpcBody:
         try:
             value = self._lines.get(timeout=timeout)
         except queue.Empty:
-            raise IpcTransportError(
-                f"bridge response timed out after {timeout:g}s"
-            ) from None
+            raise IpcTransportError(f"bridge response timed out after {timeout:g}s") from None
         if value is _EOF:
             raise IpcTransportError("bridge closed the connection (EOF)")
         if isinstance(value, BaseException):
@@ -341,7 +335,7 @@ class RestartPolicy:
         if self.immediate_first and attempt == 1:
             return 0.0
         exponent = attempt - 2 if self.immediate_first else attempt - 1
-        return min(self.initial_backoff_s * (2 ** exponent), self.max_backoff_s)
+        return min(self.initial_backoff_s * (2**exponent), self.max_backoff_s)
 
 
 _RECOVERABLE = (IpcTransportError, BrokenPipeError, ConnectionError, OSError)

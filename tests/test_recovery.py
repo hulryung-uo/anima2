@@ -8,6 +8,7 @@ from anima2.contract import (
     GumpResponse,
     GumpView,
     ItemView,
+    MobileView,
     Observation,
     PickUp,
     PlayerView,
@@ -15,6 +16,9 @@ from anima2.contract import (
     TargetCancel,
     TargetCursor,
     Use,
+    WAYPOINT_CORPSE,
+    WAYPOINT_RESURRECTION,
+    WaypointView,
     WalkTo,
 )
 from anima2.mock_body import MockBody
@@ -47,8 +51,17 @@ def _free_resurrection_gump():
 
 
 def _ctx(
-    *, dead=False, items=(), gumps=(), pending=None, memory=None, corpse_equip=(),
+    *,
+    dead=False,
+    items=(),
+    gumps=(),
+    pending=None,
+    memory=None,
+    corpse_equip=(),
     pos=Position(100, 100, 0),
+    waypoints=(),
+    map_index=0,
+    mobiles=(),
 ):
     player = PlayerView(
         serial=PLAYER,
@@ -64,6 +77,9 @@ def _ctx(
         gumps=list(gumps),
         pending_target=pending,
         corpse_equip=list(corpse_equip),
+        waypoints=list(waypoints),
+        map_index=map_index,
+        mobiles=list(mobiles),
     )
     return SkillContext(
         obs=obs,
@@ -81,6 +97,37 @@ def _attribution_memory():
         "death_last_equipped": {WORN},
         "death_last_pack_owned": set(),
     }
+
+
+def _waypoint(
+    serial,
+    x,
+    y,
+    *,
+    kind=WAYPOINT_RESURRECTION,
+    map_index=0,
+    ignore_object=False,
+):
+    return WaypointView(
+        serial=serial,
+        pos=Position(x, y, 0),
+        map=map_index,
+        kind=kind,
+        ignore_object=ignore_object,
+    )
+
+
+def _mobile(serial, x, y):
+    return MobileView(
+        serial=serial,
+        name="healer",
+        pos=Position(x, y, 0),
+        body=0x190,
+        notoriety=1,
+        hits=100,
+        hits_max=100,
+        distance=max(abs(x - 100), abs(y - 100)),
+    )
 
 
 def test_death_entry_stops_old_async_route_before_any_other_action():
@@ -132,6 +179,7 @@ def test_healer_target_reentry_dance_exits_then_crosses_back_in():
     skill = RecoverDeath(resurrection_target=(105, 100))
     memory = {
         RecoverDeath._ROUTE_STOPPED: True,
+        RecoverDeath._RES_TARGET: (0, 105, 100, 0),
         RecoverDeath._RES_ROUTE_SENT: True,
         RecoverDeath._RES_INSIDE_WAIT: 3,
     }
@@ -142,6 +190,256 @@ def test_healer_target_reentry_dance_exits_then_crosses_back_in():
     reentering = skill.step(_ctx(dead=True, pos=Position(101, 100, 0), memory=memory))
     assert isinstance(reentering.action, WalkTo)
     assert (reentering.action.x, reentering.action.y) == (105, 100)
+
+
+def test_dynamic_healer_selects_nearest_same_map_resurrection_waypoint():
+    memory = {RecoverDeath._ROUTE_STOPPED: True}
+    waypoints = [
+        _waypoint(30, 120, 100),
+        _waypoint(20, 106, 100),
+        _waypoint(10, 101, 100, kind=WAYPOINT_CORPSE),
+        _waypoint(5, 102, 100, map_index=1),
+    ]
+
+    result = RecoverDeath().step(_ctx(dead=True, waypoints=waypoints, map_index=0, memory=memory))
+
+    assert isinstance(result.action, WalkTo)
+    assert (result.action.x, result.action.y) == (106, 100)
+    assert memory[RecoverDeath._RES_TARGET] == (20, 106, 100, 0)
+
+
+def test_dynamic_healer_distance_tie_is_deterministic_by_serial():
+    memory = {RecoverDeath._ROUTE_STOPPED: True}
+    waypoints = [_waypoint(20, 105, 100), _waypoint(10, 100, 105)]
+
+    result = RecoverDeath().step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+
+    assert isinstance(result.action, WalkTo)
+    assert (result.action.x, result.action.y) == (100, 105)
+    assert memory[RecoverDeath._RES_TARGET][0] == 10
+
+
+def test_dynamic_healer_uses_live_mobile_position_unless_waypoint_says_ignore_object():
+    skill = RecoverDeath()
+    serial = 0x1234
+    waypoint = _waypoint(serial, 130, 100)
+    live_mobile = _mobile(serial, 108, 100)
+
+    follows_mobile = skill.step(
+        _ctx(
+            dead=True,
+            waypoints=[waypoint],
+            mobiles=[live_mobile],
+            memory={RecoverDeath._ROUTE_STOPPED: True},
+        )
+    )
+    assert isinstance(follows_mobile.action, WalkTo)
+    assert (follows_mobile.action.x, follows_mobile.action.y) == (108, 100)
+
+    ignored = skill.step(
+        _ctx(
+            dead=True,
+            waypoints=[_waypoint(serial, 130, 100, ignore_object=True)],
+            mobiles=[live_mobile],
+            memory={RecoverDeath._ROUTE_STOPPED: True},
+        )
+    )
+    assert isinstance(ignored.action, WalkTo)
+    assert (ignored.action.x, ignored.action.y) == (130, 100)
+
+
+def test_dynamic_healer_coordinate_refresh_resets_route_and_reissues_walk():
+    skill = RecoverDeath()
+    memory = {RecoverDeath._ROUTE_STOPPED: True}
+
+    first = skill.step(_ctx(dead=True, waypoints=[_waypoint(10, 110, 100)], memory=memory))
+    assert isinstance(first.action, WalkTo)
+
+    refreshed = skill.step(_ctx(dead=True, waypoints=[_waypoint(10, 115, 101)], memory=memory))
+    assert isinstance(refreshed.action, WalkTo)
+    assert (refreshed.action.x, refreshed.action.y) == (115, 101)
+    assert memory[RecoverDeath._RES_TARGET] == (10, 115, 101, 0)
+
+
+def test_moving_healer_refresh_preserves_candidate_budget_and_rotates():
+    skill = RecoverDeath()
+    skill.resurrection_route_attempts = 2
+    memory = {RecoverDeath._ROUTE_STOPPED: True}
+
+    first = skill.step(_ctx(dead=True, waypoints=[_waypoint(10, 110, 100)], memory=memory))
+    assert isinstance(first.action, WalkTo)
+    assert memory[RecoverDeath._RES_ROUTE_ATTEMPTS] == 1
+
+    moved = skill.step(_ctx(dead=True, waypoints=[_waypoint(10, 111, 100)], memory=memory))
+    assert isinstance(moved.action, WalkTo)
+    assert memory[RecoverDeath._RES_ROUTE_ATTEMPTS] == 2
+
+    exhausted = skill.step(
+        _ctx(
+            dead=True,
+            waypoints=[_waypoint(10, 112, 100), _waypoint(20, 120, 100)],
+            memory=memory,
+        )
+    )
+    assert exhausted.action is None
+    assert memory[RecoverDeath._RES_FAILED][10] > memory[RecoverDeath._RES_CLOCK]
+
+    rotated = skill.step(
+        _ctx(
+            dead=True,
+            waypoints=[_waypoint(10, 112, 100), _waypoint(20, 120, 100)],
+            memory=memory,
+        )
+    )
+    assert isinstance(rotated.action, WalkTo)
+    assert (rotated.action.x, rotated.action.y) == (120, 100)
+
+
+def test_dynamic_healer_cache_survives_empty_snapshot_but_not_map_change():
+    skill = RecoverDeath()
+    memory = {RecoverDeath._ROUTE_STOPPED: True}
+    first = skill.step(_ctx(dead=True, waypoints=[_waypoint(10, 110, 100)], memory=memory))
+    assert isinstance(first.action, WalkTo)
+
+    # A replacement IPC bridge starts with an empty waypoint world because the
+    # shard does not resend 0xE5 on login. Keep the same death-episode target.
+    empty = skill.step(_ctx(dead=True, waypoints=[], memory=memory))
+    assert empty.action is None
+    assert memory[RecoverDeath._RES_TARGET] == (10, 110, 100, 0)
+
+    unrelated = skill.step(
+        _ctx(
+            dead=True,
+            waypoints=[_waypoint(99, 100, 100, kind=WAYPOINT_CORPSE)],
+            memory=memory,
+        )
+    )
+    assert unrelated.action is None
+    assert memory[RecoverDeath._RES_TARGET] == (10, 110, 100, 0)
+
+    changed_map = skill.step(_ctx(dead=True, waypoints=[], map_index=1, memory=memory))
+    assert changed_map.action is None
+    assert RecoverDeath._RES_TARGET not in memory
+
+
+def test_no_healer_waypoint_remains_quarantined_without_packet_spam():
+    skill = RecoverDeath()
+    memory = {RecoverDeath._ROUTE_STOPPED: True}
+
+    results = [skill.step(_ctx(dead=True, memory=memory)) for _ in range(5)]
+
+    assert all(result.status is Status.RUNNING for result in results)
+    assert all(result.action is None for result in results)
+
+
+def test_stalled_dynamic_healer_is_cooled_down_and_next_candidate_is_selected():
+    skill = RecoverDeath()
+    skill.resurrection_route_stall_ticks = 1
+    skill.resurrection_route_attempts = 1
+    memory = {RecoverDeath._ROUTE_STOPPED: True}
+    waypoints = [_waypoint(10, 110, 100), _waypoint(20, 120, 100)]
+
+    first = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert isinstance(first.action, WalkTo)
+    assert (first.action.x, first.action.y) == (110, 100)
+
+    rejected = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert rejected.action is None
+    assert memory[RecoverDeath._RES_FAILED][10] > memory[RecoverDeath._RES_CLOCK]
+
+    rotated = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert isinstance(rotated.action, WalkTo)
+    assert (rotated.action.x, rotated.action.y) == (120, 100)
+    assert memory[RecoverDeath._RES_TARGET][0] == 20
+
+
+def test_exhausted_healer_reentry_is_cooled_down_and_rotates_candidate():
+    skill = RecoverDeath()
+    memory = {
+        RecoverDeath._ROUTE_STOPPED: True,
+        RecoverDeath._RES_TARGET: (10, 101, 100, 0),
+        RecoverDeath._RES_INSIDE_WAIT: 3,
+        RecoverDeath._RES_REENTRY_ATTEMPTS: skill.resurrection_reentry_attempts,
+    }
+    waypoints = [_waypoint(10, 101, 100), _waypoint(20, 110, 100)]
+
+    rejected = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert rejected.action is None
+    assert memory[RecoverDeath._RES_FAILED][10] > memory[RecoverDeath._RES_CLOCK]
+
+    rotated = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert isinstance(rotated.action, WalkTo)
+    assert (rotated.action.x, rotated.action.y) == (110, 100)
+    assert memory[RecoverDeath._RES_TARGET][0] == 20
+
+
+def test_blocked_healer_exit_leg_is_bounded_and_rotates_candidate():
+    skill = RecoverDeath()
+    skill.resurrection_route_stall_ticks = 1
+    skill.resurrection_route_attempts = 1
+    memory = {
+        RecoverDeath._ROUTE_STOPPED: True,
+        RecoverDeath._RES_TARGET: (10, 101, 100, 0),
+        RecoverDeath._RES_INSIDE_WAIT: 3,
+    }
+    waypoints = [_waypoint(10, 101, 100), _waypoint(20, 110, 100)]
+
+    exiting = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert isinstance(exiting.action, WalkTo)
+    assert (exiting.action.x, exiting.action.y) == (95, 100)
+
+    rejected = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert rejected.action is None
+    assert memory[RecoverDeath._RES_FAILED][10] > memory[RecoverDeath._RES_CLOCK]
+
+    rotated = skill.step(_ctx(dead=True, waypoints=waypoints, memory=memory))
+    assert isinstance(rotated.action, WalkTo)
+    assert (rotated.action.x, rotated.action.y) == (110, 100)
+
+
+def test_blocked_healer_reentry_leg_is_bounded_and_rotates_candidate():
+    skill = RecoverDeath()
+    skill.resurrection_route_stall_ticks = 1
+    skill.resurrection_route_attempts = 1
+    memory = {
+        RecoverDeath._ROUTE_STOPPED: True,
+        RecoverDeath._RES_TARGET: (10, 105, 100, 0),
+        RecoverDeath._RES_REENTRY_PHASE: "exit",
+    }
+    waypoints = [_waypoint(10, 105, 100), _waypoint(20, 120, 100)]
+
+    reentering = skill.step(
+        _ctx(
+            dead=True,
+            pos=Position(101, 100, 0),
+            waypoints=waypoints,
+            memory=memory,
+        )
+    )
+    assert isinstance(reentering.action, WalkTo)
+    assert (reentering.action.x, reentering.action.y) == (105, 100)
+
+    rejected = skill.step(
+        _ctx(
+            dead=True,
+            pos=Position(101, 100, 0),
+            waypoints=waypoints,
+            memory=memory,
+        )
+    )
+    assert rejected.action is None
+    assert memory[RecoverDeath._RES_FAILED][10] > memory[RecoverDeath._RES_CLOCK]
+
+    rotated = skill.step(
+        _ctx(
+            dead=True,
+            pos=Position(101, 100, 0),
+            waypoints=waypoints,
+            memory=memory,
+        )
+    )
+    assert isinstance(rotated.action, WalkTo)
+    assert (rotated.action.x, rotated.action.y) == (120, 100)
 
 
 def test_alive_observation_confirms_resurrection_and_arms_corpse_recovery():
@@ -159,9 +457,7 @@ def test_unique_strongly_attributed_corpse_is_opened():
     memory = _attribution_memory()
     corpse = _item(CORPSE, 0x2006, 0x190)
     evidence = CorpseEquip(CORPSE, [CorpseEquipEntry(layer=2, serial=WORN)])
-    result = RecoverDeath().step(
-        _ctx(items=[corpse], corpse_equip=[evidence], memory=memory)
-    )
+    result = RecoverDeath().step(_ctx(items=[corpse], corpse_equip=[evidence], memory=memory))
     assert isinstance(result.action, Use) and result.action.serial == CORPSE
 
 
@@ -186,6 +482,70 @@ def test_body_and_death_position_without_serial_evidence_fail_closed():
     assert RecoverDeath._CORPSE_SERIAL not in memory
 
 
+def test_corpse_waypoint_is_navigation_hint_not_ownership_evidence():
+    memory = _attribution_memory()
+    memory[RecoverDeath._ROUTE_STOPPED] = True
+    skill = RecoverDeath()
+
+    dead = skill.step(
+        _ctx(
+            dead=True,
+            waypoints=[_waypoint(CORPSE, 100, 100, kind=WAYPOINT_CORPSE)],
+            memory=memory,
+        )
+    )
+    assert dead.action is None
+    assert memory[RecoverDeath._CORPSE_HINT] == (CORPSE, 100, 100, 0)
+
+    # Confirm resurrection. RecoverDeath retains the location hint across this
+    # transition, but still requires corpse equipment/content serial evidence.
+    stopped = skill.step(_ctx(pos=Position(120, 100, 0), memory=memory))
+    assert isinstance(stopped.action, WalkTo)
+    finished = skill.step(_ctx(pos=Position(120, 100, 0), memory=memory))
+    assert finished.status is Status.SUCCESS
+
+    result = skill.step(
+        _ctx(
+            pos=Position(120, 100, 0),
+            memory=memory,
+        )
+    )
+
+    assert isinstance(result.action, WalkTo)
+    assert (result.action.x, result.action.y) == (100, 100)
+    assert RecoverDeath._CORPSE_SERIAL not in memory
+
+
+def test_stale_corpse_waypoint_away_from_frozen_death_position_is_ignored():
+    memory = _attribution_memory()
+    memory[RecoverDeath._CORPSE_HINT] = (CORPSE, 150, 150, 0)
+
+    result = RecoverDeath().step(_ctx(pos=Position(120, 100, 0), memory=memory))
+
+    assert isinstance(result.action, WalkTo)
+    assert (result.action.x, result.action.y) == (100, 100)
+    assert RecoverDeath._CORPSE_SERIAL not in memory
+
+
+def test_corpse_navigation_route_reissue_and_failure_are_bounded():
+    skill = RecoverDeath()
+    skill.route_stall_timeout_ticks = 1
+    skill.corpse_route_attempts = 2
+    memory = _attribution_memory()
+
+    actions = []
+    result = None
+    for _ in range(5):
+        result = skill.step(_ctx(pos=Position(120, 100, 0), memory=memory))
+        actions.append(result.action)
+
+    assert sum(isinstance(action, WalkTo) for action in actions) == 2
+    assert result is not None and result.status is Status.FAILURE
+    assert RecoverDeath._CORPSE_PENDING not in memory
+    assert RecoverDeath._ROUTE_ATTEMPTS not in memory
+    assert RecoverDeath._CORPSE_HINT not in memory
+
+
 def test_ambiguous_matching_corpses_fail_closed_without_opening_either():
     memory = _attribution_memory()
     corpses = [
@@ -196,9 +556,7 @@ def test_ambiguous_matching_corpses_fail_closed_without_opening_either():
         CorpseEquip(CORPSE, [CorpseEquipEntry(layer=2, serial=WORN)]),
         CorpseEquip(CORPSE + 1, [CorpseEquipEntry(layer=2, serial=WORN)]),
     ]
-    result = RecoverDeath().step(
-        _ctx(items=corpses, corpse_equip=evidence, memory=memory)
-    )
+    result = RecoverDeath().step(_ctx(items=corpses, corpse_equip=evidence, memory=memory))
     assert result.status is Status.FAILURE and result.action is None
     assert RecoverDeath._CORPSE_PENDING not in memory
 
@@ -271,9 +629,7 @@ def test_stack_merge_is_proven_by_backpack_graphic_amount_delta():
     corpse = _item(CORPSE, 0x2006, 0x190)
     merged_stack = _item(99, 0x0E21, 15, container=BACKPACK)
 
-    result = RecoverDeath().step(
-        _ctx(items=[backpack, corpse, merged_stack], memory=memory)
-    )
+    result = RecoverDeath().step(_ctx(items=[backpack, corpse, merged_stack], memory=memory))
     assert result.status is Status.SUCCESS and result.action is None
 
 
@@ -349,6 +705,10 @@ def test_redeath_freezes_fresh_rolling_snapshot_and_resets_prior_episode_state()
     agent.memory.update(
         {
             recovery._GUMP_RESPONDED: (0x100, 0x200),
+            recovery._RES_TARGET: (0x500, 205, 200, 0),
+            recovery._RES_FAILED: {0x501: 99},
+            recovery._RES_CLOCK: 3,
+            recovery._RES_ROUTE_ATTEMPTS: 2,
             recovery._CORPSE_SERIAL: CORPSE,
             recovery._HELD: PACK_ITEM,
             recovery._ROUTE_SENT: True,
@@ -365,6 +725,10 @@ def test_redeath_freezes_fresh_rolling_snapshot_and_resets_prior_episode_state()
     assert agent.memory["death_last_equipped"] == {WORN + 1}
     assert agent.memory["death_last_pack_owned"] == {PACK_ITEM + 1}
     assert recovery._GUMP_RESPONDED not in agent.memory
+    assert recovery._RES_TARGET not in agent.memory
+    assert recovery._RES_FAILED not in agent.memory
+    assert recovery._RES_CLOCK not in agent.memory
+    assert recovery._RES_ROUTE_ATTEMPTS not in agent.memory
     assert recovery._CORPSE_SERIAL not in agent.memory
     assert recovery._HELD not in agent.memory
     assert recovery._ROUTE_SENT not in agent.memory

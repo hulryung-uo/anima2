@@ -34,7 +34,7 @@ than autonomy.
    resurrection-gump acceptance, and own-corpse recovery.
 3. ✅ **Resilient body lifecycle.** Preserve Agent goal/memory/ticks while a body
    wrapper restarts a failed IPC bridge with bounded backoff.
-4. **GM-free resurrection discovery.** Parse ServUO healer/corpse waypoints
+4. ✅ **GM-free resurrection discovery.** Parse ServUO healer/corpse waypoints
    (`0xE5/0xE6`) instead of relying on staged coordinates.
 
 ### B. Intention and planning
@@ -132,9 +132,10 @@ Offline: 705 tests green, Ruff clean. The staged live fixture completed poison
 cure in 40/60 ticks and death -> verified free resurrection -> exact GM-readback
 corpse -> pre-death item returned to backpack -> same two-step Goal resumed in
 67/240 ticks at a 400 ms pump. Every action emitted while dead matched the
-recovery whitelist. The healer coordinate is deliberately fixture-only:
-production planners pass no coordinate and safely quarantine if no gump is
-already available. GM-free healer discovery remains A4 via `0xE5/0xE6`.
+recovery whitelist. At the A2 milestone the healer coordinate was deliberately
+fixture-only: production planners passed no coordinate and safely quarantined
+if no gump was already available. A4 below closes that discovery gap via
+`0xE5/0xE6`.
 
 ### A3 — resilient body lifecycle ✅
 
@@ -169,3 +170,44 @@ memory/episodes/ticks state, emitted no action during reconnect, re-issued the
 same target `WalkTo` within 6 resumed ticks, resumed real movement, and arrived
 at the destination. All 22 gate flags passed without a GM connection during
 recovery.
+
+### A4 — GM-free resurrection discovery ✅
+
+The version-8 body contract now carries ServUO `0xE5` waypoints end to end:
+Rust parses the exact big-endian packet header plus signed Z, facet, kind,
+ignore-object flag, cliloc, and UTF-16LE name; `0xE6` removes by serial; and
+`Observation.waypoints` is deterministically sorted by distance then serial.
+Facet changes clear the set. Ordinary mobile interest-range deletes preserve
+distant healer markers, while a deleted corpse removes only its corpse marker.
+
+`RecoverDeath()` no longer needs a production resurrection coordinate. While
+dead it selects the nearest same-facet type-6 waypoint, follows the referenced
+mobile's current position unless the marker says to ignore the object, and
+carries that selection across an A3 bridge replacement whose fresh world has
+no re-sent waypoint. The route watchdog boundedly reissues long `WalkTo` routes
+after the bridge's 200-step route budget. A healer that never presents the
+structurally verified free resurrection gump is cooled down and the next
+candidate is tried; priced or otherwise unverified gumps remain rejected.
+
+Corpse waypoints are deliberately only navigation hints. Current ServUO can
+send no corpse marker to this reported client version, or can send a previous
+corpse because of its death-time ordering. A marker is therefore cached only
+when it matches the frozen death position, and item recovery still requires
+the A2 body/position plus equipment or backpack-serial continuity proof.
+
+Offline: 745 Python tests and the full Rust workspace pass; Ruff and Rust
+format checks are clean. The live schema-v8 gate staged and killed the subject,
+then closed the GM connection before the first recovery tick. With
+`RecoverDeath()` receiving no coordinate, the agent observed the exact healer
+E5, selected it by serial, emitted `WalkTo` to that observed location, moved as
+a ghost, accepted one verified free gump, observed life plus healer E6 removal,
+opened the exact strongly attributed corpse once, recovered the same pre-death
+dagger serial, and resumed the original Goal in 15 ticks. All 23 strengthened
+flags passed, including unchanged bridge generation/facet through E6 and the
+exact dagger's observed `corpse -> backpack` transition.
+
+One narrow follow-up remains: ServUO does not resend death waypoints when a
+brand-new bridge logs in. A bridge replacement after a healer was selected is
+covered by the episode cache; a process that first attaches after death and
+before ever observing E5 must stay safely quarantined until another trusted
+discovery source is added.

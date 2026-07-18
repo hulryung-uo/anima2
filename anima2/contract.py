@@ -5,7 +5,7 @@ Keep these in lockstep: a future IPC bridge serializes anima-core's `Observation
 to JSON and parses the brain's `Action` from JSON using exactly these shapes.
 
 JSON shape (chosen for the IPC bridge):
-- Observation: ``{"player": {...}, "mobiles": [...], "items": [...], "new_journal": [...]}``
+- Observation: ``{"player": {...}, "mobiles": [...], "items": [...], "waypoints": [...]}``
 - Action: externally tagged by a ``"type"`` field, e.g. ``{"type": "Walk", "dir": 0, "run": false}``.
 """
 
@@ -13,6 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+
+
+WAYPOINT_CORPSE = 1
+WAYPOINT_RESURRECTION = 6
 
 
 @dataclass(frozen=True)
@@ -43,7 +47,7 @@ class PlayerView:
     intelligence: int = 0
     gold: int = 0
     weight: int = 0
-    # Additive survival state from anima-core PlayerView (JSON schema v7).
+    # Additive survival state from anima-core PlayerView (introduced in schema v7).
     body: int = 0
     poisoned: bool = False
     dead: bool = False
@@ -99,6 +103,37 @@ class ItemView:
             pos=Position.from_dict(d.get("pos", {})),
             container=d.get("container"),
             layer=d.get("layer", 0),
+            distance=d.get("distance", 0),
+        )
+
+
+@dataclass
+class WaypointView:
+    """A server waypoint (0xE5); 0xE6 removes it by ``serial``.
+
+    ServUO kind 1 marks a corpse and kind 6 a resurrection healer. Names are
+    informational only: safety decisions must use structured kind/state.
+    """
+
+    serial: int
+    pos: Position
+    map: int
+    kind: int
+    ignore_object: bool = False
+    cliloc: int = 0
+    name: str = ""
+    distance: int = 0
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> WaypointView:
+        return cls(
+            serial=d.get("serial", 0),
+            pos=Position.from_dict(d.get("pos", {})),
+            map=d.get("map", 0),
+            kind=d.get("kind", 0),
+            ignore_object=bool(d.get("ignore_object", False)),
+            cliloc=d.get("cliloc", 0),
+            name=d.get("name", ""),
             distance=d.get("distance", 0),
         )
 
@@ -252,7 +287,9 @@ class ShopSell:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ShopSell:
-        return cls(vendor=d.get("vendor", 0), items=[ShopSellItem.from_dict(i) for i in d.get("items", [])])
+        return cls(
+            vendor=d.get("vendor", 0), items=[ShopSellItem.from_dict(i) for i in d.get("items", [])]
+        )
 
 
 @dataclass
@@ -290,7 +327,10 @@ class PopupMenu:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> PopupMenu:
-        return cls(serial=d.get("serial", 0), entries=[PopupEntry.from_dict(e) for e in d.get("entries", [])])
+        return cls(
+            serial=d.get("serial", 0),
+            entries=[PopupEntry.from_dict(e) for e in d.get("entries", [])],
+        )
 
 
 @dataclass
@@ -369,6 +409,11 @@ class Observation:
     # (`json.rs::observation_to_json`). See `anima2/skills/hunt.py::Hunt`.
     corpse_of: list[CorpseLink] = field(default_factory=list)
     corpse_equip: list[CorpseEquip] = field(default_factory=list)
+    # 0xE5 server waypoints, removed by 0xE6. Sorted by distance then serial by
+    # anima-core; kind 1=corpse, kind 6=resurrection healer.
+    waypoints: list[WaypointView] = field(default_factory=list)
+    # Current facet: 0=Felucca, 1=Trammel, ... Mirrors anima-core `map_index`.
+    map_index: int = 0
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Observation:
@@ -389,6 +434,8 @@ class Observation:
             popup=PopupMenu.from_dict(pu) if pu else None,
             corpse_of=[CorpseLink.from_dict(c) for c in d.get("corpse_of", [])],
             corpse_equip=[CorpseEquip.from_dict(c) for c in d.get("corpse_equip", [])],
+            waypoints=[WaypointView.from_dict(w) for w in d.get("waypoints", [])],
+            map_index=int(d.get("map_index", 0)),
         )
 
 
@@ -528,8 +575,14 @@ class Drop(Action):
     type: str = field(default="Drop", init=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "Drop", "serial": self.serial, "x": self.x, "y": self.y,
-                "z": self.z, "container": self.container}
+        return {
+            "type": "Drop",
+            "serial": self.serial,
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "container": self.container,
+        }
 
 
 @dataclass
@@ -585,7 +638,13 @@ class TargetGround(Action):
     type: str = field(default="TargetGround", init=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "TargetGround", "x": self.x, "y": self.y, "z": self.z, "graphic": self.graphic}
+        return {
+            "type": "TargetGround",
+            "x": self.x,
+            "y": self.y,
+            "z": self.z,
+            "graphic": self.graphic,
+        }
 
 
 @dataclass
@@ -672,13 +731,20 @@ def action_from_dict(d: dict[str, Any]) -> Action:
         case "Equip":
             return Equip(serial=d["serial"], layer=d["layer"])
         case "Drop":
-            return Drop(serial=d["serial"], x=d.get("x", 0), y=d.get("y", 0),
-                        z=d.get("z", 0), container=d.get("container", 0xFFFFFFFF))
+            return Drop(
+                serial=d["serial"],
+                x=d.get("x", 0),
+                y=d.get("y", 0),
+                z=d.get("z", 0),
+                container=d.get("container", 0xFFFFFFFF),
+            )
         case "CastSpell":
             return CastSpell(spell=d["spell"])
         case "GumpResponse":
             return GumpResponse(
-                serial=d["serial"], gump_id=d["gump_id"], button=d.get("button", 0),
+                serial=d["serial"],
+                gump_id=d["gump_id"],
+                button=d.get("button", 0),
                 switches=list(d.get("switches", [])),
                 entries=[tuple(e) for e in d.get("entries", [])],
             )
