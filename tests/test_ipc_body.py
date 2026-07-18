@@ -4,9 +4,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from anima2.agent import Agent
 from anima2.contract import Walk
-from anima2.ipc_body import IpcBody
+from anima2.ipc_body import IpcBody, IpcError, SUPPORTED_SCHEMA_VERSION
 from anima2.persona import Persona
 from anima2.planner import Planner
 from anima2.skills import Wander
@@ -31,6 +33,39 @@ def test_ready_and_observe():
         obs = body.observe()
         assert obs.player.name == "Fake"
         assert obs.player.pos.x == 100
+
+
+def test_ready_accepts_matching_schema_version():
+    with spawn_fake() as body:
+        assert body.ready["schema_version"] == SUPPORTED_SCHEMA_VERSION
+
+
+def test_ready_rejects_incompatible_schema_version():
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            'print("{\\"event\\":\\"ready\\",\\"schema_version\\":999}", flush=True)',
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    with pytest.raises(IpcError, match="unsupported bridge schema 999"):
+        IpcBody(proc)
+
+
+def test_ready_rejects_missing_schema_version():
+    proc = subprocess.Popen(
+        [sys.executable, "-c", 'print("{\\"event\\":\\"ready\\"}", flush=True)'],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    with pytest.raises(IpcError, match="unsupported bridge schema None"):
+        IpcBody(proc)
 
 
 def test_act_walk_moves_player():

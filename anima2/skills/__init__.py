@@ -7,6 +7,7 @@ from .harvest import Chop, Fish, Harvest, Mine
 from .hunt import Hunt
 from .market import BlacksmithMarket
 from .movement import GoTo, Wander
+from .recovery import RecoverDeath
 from .smelt import MineAndSmelt, MineSmeltDeliver
 from .social import Greet, SpeakPending
 from .survival import Survive
@@ -29,6 +30,7 @@ __all__ = [
     "Mine",
     "MineAndSmelt",
     "MineSmeltDeliver",
+    "RecoverDeath",
     "SpeakPending",
     "Survive",
     "Wander",

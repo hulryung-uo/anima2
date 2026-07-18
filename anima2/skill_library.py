@@ -52,6 +52,7 @@ from .skills import (
     Mine,
     MineAndSmelt,
     MineSmeltDeliver,
+    RecoverDeath,
     Skill,
     SpeakPending,
     Survive,
@@ -98,8 +99,8 @@ def _entry(skill_cls: type[Skill], *, tags: tuple[str, ...] = ()) -> SkillEntry:
 #: The static registry — covers every skill currently exported from
 #: `skills/__init__.py` (verified: `Blacksmith`, `BlacksmithMarket`, `Chop`,
 #: `Combat`, `Fish`, `GoTo`, `Greet`, `Harvest`, `Hunt`, `Mine`,
-#: `MineAndSmelt`, `MineSmeltDeliver`, `SpeakPending`, `Survive`, `Wander` —
-#: 15 concrete `Skill` subclasses; `Skill`/`SkillContext`/`SkillResult`/
+#: `MineAndSmelt`, `MineSmeltDeliver`, `RecoverDeath`, `SpeakPending`, `Survive`,
+#: `Wander` — 16 concrete `Skill` subclasses; `Skill`/`SkillContext`/`SkillResult`/
 #: `Status`/`Goal` are also exported but aren't skills, so the registry doesn't
 #: cover them).
 #: `tests/test_skill_library.py::test_registry_covers_every_exported_skill`
@@ -118,6 +119,7 @@ REGISTRY: list[SkillEntry] = [
     _entry(Mine, tags=("miner", "gather")),
     _entry(MineAndSmelt, tags=("miner", "gather", "craft")),
     _entry(MineSmeltDeliver, tags=("miner", "gather", "craft", "trade")),
+    _entry(RecoverDeath, tags=("survival", "recovery")),
     _entry(SpeakPending, tags=("social",)),
     _entry(Survive, tags=("survival", "healing", "movement")),
     _entry(Wander, tags=("movement",)),

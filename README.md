@@ -32,13 +32,14 @@ is the *car*.
 
 **Autonomy track begun:** the roadmap has been re-centered on turning the
 staged worker into a self-sustaining UO player; see
-[`docs/AUTONOMY-ROADMAP.md`](docs/AUTONOMY-ROADMAP.md). The first survival
-slice is live-verified: below 40% HP an agent retreats from a hostile group,
-then applies exactly one self-bandage and confirms recovery from live state.
+[`docs/AUTONOMY-ROADMAP.md`](docs/AUTONOMY-ROADMAP.md). The A1/A2 survival
+vertical is live-verified: the agent retreats and bandages wounds, cures poison,
+quarantines ordinary work while dead, accepts only a verified free resurrection,
+recovers its uniquely attributed corpse, and resumes the same Goal.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 672 tests green, ruff clean. The Python
+threading) — live-verified.** 705 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -83,7 +84,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 630 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 705 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -112,6 +113,8 @@ python -m anima2.live_trade     # 2-agent inter-agent economy proof: miner -> bl
 python -m anima2.live_market    # blacksmith sells daggers to a vendor, banks the gold
 python -m anima2.live_hunt      # bare-handed hunter kills weak creatures, loots corpses
 python -m anima2.live_navigate  # differential proof: greedy wedges, WalkTo-delegated GoTo crosses (round trip)
+python -m anima2.live_survival  # A1: flee, self-bandage, and observed HP recovery
+python -m anima2.live_recovery  # A2: poison cure + death/resurrection/corpse/Goal continuity
 ```
 
 ## Family

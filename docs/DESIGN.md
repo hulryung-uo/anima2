@@ -61,7 +61,7 @@ back to greedy only when the route makes no progress at all; a differential
 live proof shows greedy wedging on a rock-blocked Minoc-ridge course a
 straight line can't cross, while the real `GoTo` crosses it both ways (round
 trip); see [`PHASE3.md`](PHASE3.md) for the full breakdown of all four items.
-648 tests green, ruff clean; the full village, smelting, reflection,
+705 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -97,7 +97,7 @@ clean redesign of the original [`anima`](https://github.com/hulryung-uo/anima) (
 | [`anima-client`](https://github.com/hulryung-uo/anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](https://github.com/hulryung-uo/anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 complete (independent
-fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 complete (all six items live-verified — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation; cognition-aware eval making `cognition_tier`/`sociability` genuinely move the trajectory behind a `cognition_provider` off-switch; and the decisive evolution-vs-random rerun, whose honest verdict was that random beat evolution decisively at this small budget on the enriched harness); Phase 7 begun (work breakdown written, see [`PHASE7.md`](PHASE7.md) — four items; item 1 live-verified — profession-conditional pool routing fixed and the fishing `nodes_pool` threaded through `evolve.py`/`live_evolve_gate.py`, so a fisher genome is staged at a fishing spot with its matched water node instead of a Minoc mining coordinate); 648 tests green |
+fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 complete (all six items live-verified — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation; cognition-aware eval making `cognition_tier`/`sociability` genuinely move the trajectory behind a `cognition_provider` off-switch; and the decisive evolution-vs-random rerun, whose honest verdict was that random beat evolution decisively at this small budget on the enriched harness); Phase 7 begun (work breakdown written, see [`PHASE7.md`](PHASE7.md) — four items; item 1 live-verified — profession-conditional pool routing fixed and the fishing `nodes_pool` threaded through `evolve.py`/`live_evolve_gate.py`, so a fisher genome is staged at a fishing spot with its matched water node instead of a Minoc mining coordinate); autonomy A1/A2 live-verified (flee/bandage, poison cure, safe free resurrection, strongly attributed corpse recovery, Goal continuity); 705 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only
@@ -203,8 +203,8 @@ This is how Voyager/Generative Agents stay usable: the LLM steers, scripts execu
 schema anima2 and anima-core agree on. Codify it in anima-core (the producer) and
 mirror it in anima2 (the consumer). Draft shape:
 
-**Observation** (body → brain): `player` {serial, pos(x,y,z), dir, hp/maxhp, mana,
-stam, gold, weight, war/hidden/poisoned flags, skills[]}, `nearby_mobiles[]`
+**Observation** (body → brain): `player` {serial, pos(x,y,z), dir, body, dead,
+hp/maxhp, mana, stam, gold, weight, war/hidden/poisoned flags, skills[]}, `nearby_mobiles[]`
 {serial, name, pos, hp%, notoriety, flags}, `nearby_items[]` {serial, graphic,
 amount, pos|container}, `journal_delta[]` (new chat/system lines), `pending`
 {target_cursor?, gump?}, `tick`/timestamp.
@@ -212,7 +212,9 @@ amount, pos|container}, `journal_delta[]` (new chat/system lines), `pending`
 **Action** (brain → body): `move{dir, run}`, `use{serial}` / `double_click{serial}`,
 `attack{serial}`, `cast{spell}`, `use_skill{id}`, `say{text, type, hue}`,
 `target{serial | x,y,z}`, `pickup{serial,amount}` / `drop{...}` / `equip{...}`,
-`gump_response{...}`, `context_menu{...}`.
+`gump_response{...}`, `target_cancel`, `context_menu{...}`. Open gumps retain
+their structured elements so safety-sensitive replies can validate real buttons
+and localized content rather than matching layout substrings.
 
 **Control plane** (separate channel, GM-only): `reset`, `teleport{x,y,z}`,
 `grant{item}`, `set_skill{id,value}`, `spawn{...}`, `measure` (independent
@@ -220,7 +222,8 @@ packet-derived fitness). Mirrors anima Foundry kernel.
 
 Design notes: keep Observation a *snapshot + deltas* (full state is cheap to read
 from anima-core's `World`; journal is delta-only). Keep Action a small, total enum.
-Version the schema. See anima-client DESIGN.md §3 for the original sketch.
+Version the schema and advertise it in the native ready event so the brain fails
+early on an incompatible bridge. See anima-client DESIGN.md §3 for the original sketch.
 
 ---
 

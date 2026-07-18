@@ -7,18 +7,29 @@ from anima2.contract import (
     Observation,
     PlayerView,
     Position,
+    SkillView,
     TargetCursor,
     TargetObject,
     Use,
     Walk,
 )
 from anima2.persona import Persona
-from anima2.skills import Survive
+from anima2.skills import RecoverDeath, Survive
 from anima2.skills.base import SkillContext, Status
+from anima2.skills.survival import SKILL_ANATOMY, SKILL_HEALING
 
 
-def _ctx(*, hp=30, hostiles=(), bandages=10, pending=None, journal=(), memory=None):
-    player = PlayerView(serial=1, pos=Position(100, 100, 0), hits=hp, hits_max=100)
+def _ctx(
+    *, hp=30, hostiles=(), bandages=10, pending=None, journal=(), memory=None,
+    poisoned=False, healing=0.0, anatomy=0.0,
+):
+    player = PlayerView(
+        serial=1,
+        pos=Position(100, 100, 0),
+        hits=hp,
+        hits_max=100,
+        poisoned=poisoned,
+    )
     backpack = ItemView(2, 0x0E75, 1, player.pos, player.serial, 0x15, 0)
     items = [backpack]
     if bandages:
@@ -29,6 +40,10 @@ def _ctx(*, hp=30, hostiles=(), bandages=10, pending=None, journal=(), memory=No
         items=items,
         pending_target=pending,
         new_journal=list(journal),
+        skills=[
+            SkillView(SKILL_ANATOMY, anatomy, anatomy, 100.0, 0),
+            SkillView(SKILL_HEALING, healing, healing, 100.0, 0),
+        ],
     )
     return SkillContext(
         obs=obs,
@@ -94,7 +109,8 @@ def test_bandage_targets_self_once_and_waits_for_confirmed_heal():
     assert waiting.status is Status.RUNNING and waiting.action is None
     assert memory[skill._PHASE] == "applying"  # no repeated Use while the bandage resolves
 
-    healed = skill.step(_ctx(hp=55, memory=memory))
+    finish = JournalEntry(0, "System", "", 0, 0, cliloc=500969)
+    healed = skill.step(_ctx(hp=55, memory=memory, journal=[finish]))
     assert healed.status is Status.SUCCESS and healed.action is None
     assert skill._PHASE not in memory
 
@@ -139,12 +155,40 @@ def test_death_aborts_inflight_bandage_immediately():
     assert skill._PHASE not in memory
 
 
-def test_external_recovery_completes_inflight_bandage():
+def test_natural_regeneration_during_apply_does_not_complete_or_restart_bandage():
     memory = {Survive._PHASE: "applying", Survive._HP_BEFORE: 30, Survive._WAIT: 3}
     skill = Survive()
-    ctx = _ctx(hp=80, memory=memory)
+    memory[Survive._LAST_HP] = 30
+    ctx = _ctx(hp=31, memory=memory)
     assert skill.can_run(ctx)
-    assert skill.step(ctx).status is Status.SUCCESS
+    result = skill.step(ctx)
+    assert result.status is Status.RUNNING and result.action is None
+    assert memory[Survive._PHASE] == "applying"
+    assert memory[Survive._LAST_HP] == 31
+
+    # The regen happened well before the server resolved this bandage, so it is
+    # not accepted as evidence for the attempt.
+    for _ in range(skill.hp_confirmation_ticks + 1):
+        assert skill.step(_ctx(hp=31, memory=memory)).status is Status.RUNNING
+    finish = JournalEntry(0, "System", "", 0, 0, cliloc=500969)
+    assert skill.step(_ctx(hp=31, memory=memory, journal=[finish])).status is Status.RUNNING
+    assert memory[Survive._PHASE] == "confirming"
+    assert skill.step(_ctx(hp=55, memory=memory)).status is Status.SUCCESS
+
+
+def test_hp_delta_immediately_before_resolved_journal_is_confirmed():
+    memory = {
+        Survive._PHASE: "applying",
+        Survive._HP_BEFORE: 30,
+        Survive._LAST_HP: 30,
+        Survive._WAIT: 3,
+    }
+    skill = Survive()
+    assert skill.step(_ctx(hp=55, memory=memory)).status is Status.RUNNING
+
+    finish = JournalEntry(0, "System", "", 0, 0, cliloc=500969)
+    result = skill.step(_ctx(hp=55, memory=memory, journal=[finish]))
+    assert result.status is Status.SUCCESS
 
 
 def test_unrelated_open_cursor_is_not_hijacked():
@@ -189,3 +233,181 @@ def test_delayed_incompatible_cursor_is_left_for_its_owner():
 def test_observably_dead_mobile_is_not_a_survival_threat():
     dead = _hostile(10, 101, 100, hits=0)
     assert not Survive().can_run(_ctx(hostiles=[dead], bandages=0))
+
+
+def test_healthy_poisoned_agent_with_cure_skills_bandages_immediately():
+    ctx = _ctx(hp=100, poisoned=True, healing=60, anatomy=60)
+    skill = Survive()
+    assert skill.can_run(ctx)
+    assert isinstance(skill.step(ctx).action, Use)
+
+
+def test_poisoned_agent_flees_even_one_hostile_before_cure_attempt():
+    ctx = _ctx(
+        hp=100,
+        poisoned=True,
+        healing=60,
+        anatomy=60,
+        hostiles=[_hostile(10, 101, 100)],
+    )
+    result = Survive().step(ctx)
+    assert isinstance(result.action, Walk) and result.action.run
+
+
+def test_poison_below_cure_skill_floor_does_not_burn_bandages():
+    ctx = _ctx(hp=30, poisoned=True, healing=59.9, anatomy=60)
+    skill = Survive()
+    assert not skill.can_run(ctx)
+    result = skill.step(ctx)
+    assert result.status is Status.FAILURE and result.action is None
+
+
+def test_observed_poison_clear_completes_cure_without_hp_delta():
+    memory = {
+        Survive._PHASE: "applying",
+        Survive._HP_BEFORE: 100,
+        Survive._POISON_BEFORE: True,
+        Survive._LAST_POISON: True,
+        Survive._WAIT: 3,
+    }
+    skill = Survive()
+    finish = JournalEntry(0, "System", "", 0, 0, cliloc=500969)
+    ctx = _ctx(
+        hp=100,
+        poisoned=False,
+        healing=60,
+        anatomy=60,
+        memory=memory,
+        journal=[finish],
+    )
+    assert skill.can_run(ctx)
+    assert skill.step(ctx).status is Status.SUCCESS
+
+
+def test_failed_cure_enters_bounded_retry_cooldown():
+    memory = {
+        Survive._PHASE: "confirming",
+        Survive._HP_BEFORE: 100,
+        Survive._POISON_BEFORE: True,
+        Survive._WAIT: Survive.hp_confirmation_ticks,
+    }
+    skill = Survive()
+    result = skill.step(
+        _ctx(hp=100, poisoned=True, healing=60, anatomy=60, memory=memory)
+    )
+    assert result.status is Status.FAILURE
+    assert memory[skill._CURE_COOLDOWN] == skill.cure_retry_cooldown_ticks
+    assert not skill.can_run(
+        _ctx(hp=100, poisoned=True, healing=60, anatomy=60, memory=memory)
+    )
+
+
+def test_poison_cursor_timeout_uses_common_retry_cooldown():
+    memory = {
+        Survive._PHASE: "cursor",
+        Survive._HP_BEFORE: 100,
+        Survive._POISON_BEFORE: True,
+        Survive._BANDAGE_SERIAL: 3,
+        Survive._WAIT: Survive.cursor_timeout_ticks,
+    }
+    result = Survive().step(
+        _ctx(hp=100, poisoned=True, healing=60, anatomy=60, memory=memory)
+    )
+    assert result.status is Status.FAILURE
+    assert memory[Survive._CURE_COOLDOWN] == Survive.cure_retry_cooldown_ticks
+
+
+def test_poison_refused_and_apply_timeout_use_common_retry_cooldown():
+    refused = JournalEntry(0, "System", "", 0, 0, cliloc=500955)
+    cases = (
+        ({Survive._PHASE: "applying"}, [refused]),
+        (
+            {
+                Survive._PHASE: "applying",
+                Survive._WAIT: Survive.apply_timeout_ticks,
+            },
+            [],
+        ),
+    )
+    for state, journal in cases:
+        memory = {
+            Survive._HP_BEFORE: 100,
+            Survive._POISON_BEFORE: True,
+            **state,
+        }
+        result = Survive().step(
+            _ctx(
+                hp=100,
+                poisoned=True,
+                healing=60,
+                anatomy=60,
+                memory=memory,
+                journal=journal,
+            )
+        )
+        assert result.status is Status.FAILURE
+        assert memory[Survive._CURE_COOLDOWN] == Survive.cure_retry_cooldown_ticks
+
+
+def test_poison_incompatible_cursor_uses_common_retry_cooldown():
+    memory = {
+        Survive._PHASE: "cursor",
+        Survive._HP_BEFORE: 100,
+        Survive._POISON_BEFORE: True,
+        Survive._BANDAGE_SERIAL: 3,
+    }
+    delayed = TargetCursor(target_type=1, cursor_id=99, cursor_flag=0)
+    result = Survive().step(
+        _ctx(
+            hp=100,
+            poisoned=True,
+            healing=60,
+            anatomy=60,
+            memory=memory,
+            pending=delayed,
+        )
+    )
+    assert result.status is Status.FAILURE
+    assert memory[Survive._CURE_COOLDOWN] == Survive.cure_retry_cooldown_ticks
+
+
+def test_explicit_cure_failure_beats_earlier_finish_line_in_same_observation():
+    memory = {
+        Survive._PHASE: "applying",
+        Survive._HP_BEFORE: 100,
+        Survive._POISON_BEFORE: True,
+    }
+    finish = JournalEntry(0, "System", "", 0, 0, cliloc=500969)
+    failed = JournalEntry(0, "System", "", 0, 0, cliloc=1010060)
+    result = Survive().step(
+        _ctx(
+            hp=100,
+            poisoned=True,
+            healing=60,
+            anatomy=60,
+            memory=memory,
+            journal=[finish, failed],
+        )
+    )
+    assert result.status is Status.FAILURE
+    assert memory[Survive._CURE_COOLDOWN] == Survive.cure_retry_cooldown_ticks
+
+
+def test_death_clearing_poison_is_not_misrecorded_as_a_cure():
+    memory = {
+        Survive._PHASE: "applying",
+        Survive._HP_BEFORE: 30,
+        Survive._POISON_BEFORE: True,
+    }
+    skill = Survive()
+    ctx = _ctx(hp=0, poisoned=False, memory=memory)
+    ctx.obs.player.dead = True
+    assert not skill.can_run(ctx)
+    assert skill._PHASE not in memory
+    assert skill.step(ctx).status is Status.FAILURE
+
+
+def test_post_resurrection_route_stop_precedes_low_hp_bandaging():
+    memory = {RecoverDeath._WAITING: True}
+    skill = Survive()
+    assert not skill.can_run(_ctx(hp=10, memory=memory))

@@ -43,6 +43,10 @@ class PlayerView:
     intelligence: int = 0
     gold: int = 0
     weight: int = 0
+    # Additive survival state from anima-core PlayerView (JSON schema v7).
+    body: int = 0
+    poisoned: bool = False
+    dead: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> PlayerView:
@@ -167,10 +171,19 @@ class GumpView:
     serial: int
     gump_id: int
     layout: str = ""
+    # Structured anima-core gump elements. Kept as additive dictionaries so
+    # older callers using only `layout` remain compatible while safety-critical
+    # flows can verify actual reply buttons and cliloc identities.
+    elements: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> GumpView:
-        return cls(serial=d.get("serial", 0), gump_id=d.get("gump_id", 0), layout=d.get("layout", ""))
+        return cls(
+            serial=d.get("serial", 0),
+            gump_id=d.get("gump_id", 0),
+            layout=d.get("layout", ""),
+            elements=[dict(element) for element in d.get("elements", [])],
+        )
 
 
 @dataclass
@@ -576,6 +589,16 @@ class TargetGround(Action):
 
 
 @dataclass
+class TargetCancel(Action):
+    """Cancel the currently pending target cursor (the UO Esc action)."""
+
+    type: str = field(default="TargetCancel", init=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "TargetCancel"}
+
+
+@dataclass
 class BuyItems(Action):
     """Answer an open `ShopBuy` window (0x3B) — buy `items` (each `(serial,
     amount)`, the container item's serial and how many of it to buy) from `vendor`.
@@ -663,6 +686,8 @@ def action_from_dict(d: dict[str, Any]) -> Action:
             return TargetObject(serial=d["serial"])
         case "TargetGround":
             return TargetGround(x=d["x"], y=d["y"], z=d.get("z", 0), graphic=d.get("graphic", 0))
+        case "TargetCancel":
+            return TargetCancel()
         case "BuyItems":
             return BuyItems(vendor=d["vendor"], items=[tuple(i) for i in d.get("items", [])])
         case "SellItems":

@@ -22,6 +22,9 @@ from .skill_library import SkillLibrary
 from .skills.base import Goal, SkillContext, Status
 
 
+_BACKPACK_LAYER = 0x15
+
+
 class Cognition(Protocol):
     """The slow, goal-setting layer (LLM in production)."""
 
@@ -88,6 +91,72 @@ class Agent:
     def tick(self) -> Action | None:
         """Run one fast-loop iteration. Returns the action taken (or `None`)."""
         obs = self.body.observe()
+        # Keep a rolling *living* snapshot even during a corpse run. A second
+        # death is a new recovery episode and must use the state immediately
+        # before that death, not evidence frozen for the previous corpse.
+        if not obs.player.dead and obs.player.body:
+            backpacks = {
+                item.serial
+                for item in obs.items
+                if item.container == obs.player.serial and item.layer == _BACKPACK_LAYER
+            }
+            equipped = {
+                item.serial
+                for item in obs.items
+                if item.container == obs.player.serial
+                and item.layer > 0
+                and item.layer != _BACKPACK_LAYER
+            }
+
+            # Include nested backpack contents as ownership evidence. ItemView
+            # does not expose "is container", so treating every discovered item
+            # as a possible parent is the safe generic traversal: only actual
+            # parent serials can pull another item into the set.
+            pack_owned: set[int] = set()
+            frontier = set(backpacks)
+            while frontier:
+                discovered = {
+                    item.serial
+                    for item in obs.items
+                    if item.container in frontier and item.serial not in pack_owned
+                }
+                pack_owned.update(discovered)
+                frontier = discovered
+
+            self.memory["death_rolling_alive_body"] = obs.player.body
+            self.memory["death_rolling_alive_pos"] = (
+                obs.player.pos.x,
+                obs.player.pos.y,
+                obs.player.pos.z,
+            )
+            self.memory["death_rolling_equipped"] = equipped
+            self.memory["death_rolling_pack_owned"] = pack_owned
+
+        was_dead = bool(self.memory.get("death_observed_dead", False))
+        if obs.player.dead and not was_dead:
+            # Freeze attribution evidence exactly once on the alive->dead edge.
+            # Clearing first prevents a dead-on-login/new-episode observation
+            # without usable rolling evidence from inheriting an older corpse.
+            for key in (
+                "death_last_alive_body",
+                "death_last_alive_pos",
+                "death_last_equipped",
+                "death_last_pack_owned",
+            ):
+                self.memory.pop(key, None)
+            body = int(self.memory.get("death_rolling_alive_body", 0))
+            pos = self.memory.get("death_rolling_alive_pos")
+            if body > 0 and isinstance(pos, tuple) and len(pos) == 3:
+                self.memory["death_last_alive_body"] = body
+                self.memory["death_last_alive_pos"] = pos
+                self.memory["death_last_equipped"] = set(
+                    self.memory.get("death_rolling_equipped", set())
+                )
+                self.memory["death_last_pack_owned"] = set(
+                    self.memory.get("death_rolling_pack_owned", set())
+                )
+            self.memory["death_episode"] = int(self.memory.get("death_episode", 0)) + 1
+        self.memory["death_observed_dead"] = obs.player.dead
         ctx = SkillContext(
             obs=obs,
             persona=self.persona,

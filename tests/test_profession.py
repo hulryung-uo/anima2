@@ -3,7 +3,7 @@
 from anima2.contract import ItemView, Observation, PlayerView, Position
 from anima2.persona import Persona
 from anima2.profession import HUNTING_SPOT, MINING_SPOTS, PROFESSIONS
-from anima2.skills import Blacksmith, BlacksmithMarket, GoTo, Hunt, Mine, MineAndSmelt, MineSmeltDeliver, Survive
+from anima2.skills import Blacksmith, BlacksmithMarket, GoTo, Hunt, Mine, MineAndSmelt, MineSmeltDeliver, RecoverDeath, Survive
 from anima2.skills.base import Goal, SkillContext
 
 
@@ -36,6 +36,7 @@ def test_miner_planner_runs_the_mine_skill():
 def test_every_profession_puts_survival_before_work_and_social_actions():
     for profession in PROFESSIONS.values():
         assert isinstance(profession.planner().skills[0], Survive)
+        assert isinstance(profession.planner().skills[1], RecoverDeath)
 
 
 def test_townsfolk_has_no_work_skill():

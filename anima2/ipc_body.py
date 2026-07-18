@@ -9,7 +9,8 @@ Wire protocol (one JSON object per line), defined by `anima-net/src/bin/agent.rs
   → {"cmd":"act","action":{...}} ← {"ok":true}
   → {"cmd":"pump","ms":N}        ← {"ok":true,"applied":N}
   → {"cmd":"quit"}               ← {"ok":true,"bye":true}
-First line emitted by the bridge: {"event":"ready","player":{...}}.
+First line emitted by the bridge:
+{"event":"ready","schema_version":7,"player":{...}}.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import IO, Any
 
 from .contract import Action, Observation
+
+SUPPORTED_SCHEMA_VERSION = 7
 
 
 def default_bridge_path() -> Path:
@@ -109,6 +112,11 @@ class IpcBody:
         msg = self._read_line()
         if msg.get("event") != "ready":
             raise IpcError(f"expected ready event, got: {msg}")
+        version = msg.get("schema_version")
+        if version != SUPPORTED_SCHEMA_VERSION:
+            raise IpcError(
+                f"unsupported bridge schema {version}; expected {SUPPORTED_SCHEMA_VERSION}"
+            )
         self.ready = msg
 
     def _rpc(self, obj: dict[str, Any]) -> dict[str, Any]:

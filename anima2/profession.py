@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .planner import Planner
-from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, Skill, SpeakPending, Survive, Wander
+from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -207,7 +207,7 @@ class Profession:
         sets a goto goal, so offline/heuristic agents behave exactly as before. On
         arrival the goal clears and the worker falls back to its trade.
         """
-        skills: list[Skill] = [Survive(), SpeakPending(), GoTo()]
+        skills: list[Skill] = [Survive(), RecoverDeath(), SpeakPending(), GoTo()]
         if self.work_skill is not None:
             skills.append(self.work_skill())
         skills += [Greet(), Wander()]
@@ -299,7 +299,7 @@ PROFESSIONS: dict[str, Profession] = {
     "hunter": Profession(
         key="hunter",
         persona_name="Ragnar",
-        skills={"Wrestling": 50, "Tactics": 50, "Healing": 50, "Anatomy": 50},
+        skills={"Wrestling": 50, "Tactics": 50, "Healing": 60, "Anatomy": 60},
         items=["Bandage 50"],
         needs_workplace=True,
         workplace=HUNTING_SPOT,

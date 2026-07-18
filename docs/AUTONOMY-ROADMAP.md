@@ -15,8 +15,8 @@ normal play.
 The body/brain contract, deterministic skills, live ServUO gates, economy
 loops, memory, and measurement kernel are strong foundations. The production
 agent is still a staged worker: `Profession.planner()` runs a fixed priority
-list after the control plane grants skills, tools, and a workplace. Reflexes do
-not yet act; LLM goals are limited to idle/nearby goto; curriculum picks are
+list after the control plane grants skills, tools, and a workplace. Survival
+interrupts now act, but LLM goals are limited to idle/nearby goto; curriculum picks are
 observational; skill retrieval does not steer the planner. Expanding the
 evolution budget before closing those loops would optimize configuration more
 than autonomy.
@@ -29,7 +29,7 @@ than autonomy.
    nearby hostile group; once contact breaks (or bounded retreat attempts are
    exhausted), apply a bandage with `Use -> TargetObject(self)` and confirm the
    result from HP/journal observations. This uses the existing contract.
-2. **Poison and death contract.** Expose the body's already-known
+2. ✅ **Poison and death contract.** Expose the body's already-known
    `poisoned`/body state through Rust `PlayerView`, JSON, and Python. Add cure,
    resurrection-gump acceptance, and own-corpse recovery.
 3. **Resilient body lifecycle.** Preserve Agent goal/memory/ticks while a body
@@ -72,7 +72,9 @@ budget alone is not an autonomy milestone.
 ## Acceptance ladder
 
 - Offline: survival preempts work, rejects incompatible unrelated target
-  cursors, issues one bandage per attempt, and clears or bounds every state.
+  cursors, issues one bandage per attempt, and bounds every active transaction.
+  A ghost without a discovered resurrection source remains safely quarantined
+  without action spam until the world changes.
 - Live staged: a wounded character increases hostile distance, applies a
   bandage once, and shows confirmed HP recovery without manual input.
 - Live failure injection: tool break, full pack, depleted resource, blocked
@@ -97,11 +99,39 @@ bounded `Walk(run=True)` steps away from the observed hostile centroid, never
 hijacks an incompatible target cursor opened by work, and runs a single `Use ->
 TargetObject(self) -> HP confirmation` bandage attempt at a time. Completion
 journal messages resolve the attempt but never create a success signal without
-an observed HP increase; poison/death state becomes explicit in A2. The
+a nearby observed HP increase. This avoids mistaking T2A natural regeneration
+for the bandage and restarting the server-side timer. The
 hunter profession now carries bandages and the Healing/Anatomy baseline needed
 to exercise it in ordinary village runs.
 
-Offline: 672 tests green, Ruff clean. Live `anima-client` + ServUO gate: the
+Live `anima-client` + ServUO gate: the
 isolated heal leg passed, then one hostile leg proved bounded running retreat,
 increased hostile distance, ordered `flee -> Use -> TargetObject(self)`, one
 bandage consumed, and confirmed HP recovery — all passed.
+
+### A2 — poison and death continuity ✅
+
+The version-7 body contract now carries `body`, `poisoned`, and derived `dead`
+from Rust world state through native JSON into Python, with a native ready-event
+schema handshake. ServUO's complete seven-body ghost set is shared by the Rust
+agent/scene path and the web renderer. Structured gump elements and
+`TargetCancel` are also preserved end to end.
+
+`Survive` cures poison even at full HP when Healing and Anatomy meet the ServUO
+floor, flees from a single nearby hostile before curing, accepts only an
+observation-confirmed poison clear, and backs off every failed cure path.
+`RecoverDeath` stops stale routes and cursors, quarantines ordinary work while
+dead, accepts only the structurally verified free resurrection gump, confirms a
+living observation, and reclaims items only from a uniquely attributed corpse.
+Attribution uses the pre-death body/position plus observed equipment or pack
+serial continuity; ambiguity and unverified drops fail closed. A second death
+starts a fresh episode and atomically discards the earlier recovery transaction.
+Neither interrupt consumes the active Goal.
+
+Offline: 705 tests green, Ruff clean. The staged live fixture completed poison
+cure in 40/60 ticks and death -> verified free resurrection -> exact GM-readback
+corpse -> pre-death item returned to backpack -> same two-step Goal resumed in
+67/240 ticks at a 400 ms pump. Every action emitted while dead matched the
+recovery whitelist. The healer coordinate is deliberately fixture-only:
+production planners pass no coordinate and safely quarantine if no gump is
+already available. GM-free healer discovery remains A4 via `0xE5/0xE6`.

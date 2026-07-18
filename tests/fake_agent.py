@@ -19,7 +19,13 @@ def emit(obj):
 def main():
     px, py = 100, 100
     acted = []
-    emit({"event": "ready", "player": {"name": "Fake", "pos": {"x": px, "y": py, "z": 0}}})
+    emit(
+        {
+            "event": "ready",
+            "schema_version": 7,
+            "player": {"name": "Fake", "pos": {"x": px, "y": py, "z": 0}},
+        }
+    )
     for line in sys.stdin:
         line = line.strip()
         if not line:

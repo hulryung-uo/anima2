@@ -7,12 +7,15 @@ from anima2.contract import (
     CastSpell,
     Drop,
     Equip,
+    GumpView,
     Observation,
     PickUp,
+    PlayerView,
     PopupRequest,
     PopupSelect,
     SellItems,
     TargetGround,
+    TargetCancel,
     TargetObject,
     Walk,
     WalkTo,
@@ -27,6 +30,7 @@ def test_action_json_roundtrip():
         PickUp(serial=0x4000_0001, amount=5),
         TargetObject(serial=0xAABBCCDD),
         TargetGround(x=1000, y=2000, z=-5, graphic=0x01A4),
+        TargetCancel(),
         Equip(serial=0x4000_0002, layer=2),
         Drop(serial=0x4000_0003, x=10, y=20, z=0, container=0xFFFFFFFF),
         CastSpell(spell=5),
@@ -77,6 +81,36 @@ def test_observation_skills_parsed():
     assert len(obs.skills) == 1
     assert obs.skills[0].id == 45
     assert obs.skills[0].base == 48.2
+
+
+def test_player_survival_state_roundtrip_and_backward_defaults():
+    player = PlayerView.from_dict(
+        {"serial": 1, "body": 0x192, "poisoned": True, "dead": True}
+    )
+    assert player.body == 0x192
+    assert player.poisoned is True
+    assert player.dead is True
+
+    old_wire = PlayerView.from_dict({"serial": 2})
+    assert old_wire.body == 0
+    assert old_wire.poisoned is False
+    assert old_wire.dead is False
+
+
+def test_gump_structured_elements_are_preserved_for_safe_reply_selection():
+    gump = GumpView.from_dict(
+        {
+            "serial": 10,
+            "gump_id": 20,
+            "layout": "{ button 65 227 4005 4007 1 0 1 }",
+            "elements": [
+                {"type": "html", "text": {"cliloc": {"id": 1011022}}},
+                {"type": "button", "reply_id": 1, "pageflag": 1},
+            ],
+        }
+    )
+    assert gump.elements[0]["text"]["cliloc"]["id"] == 1011022
+    assert gump.elements[1]["reply_id"] == 1
 
 
 def test_observation_pending_target_roundtrip():
