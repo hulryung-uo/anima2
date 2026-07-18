@@ -1,6 +1,6 @@
 # Autonomy Roadmap — From Staged Worker to UO AI Player
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 ## Objective
 
@@ -32,7 +32,7 @@ than autonomy.
 2. ✅ **Poison and death contract.** Expose the body's already-known
    `poisoned`/body state through Rust `PlayerView`, JSON, and Python. Add cure,
    resurrection-gump acceptance, and own-corpse recovery.
-3. **Resilient body lifecycle.** Preserve Agent goal/memory/ticks while a body
+3. ✅ **Resilient body lifecycle.** Preserve Agent goal/memory/ticks while a body
    wrapper restarts a failed IPC bridge with bounded backoff.
 4. **GM-free resurrection discovery.** Parse ServUO healer/corpse waypoints
    (`0xE5/0xE6`) instead of relying on staged coordinates.
@@ -135,3 +135,37 @@ corpse -> pre-death item returned to backpack -> same two-step Goal resumed in
 recovery whitelist. The healer coordinate is deliberately fixture-only:
 production planners pass no coordinate and safely quarantine if no gump is
 already available. GM-free healer discovery remains A4 via `0xE5/0xE6`.
+
+### A3 — resilient body lifecycle ✅
+
+`ResilientIpcBody` is a stable body identity around the replaceable
+`IpcBody`/`anima-agent` child. A bridge EOF, broken pipe, or bounded response
+timeout starts an immediate retry followed by capped exponential backoff. Each
+replacement must report the original player serial in both its ready event and
+first observation. A single-owner account lease prevents competing supervisors,
+rapid crash loops share a retry budget until the session proves stable, and an
+absolute outage deadline covers production ready/validation RPCs.
+
+The transport now distinguishes protocol, remote-request, transport, ownership,
+and exhausted-recovery failures. A dedicated reader thread makes even a partial
+NDJSON line obey the response timeout; every failed child is killed and reaped,
+unexpected factory/schema errors fail closed, and close is terminal across
+concurrent or re-entrant recovery. Actions known to have failed before write are
+sent once after recovery. Actions whose flush or acknowledgement is ambiguous
+are never replayed and increment `uncertain_actions`, preserving at-most-once
+safety for purchases, item moves, gump responses, and speech.
+
+`live.py`, `fleet.py`, and `village.py` now use the resilient supervisor while
+keeping the Python `Agent`, goal, memory, episodic history, planner, and tick
+counter intact. Fleet and village runners close every successfully created body
+on normal exit, partial login failure, and downstream exceptions.
+
+Offline: 729 tests green, Ruff clean, including partial-line hangs, absolute
+deadlines, crash-loop budgets, identity mismatch, uncertain actions, unexpected
+factory failures, and concurrent/re-entrant close. The live failure-injection
+gate killed PID 73111 during an active `GoTo`, reconnected the same serial 17363
+as PID 73214/generation 2 in 0.937 seconds, preserved the exact Agent/body/Goal/
+memory/episodes/ticks state, emitted no action during reconnect, re-issued the
+same target `WalkTo` within 6 resumed ticks, resumed real movement, and arrived
+at the destination. All 22 gate flags passed without a GM connection during
+recovery.

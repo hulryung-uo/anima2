@@ -17,14 +17,16 @@ import time
 from pathlib import Path
 
 from .agent import Agent
+from .body import Body
 from .contract import Say, Walk
 from .control import GmControl
-from .ipc_body import IpcBody
+from .ipc_body import IpcBody, ResilientIpcBody
 from .persona import Persona
 from .planner import Planner
 from .skills import Greet, SpeakPending, Wander
 
 V1_PERSONAS = Path.home() / "dev" / "uo" / "anima" / "personas"
+_LiveIpcBody = IpcBody | ResilientIpcBody
 
 
 def load_personas(n: int, persona_dir: Path | None = None) -> list[Persona]:
@@ -38,7 +40,7 @@ def load_personas(n: int, persona_dir: Path | None = None) -> list[Persona]:
     return personas
 
 
-def build_agent(body: IpcBody, persona: Persona) -> Agent:
+def build_agent(body: Body, persona: Persona) -> Agent:
     """A sociable 'living world' agent: voice queued lines, greet people, wander."""
     return Agent(
         body=body,
@@ -73,49 +75,61 @@ def run_fleet(
     stagger: float = 4.0,
 ) -> None:
     personas = load_personas(n, persona_dir)
-    bodies: list[tuple[str, IpcBody, Persona]] = []
-    print(f"spawning {n} agents (staggered to dodge login throttle)...")
-    for i, persona in enumerate(personas):
-        acct = f"anima{i}"
+    bodies: list[tuple[str, _LiveIpcBody, Persona]] = []
+    try:
+        print(f"spawning {n} agents (staggered to dodge login throttle)...")
+        for i, persona in enumerate(personas):
+            acct = f"anima{i}"
+            try:
+                body = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=300)
+            except Exception as e:  # noqa: BLE001 — one bad login shouldn't sink the fleet
+                print(f"  {acct}: login failed ({e}); skipping")
+                continue
+            bodies.append((acct, body, persona))
+            print(f"  {acct}: {persona.name} in world @ {body.ready['player']['pos']}")
+            time.sleep(stagger)
+
+        if not bodies:
+            print("no agents came online")
+            return
+
+        if gather:
+            _gather(bodies, host, port)
+
+        # Run each agent in its own thread (independent body → no shared state).
+        status: dict[int, str] = {}
+        lock = threading.Lock()
+        agents = [build_agent(body, persona) for _, body, persona in bodies]
+        threads = [
+            threading.Thread(target=_run_agent, args=(a, ticks, i, status, lock), daemon=True)
+            for i, a in enumerate(agents)
+        ]
+        for t in threads:
+            t.start()
+
+        # Main thread: periodically print a snapshot of the living world.
+        while any(t.is_alive() for t in threads):
+            time.sleep(2.0)
+            with lock:
+                snap = [status[i] for i in sorted(status)]
+            print("— world —\n  " + "\n  ".join(snap))
+        for t in threads:
+            t.join()
+        print("fleet done.")
+    finally:
+        _close_bodies(bodies)
+
+
+def _close_bodies(bodies: list[tuple[str, _LiveIpcBody, Persona]]) -> None:
+    """Close every spawned bridge, even if another bridge fails to close."""
+    for acct, body, _persona in reversed(bodies):
         try:
-            body = IpcBody.spawn(host, port, acct, acct, pump_ms=300)
-        except Exception as e:  # noqa: BLE001 — one bad login shouldn't sink the fleet
-            print(f"  {acct}: login failed ({e}); skipping")
-            continue
-        bodies.append((acct, body, persona))
-        print(f"  {acct}: {persona.name} in world @ {body.ready['player']['pos']}")
-        time.sleep(stagger)
-
-    if not bodies:
-        print("no agents came online")
-        return
-
-    if gather:
-        _gather(bodies, host, port)
-
-    # Run each agent in its own thread (independent body → no shared state).
-    status: dict[int, str] = {}
-    lock = threading.Lock()
-    agents = [build_agent(body, persona) for _, body, persona in bodies]
-    threads = [
-        threading.Thread(target=_run_agent, args=(a, ticks, i, status, lock), daemon=True)
-        for i, a in enumerate(agents)
-    ]
-    for t in threads:
-        t.start()
-
-    # Main thread: periodically print a snapshot of the living world.
-    while any(t.is_alive() for t in threads):
-        time.sleep(2.0)
-        with lock:
-            snap = [status[i] for i in sorted(status)]
-        print("— world —\n  " + "\n  ".join(snap))
-    for t in threads:
-        t.join()
-    print("fleet done.")
+            body.close()
+        except Exception as exc:  # noqa: BLE001 — cleanup must continue for the fleet
+            print(f"  {acct}: close failed ({exc})")
 
 
-def _gather(bodies: list[tuple[str, IpcBody, Persona]], host: str, port: int,
+def _gather(bodies: list[tuple[str, _LiveIpcBody, Persona]], host: str, port: int,
             tx: int = 1416, ty: int = 1683) -> None:
     """GM-teleport every agent to a town crossroads and name each after its persona."""
     with GmControl.spawn(host, port) as gm:

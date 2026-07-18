@@ -23,7 +23,7 @@ from .agent import Agent
 from .chronicle import ChronicleEvent, ChronicleLedger
 from .contract import Observation, Say, Walk
 from .control import GmControl
-from .ipc_body import IpcBody
+from .ipc_body import IpcBody, ResilientIpcBody
 from .memory import Episode
 from .persona import Persona
 from .profession import (
@@ -52,6 +52,7 @@ LUMBER_MAP = 1
 #: py`'s `_DEFAULT_MILESTONES_LOG`/`skill_library.py`'s `_DEFAULT_LEDGER`
 #: convention exactly (created lazily, gitignored). PHASE6.md item 1.
 INSIGHTS_PATH = Path("data") / "insights.jsonl"
+_LiveIpcBody = IpcBody | ResilientIpcBody
 
 
 def _persona_for(prof: Profession, idx: int) -> Persona:
@@ -394,20 +395,71 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 talkativeness_gate: bool = False) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
-    online: list[tuple[IpcBody, Profession, Persona]] = []
-    for i, key in enumerate(roster):
-        prof = PROFESSIONS[key]
+    online: list[tuple[_LiveIpcBody, Profession, Persona]] = []
+    try:
+        for i, key in enumerate(roster):
+            prof = PROFESSIONS[key]
+            persona = _persona_for(prof, i)
+            try:
+                body = ResilientIpcBody.spawn(
+                    host, port, f"anima{i}", f"anima{i}", pump_ms=300,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"  anima{i} ({key}): login failed ({e})")
+                continue
+            online.append((body, prof, persona))
+            print(f"  anima{i}: {persona.name} the {key}")
+            time.sleep(stagger)
+        if not online:
+            print("no villagers came online")
+            return
+
+        _run_online_village(
+            online,
+            host=host,
+            port=port,
+            ticks=ticks,
+            forum=forum,
+            chatter=chatter,
+            llm_tiers=llm_tiers,
+            tune_deliver_threshold=tune_deliver_threshold,
+            ledger_path=ledger_path,
+            curriculum=curriculum,
+            persist_insights=persist_insights,
+            chronicle=chronicle,
+            chronicle_path=chronicle_path,
+            talkativeness_gate=talkativeness_gate,
+        )
+    finally:
+        _close_online(online)
+
+
+def _close_online(online: list[tuple[_LiveIpcBody, Profession, Persona]]) -> None:
+    """Close all villager bridges without letting one cleanup failure block another."""
+    for body, _prof, persona in reversed(online):
         try:
-            body = IpcBody.spawn(host, port, f"anima{i}", f"anima{i}", pump_ms=300)
-        except Exception as e:  # noqa: BLE001
-            print(f"  anima{i} ({key}): login failed ({e})")
-            continue
-        online.append((body, prof, _persona_for(prof, i)))
-        print(f"  anima{i}: {_persona_for(prof, i).name} the {key}")
-        time.sleep(stagger)
-    if not online:
-        print("no villagers came online")
-        return
+            body.close()
+        except Exception as exc:  # noqa: BLE001 — cleanup must continue for the village
+            print(f"  {persona.name}: close failed ({exc})")
+
+
+def _run_online_village(
+    online: list[tuple[_LiveIpcBody, Profession, Persona]],
+    *,
+    host: str,
+    port: int,
+    ticks: int,
+    forum: bool,
+    chatter: bool,
+    llm_tiers: str | None,
+    tune_deliver_threshold: bool,
+    ledger_path: str | None,
+    curriculum: bool,
+    persist_insights: bool,
+    chronicle: bool,
+    chronicle_path: str | None,
+    talkativeness_gate: bool,
+) -> None:
 
     # 2) Assign each worker a distinct workplace. Miners get an ore bank; each
     #    lumberjack gets a grove (a stand spot + the exact tree statics in reach,

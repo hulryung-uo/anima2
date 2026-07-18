@@ -23,7 +23,11 @@ def main():
         {
             "event": "ready",
             "schema_version": 7,
-            "player": {"name": "Fake", "pos": {"x": px, "y": py, "z": 0}},
+            "player": {
+                "serial": 1,
+                "name": "Fake",
+                "pos": {"x": px, "y": py, "z": 0},
+            },
         }
     )
     for line in sys.stdin:

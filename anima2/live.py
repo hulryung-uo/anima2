@@ -15,7 +15,7 @@ import argparse
 from .agent import Agent
 from .cognition import HeuristicCognition, LLMCognition, ThreadedCognition
 from .contract import Position
-from .ipc_body import IpcBody
+from .ipc_body import ResilientIpcBody
 from .persona import Persona
 from .planner import Planner
 from .skills import Combat, GoTo, Greet, SpeakPending, Wander
@@ -45,7 +45,9 @@ def main() -> None:
     if args.goto:
         goal = Goal(kind="goto", params={"target": Position(args.goto[0], args.goto[1], 0)})
 
-    with IpcBody.spawn(args.host, args.port, args.user, args.password, pump_ms=400) as body:
+    with ResilientIpcBody.spawn(
+        args.host, args.port, args.user, args.password, pump_ms=400
+    ) as body:
         print(f"bridge ready: {body.ready.get('player')}")
         agent = Agent(
             body=body,
