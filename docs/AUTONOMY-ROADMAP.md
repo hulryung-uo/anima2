@@ -1,6 +1,6 @@
 # Autonomy Roadmap — From Staged Worker to UO AI Player
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Objective
 
@@ -16,8 +16,9 @@ The body/brain contract, deterministic skills, live ServUO gates, economy
 loops, memory, and measurement kernel are strong foundations. The production
 agent is still a staged worker: `Profession.planner()` runs a fixed priority
 list after the control plane grants skills, tools, and a workplace. Survival
-interrupts now act, but LLM goals are limited to idle/nearby goto; curriculum picks are
-observational; skill retrieval does not steer the planner. Expanding the
+interrupts now freeze and preserve a durable goal stack, but LLM goals are
+limited to idle/nearby goto; curriculum picks are observational; skill retrieval
+does not steer the planner. Expanding the
 evolution budget before closing those loops would optimize configuration more
 than autonomy.
 
@@ -39,7 +40,7 @@ than autonomy.
 
 ### B. Intention and planning
 
-1. Add an interrupt/resume goal stack with progress, completion, and deadlines.
+1. ✅ Add an interrupt/resume goal stack with progress, completion, and deadlines.
 2. Connect curriculum milestones to closed-vocabulary goals (opt-in first).
 3. Select only verified skills already allowed by the profession; never execute
    arbitrary LLM-authored code or switch a non-yieldable skill mid-transaction.
@@ -211,3 +212,48 @@ brand-new bridge logs in. A bridge replacement after a healer was selected is
 covered by the episode cache; a process that first attaches after death and
 before ever observing E5 must stay safely quarantined until another trusted
 discovery source is added.
+
+### B1 — durable intention stack ✅
+
+`GoalStack` now wraps the existing `Goal` object without copying it. Every live
+frame has a stable id, source, lifecycle state, absolute tick deadline, immutable
+observation-derived progress snapshot, and bounded terminal history. Explicit
+interrupts are LIFO: the exact parent frame becomes suspended, child success,
+failure, cancellation, or expiry archives only that child, and the same parent
+object resumes. A deadline sweep also expires buried parents, so an interrupt
+cannot keep obsolete work alive indefinitely. `Agent.goal` remains a compatible
+view/setter for existing launchers.
+
+`goto` progress comes only from observed positions. It records real movement,
+normalizes the best observed distance without regressing on a healthy A* detour,
+and freezes while an explicit child or deterministic survival/death recovery
+owns the hands. Every top-frame transition stops an in-flight native `WalkTo`
+before the next frame acts, including routes emitted by non-`goto` skills.
+
+Cognition is proposal-only while a goal stack is live. Background results carry
+an agent-unique intention token plus monotonic revision; interrupt/resume ABA,
+progress, deadline, terminal, and safety transitions invalidate older answers.
+Worker contexts copy mutable memory, completed decisions are delivered once, and
+the only cognition side effect (`pending_say`) is committed by the fast loop
+under the same token check. A late LLM answer therefore cannot erase a
+transaction, cross from one Agent to another, resurrect completed work, or leak
+stale speech.
+
+Offline: 765 tests pass, including nested identity-preserving resume, child
+success/failure, buried deadlines, bounded depth, fail-closed frame ids, native
+route cancellation, cognition ABA/cross-agent isolation, positional API
+compatibility, and death/corpse-progress freezing. Ruff and diff checks are
+clean.
+
+Live `anima-client` + ServUO gate: after the GM staged one subject and closed,
+base frame 1 began the calibrated 36-tile A* course. Child frame 2 stopped the
+old route, moved to its own observed target, succeeded once, and resumed the
+same parent/progress. Child frame 3 then stopped the parent route, issued a real
+route, expired exactly once at its two-tick deadline, stopped that route, and
+again resumed frame 1. The parent reissued its original target, moved for 114
+ticks, and completed once. Alternating `None`/foreign-goto cognition ran on all
+134 ticks and was rejected 134 times; all 20 gate flags passed with no GM
+connection during work. The A4 death gate was rerun afterward and all 23 flags
+still passed in 15 ticks, proving resurrection, corpse recovery, and original
+Goal continuity remain intact. After the final first-tick safety pre-emption
+fix, the A1 live gate also reran cleanly: all 17 flee/bandage flags passed.

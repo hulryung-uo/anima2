@@ -26,6 +26,7 @@ class RecoverDeath(Skill):
     """Stop stale work, accept only a verified free resurrection, reclaim gear."""
 
     name = "recover_death"
+    interrupts_goal = True
     description = "Recover from death through a safe resurrection and reclaim an attributed corpse."
 
     corpse_find_timeout_ticks: int = 15

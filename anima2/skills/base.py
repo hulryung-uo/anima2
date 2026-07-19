@@ -50,6 +50,12 @@ class SkillContext:
     # Recent reflection insights (read-only view), for cognition context.
     # See memory.Insight / cognition.ReflectingCognition.
     insights: list[Any] = field(default_factory=list)
+    # Stable identity and observation-derived progress for the active goal
+    # frame. Kept after every legacy field so positional constructors retain
+    # their pre-B1 meaning; new code should pass these by keyword.
+    goal_id: int | None = None
+    goal_revision: int = 0
+    goal_progress: Any | None = None
 
 
 @dataclass
@@ -69,6 +75,9 @@ class Skill(ABC):
     #: True for skills that exist to serve `ctx.goal` (e.g. GoTo). When such a skill
     #: reaches a terminal state, the agent clears the goal (it's been consumed).
     consumes_goal: bool = False
+    #: True when the skill is a deterministic safety transaction that suspends
+    #: ordinary goal progress/cognition and must stop any native route first.
+    interrupts_goal: bool = False
 
     def can_run(self, ctx: SkillContext) -> bool:
         """Whether this skill is applicable right now. Default: always."""

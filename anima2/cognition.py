@@ -39,7 +39,7 @@ import random
 import re
 import threading
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 from .contract import Position
@@ -50,6 +50,15 @@ from .skills.base import Goal, SkillContext
 from .wiki import Wiki
 
 _UNSET = object()
+
+
+@dataclass(frozen=True)
+class CognitionDecision:
+    """A background proposal and the exact intention snapshot that produced it."""
+
+    goal: Goal | None
+    based_on_token: object
+    pending_say: str | None = None
 
 
 class HeuristicCognition:
@@ -297,6 +306,10 @@ class ThreadedCognition:
     def __init__(self, inner: Any) -> None:
         self.inner = inner
         self._lock = threading.Lock()
+        # A completed result carries the goal-stack revision of the context it
+        # was computed from.  Agent applies it with compare-and-swap semantics,
+        # so a slow LLM response cannot resurrect or replace a goal that changed
+        # while the worker was running.
         self._result: Any = _UNSET
         self._busy = False
         #: Set whenever no background `reconsider` pass is in flight — tests use
@@ -305,8 +318,19 @@ class ThreadedCognition:
         self._idle.set()
 
     def reconsider(self, ctx: SkillContext) -> Goal | None:
+        return self.reconsider_versioned(ctx, 0).goal
+
+    def reconsider_versioned(self, ctx: SkillContext, token: object) -> CognitionDecision:
+        """Non-blocking reconsideration tagged with its input revision.
+
+        The ordinary :meth:`reconsider` API remains intact for callers that do
+        not own a goal stack.  Stack-aware agents use this method and reject a
+        result whose returned revision is no longer current.
+        """
         with self._lock:
             result = self._result
+            if result is not _UNSET:
+                self._result = _UNSET  # deliver each completed decision once
             busy = self._busy
             if not busy:
                 self._busy = True
@@ -315,14 +339,28 @@ class ThreadedCognition:
             else:
                 start = False
         if start:
+            # The LLM must not mutate fast-loop memory from a stale background
+            # context.  The sole supported side effect (`pending_say`) returns
+            # in CognitionDecision and is committed by Agent under the same CAS.
+            worker_ctx = replace(
+                ctx,
+                memory=dict(ctx.memory),
+                episodes=list(ctx.episodes),
+                insights=list(ctx.insights),
+            )
+            pending_before = worker_ctx.memory.get("pending_say")
             try:
-                threading.Thread(target=self._work, args=(ctx,), daemon=True).start()
+                threading.Thread(
+                    target=self._work,
+                    args=(worker_ctx, token, pending_before),
+                    daemon=True,
+                ).start()
             except RuntimeError:  # spawn failed: _work's cleanup will never run —
                 # release the guard so a later tick can retry.
                 with self._lock:
                     self._busy = False
                     self._idle.set()
-        return ctx.goal if result is _UNSET else result
+        return CognitionDecision(ctx.goal, token) if result is _UNSET else result
 
     def wait_idle(self, timeout: float | None = None) -> bool:
         """Block until any in-flight background `reconsider` pass has finished.
@@ -330,13 +368,24 @@ class ThreadedCognition:
         it's a test-only join point. Returns whether it went idle before `timeout`."""
         return self._idle.wait(timeout)
 
-    def _work(self, ctx: SkillContext) -> None:
+    def _work(
+        self,
+        ctx: SkillContext,
+        token: object,
+        pending_before: object,
+    ) -> None:
         try:
             r = self.inner.reconsider(ctx)
         except Exception:  # a flaky LLM call must not kill the agent
             r = ctx.goal
+        pending_after = ctx.memory.get("pending_say")
+        pending_say = (
+            pending_after
+            if isinstance(pending_after, str) and pending_after != pending_before
+            else None
+        )
         with self._lock:
-            self._result = r
+            self._result = CognitionDecision(r, token, pending_say)
             self._busy = False
             self._idle.set()
 

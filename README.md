@@ -37,11 +37,13 @@ vertical is live-verified: the agent retreats and bandages wounds, cures poison,
 quarantines ordinary work while dead, accepts only a verified free resurrection,
 discovers a healer from server waypoints without a staged coordinate, recovers
 its uniquely attributed corpse, and resumes the same Goal after death or an
-abrupt IPC bridge restart.
+abrupt IPC bridge restart. B1 is also live-verified: nested goals preserve exact
+parent identity and observed progress across success and deadline expiry, while
+stale or adversarial cognition cannot overwrite the active stack.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 745 tests green, ruff clean. The Python
+threading) — live-verified.** 765 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -86,7 +88,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 745 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 765 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -119,6 +121,7 @@ python -m anima2.live_survival  # A1: flee, self-bandage, and observed HP recove
 python -m anima2.live_recovery  # A2: poison cure + death/resurrection/corpse/Goal continuity
 python -m anima2.live_reconnect # A3: kill the live bridge, reconnect, and resume the same GoTo
 python -m anima2.live_waypoint_recovery # A4: discover healer E5, resurrect, recover corpse, resume Goal
+python -m anima2.live_goal_stack # B1: interrupt, deadline, cognition isolation, resume same Goal
 ```
 
 ## Family

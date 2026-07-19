@@ -37,6 +37,7 @@ class Survive(Skill):
     """Pre-empt ordinary work when badly wounded; flee, then bandage self."""
 
     name = "survive"
+    interrupts_goal = True
     description = "Retreat from nearby hostiles when badly wounded, then bandage self."
 
     heal_below_fraction: float = 0.40
