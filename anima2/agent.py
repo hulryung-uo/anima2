@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .body import Body
 from .cognition import CognitionDecision
@@ -65,6 +65,8 @@ class Agent:
         episodes_window: int = 20,
         skill_library: SkillLibrary | None = None,
         profession: str = "",
+        goal_validator: Callable[[Goal, SkillContext], bool] | None = None,
+        goal_progress: Callable[[Goal, SkillContext], float | None] | None = None,
     ) -> None:
         self.body = body
         self.persona = persona
@@ -85,6 +87,11 @@ class Agent:
         #: `SkillLibrary.stats()` looks up by. Defaults to `""` (an explicit,
         #: harmless "unset" key) so passing `skill_library=` alone still works.
         self.profession = profession
+        # Optional fail-closed admission boundary for autonomous cognition.
+        # User/system APIs retain their explicit authority; only proposals
+        # entering through the slow loop are constrained here.
+        self.goal_validator = goal_validator
+        self.goal_progress = goal_progress
         #: How many recent episodes `SkillContext.episodes` carries each tick. This
         #: is the ceiling every cognition layer sees — notably `ReflectingCognition`,
         #: whose own `episode_window` can never look further back than this (it
@@ -202,7 +209,12 @@ class Agent:
     def _intention_token(self) -> tuple[object, int]:
         return (self._intention_epoch, self.goal_stack.revision)
 
-    def _apply_cognition(self, proposal: Goal | None, based_on_token: object) -> bool:
+    def _apply_cognition(
+        self,
+        proposal: Goal | None,
+        based_on_token: object,
+        ctx: SkillContext,
+    ) -> bool:
         """CAS-apply a cognition proposal only while the stack is idle.
 
         Active and suspended goals are durable transactions.  Cognition may
@@ -224,6 +236,16 @@ class Agent:
             return False
         if proposal is None:
             return False
+        if self.goal_validator is not None:
+            try:
+                admitted = bool(self.goal_validator(proposal, ctx))
+            except Exception:  # noqa: BLE001 — policy failure must fail closed
+                admitted = False
+            if not admitted:
+                self.memory["cognition_admission_rejections"] = (
+                    int(self.memory.get("cognition_admission_rejections", 0)) + 1
+                )
+                return False
         self.goal_stack.push(proposal, source=GoalSource.COGNITION, tick=self.ticks)
         return True
 
@@ -358,6 +380,14 @@ class Agent:
         # transaction, not the durable parent frame.
         if not self._pending_route_stop and not safety_interrupt:
             self.goal_stack.observe(obs, self.ticks)
+            progress_goal = self.goal
+            if progress_goal is not None and self.goal_progress is not None:
+                try:
+                    policy_progress = self.goal_progress(progress_goal, ctx)
+                except Exception:  # noqa: BLE001 — progress policy is advisory
+                    policy_progress = None
+                if policy_progress is not None:
+                    self.goal_stack.set_progress(policy_progress, tick=self.ticks)
             frame = self.goal_stack.current
             ctx.goal_revision = self.goal_stack.revision
             ctx.goal_progress = frame.progress if frame is not None else None
@@ -379,7 +409,7 @@ class Agent:
             else:
                 proposal = self.cognition.reconsider(ctx)
                 based_on_token = token
-            if self._apply_cognition(proposal, based_on_token):
+            if self._apply_cognition(proposal, based_on_token, ctx):
                 frame = self.goal_stack.current
                 ctx.goal = self.goal
                 ctx.goal_id = frame.id if frame is not None else None

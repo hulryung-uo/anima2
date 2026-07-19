@@ -39,11 +39,14 @@ discovers a healer from server waypoints without a staged coordinate, recovers
 its uniquely attributed corpse, and resumes the same Goal after death or an
 abrupt IPC bridge restart. B1 is also live-verified: nested goals preserve exact
 parent identity and observed progress across success and deadline expiry, while
-stale or adversarial cognition cannot overwrite the active stack.
+stale or adversarial cognition cannot overwrite the active stack. B2 now turns
+trusted curriculum milestones into exact, profession-bound work goals behind a
+separate `--curriculum-goals` opt-in; arbitrary/cross-profession proposals fail
+closed and work FSMs only yield at safe observation-confirmed boundaries.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 765 tests green, ruff clean. The Python
+threading) — live-verified.** 803 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -88,7 +91,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 765 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 803 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -101,6 +104,7 @@ python -m anima2.live 127.0.0.1 2594 animatest animatest --goto 3720 2216
 #   of each at a calibrated trade spot, wires up ingot delivery, and stages a
 #   vendor + banker so the paired blacksmith can sell/bank too:
 python -m anima2.village
+#   add --curriculum-goals to drive profession work from admitted catalog Goals
 #   add --chatter for LLM in-character speech + goal:goto (needs a Replicate key in
 #     anima v1's config.yaml, or REPLICATE_API_TOKEN — no extra pip install)
 #   add --forum to post each villager's day to uotavern (needs ANIMA_FORUM_API_KEY,

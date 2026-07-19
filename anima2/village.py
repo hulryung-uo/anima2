@@ -391,6 +391,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 chatter: bool = False, llm_tiers: str | None = None,
                 tune_deliver_threshold: bool = False, ledger_path: str | None = None,
                 curriculum: bool = False, persist_insights: bool = False,
+                curriculum_goals: bool = False,
                 chronicle: bool = False, chronicle_path: str | None = None,
                 talkativeness_gate: bool = False) -> None:
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
@@ -425,6 +426,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             tune_deliver_threshold=tune_deliver_threshold,
             ledger_path=ledger_path,
             curriculum=curriculum,
+            curriculum_goals=curriculum_goals,
             persist_insights=persist_insights,
             chronicle=chronicle,
             chronicle_path=chronicle_path,
@@ -455,6 +457,7 @@ def _run_online_village(
     tune_deliver_threshold: bool,
     ledger_path: str | None,
     curriculum: bool,
+    curriculum_goals: bool = False,
     persist_insights: bool,
     chronicle: bool,
     chronicle_path: str | None,
@@ -675,7 +678,7 @@ def _run_online_village(
 
             cognition = ThreadedCognition(LLMCognition(chat_client, job=p["prof"].key,
                                                        talkativeness_gate=talkativeness_gate))
-        planner = p["prof"].planner()
+        planner = p["prof"].planner(curriculum_goals=curriculum_goals)
 
         # PHASE4.md item 4: pick a deliver_threshold once per miner, at
         # construction time (session granularity — held fixed for the whole
@@ -685,7 +688,15 @@ def _run_online_village(
         # Scope names.
         chosen_threshold: float | None = None
         if tuner is not None and p["prof"].key == "miner":
-            miner_skill = next((s for s in planner.skills if isinstance(s, MineSmeltDeliver)), None)
+            miner_skill = next(
+                (
+                    s if isinstance(s, MineSmeltDeliver) else getattr(s, "inner", None)
+                    for s in planner.skills
+                    if isinstance(s, MineSmeltDeliver)
+                    or isinstance(getattr(s, "inner", None), MineSmeltDeliver)
+                ),
+                None,
+            )
             if miner_skill is not None:
                 chosen_threshold = tuner.choose()
                 miner_skill.deliver_threshold = chosen_threshold
@@ -703,7 +714,7 @@ def _run_online_village(
         # else the chatter client, else a stub (0-1 eligible needs no LLM, and
         # a bad reply falls back deterministically — so a stub is harmless).
         curriculum_ctrl = None
-        if curriculum:
+        if curriculum or curriculum_goals:
             from .cognition import HeuristicCognition
             from .curriculum import CurriculumController
             if tiered_clients is not None:
@@ -717,11 +728,19 @@ def _run_online_village(
             curriculum_ctrl = CurriculumController(
                 cognition if cognition is not None else HeuristicCognition(),
                 pick_client, p["persona"].name, p["prof"].key,
+                drive_goals=curriculum_goals,
             )  # default milestones_path = data/milestones.jsonl
             cognition = curriculum_ctrl
 
         agent = Agent(body=p["body"], persona=p["persona"], planner=planner,
-                      cognition=cognition, cognition_interval=12)
+                      cognition=cognition, cognition_interval=12,
+                      profession=p["prof"].key,
+                      goal_validator=(curriculum_ctrl.validate_goal
+                                      if curriculum_goals and curriculum_ctrl is not None
+                                      else None),
+                      goal_progress=(curriculum_ctrl.goal_progress
+                                     if curriculum_goals and curriculum_ctrl is not None
+                                     else None))
         if curriculum_ctrl is not None:
             curriculum_ctrl.episodes = agent.episodes  # rebind: milestone Episodes land in the agent's own memory
         if p["nodes"]:
@@ -868,6 +887,11 @@ def main() -> None:
     # records an `Episode` when one is achieved (observational only for now).
     ap.add_argument("--curriculum", action="store_true",
                      help="automatic curriculum: track/pick milestones (Phase 4 item 5)")
+    ap.add_argument(
+        "--curriculum-goals",
+        action="store_true",
+        help="drive admitted profession work from curriculum milestones (B2 opt-in)",
+    )
     # Opt-in, unset by default (Phase 6 item 1): zero effect on any currently-
     # passing roster unless passed, and only takes effect at all when
     # reflection is itself wired (today: only via --llm-tiers). Resumes each
@@ -905,6 +929,7 @@ def main() -> None:
                 forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers,
                 tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path,
                 curriculum=args.curriculum, persist_insights=args.persist_insights,
+                curriculum_goals=args.curriculum_goals,
                 chronicle=args.chronicle, chronicle_path=args.chronicle_path,
                 talkativeness_gate=args.talkativeness_gate)
 

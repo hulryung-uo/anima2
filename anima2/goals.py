@@ -12,8 +12,9 @@ allowing an old frame to become runnable again.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
+import math
 
 from .contract import Observation, Position
 from .skills.base import Goal
@@ -379,6 +380,35 @@ class GoalStack:
         if changed:
             self._changed()
         return changed
+
+    def set_progress(
+        self,
+        value: float,
+        *,
+        tick: int,
+        note: str | None = "policy",
+    ) -> bool:
+        """Merge trusted policy progress into the active frame monotonically."""
+
+        _require_tick(tick)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise TypeError("goal progress value must be numeric")
+        normalized = float(value)
+        if not math.isfinite(normalized):
+            raise ValueError("goal progress value must be finite")
+        normalized = max(0.0, min(1.0, normalized))
+        frame = self.current
+        if frame is None or normalized <= frame.progress.value:
+            return False
+        active = frame.progress.observe_active(tick)
+        frame.progress = replace(
+            active,
+            value=normalized,
+            note=note,
+            evidence_count=active.evidence_count + 1,
+        )
+        self._changed()
+        return True
 
     def _new_frame(
         self,

@@ -29,10 +29,13 @@ Two halves, deliberately separated:
   parse failure or a hallucinated non-list name falls back to the deterministic
   "lowest current `progress()`" heuristic.
 
-This landing is **additive/observational only**: the chosen milestone is
-exposed as `ctx.memory["curriculum_milestone"]` for reflection/forum prompts
-and future items to read — no new `Goal` kind, no planner change, nothing
-reads it to drive behavior yet. An achieved-transition (not-achieved →
+By default this remains **additive/observational only**: the chosen milestone
+is exposed as `ctx.memory["curriculum_milestone"]` for reflection/forum prompts.
+The explicit ``drive_goals=True`` mode may additionally propose one closed-
+schema ``curriculum`` Goal while the stack is idle. The LLM still chooses only
+a catalog name; trusted code constructs and validates the Goal, and the
+profession planner binds it to that profession's existing work skill. An
+achieved-transition (not-achieved →
 achieved, exactly once) records one `Episode(kind="milestone", ...)` into the
 agent's own `EpisodicMemory` and appends one line to `data/milestones.jsonl`
 (gitignored, mirrors `skill_library.py`'s ledger convention) — read at
@@ -43,6 +46,7 @@ doesn't lose curriculum progress or re-fire an already-recorded milestone.
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 from dataclasses import dataclass
@@ -50,9 +54,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .cognition import _parse_json  # module-private, reused not duplicated — mirrors
+from .cognition import CognitionDecision, _parse_json  # module-private, reused not duplicated — mirrors
 # skill_tuning.py reusing skill_library.py's _read_ledger the same way.
-from .contract import Observation
+from .contract import Observation, Position
 from .llm import LLMClient
 from .memory import Episode, EpisodicMemory
 from .skills.base import Goal, SkillContext
@@ -135,6 +139,8 @@ def _skill_base(obs: Observation, skill_id: int) -> float | None:
 
 
 def _clamp(x: float) -> float:
+    if not math.isfinite(x):
+        return 0.0
     return max(0.0, min(1.0, x))
 
 
@@ -287,6 +293,74 @@ MILESTONES: dict[str, list[Milestone]] = {
     ],
 }
 
+_CURRICULUM_GOAL_KEYS = frozenset({"schema", "profession", "milestone"})
+
+
+def milestone_for(profession: str, name: str) -> Milestone | None:
+    """Return one exact catalog entry, never a fuzzy/LLM-derived match."""
+
+    return next(
+        (m for m in MILESTONES.get(profession, ()) if m.name == name),
+        None,
+    )
+
+
+def curriculum_goal(profession: str, milestone: str) -> Goal:
+    """Construct the sole trusted autonomous work-goal vocabulary."""
+
+    goal = Goal(
+        kind="curriculum",
+        params={"schema": 1, "profession": profession, "milestone": milestone},
+    )
+    if not validate_curriculum_goal(goal, profession):
+        raise ValueError("unknown curriculum milestone for profession")
+    return goal
+
+
+def validate_curriculum_goal(goal: Goal, profession: str) -> bool:
+    """Fail closed on malformed, unknown, or cross-profession work goals."""
+
+    if not isinstance(goal, Goal) or goal.kind != "curriculum":
+        return False
+    params = goal.params
+    if not isinstance(params, dict) or set(params) != _CURRICULUM_GOAL_KEYS:
+        return False
+    if params.get("schema") != 1 or isinstance(params.get("schema"), bool):
+        return False
+    goal_profession = params.get("profession")
+    name = params.get("milestone")
+    return bool(
+        isinstance(goal_profession, str)
+        and goal_profession == profession
+        and isinstance(name, str)
+        and milestone_for(profession, name) is not None
+    )
+
+
+def _validate_goto_goal(
+    goal: Goal,
+    origin: Position | None = None,
+    *,
+    max_excursion: int = 12,
+) -> bool:
+    """Validate the other autonomous Goal kind already emitted by cognition."""
+
+    if goal.kind != "goto" or not isinstance(goal.params, dict):
+        return False
+    if set(goal.params) != {"target"}:
+        return False
+    target = goal.params.get("target")
+    if not isinstance(target, Position):
+        return False
+    coords = (target.x, target.y, target.z)
+    if any(not isinstance(v, int) or isinstance(v, bool) for v in coords):
+        return False
+    in_map = 0 <= target.x <= 0xFFFF and 0 <= target.y <= 0xFFFF and -128 <= target.z <= 127
+    if not in_map or origin is None:
+        return in_map
+    distance = max(abs(target.x - origin.x), abs(target.y - origin.y))
+    return target.z == origin.z and 0 < distance <= max_excursion
+
 
 def _mid_transaction(memory: dict[str, Any]) -> bool:
     """True while `memory` shows the agent mid a multi-phase skill
@@ -306,6 +380,48 @@ def _mid_transaction(memory: dict[str, Any]) -> bool:
     if memory.get("hunt_phase") == "loot":
         return True
     return False
+
+
+def curriculum_transaction_active(memory: dict[str, Any]) -> bool:
+    """Public policy seam used by the goal terminal to avoid mid-FSM yield."""
+
+    return _mid_transaction(memory)
+
+
+def curriculum_can_yield(ctx: SkillContext, profession: str) -> bool:
+    """True only at an observation-confirmed safe work-FSM boundary."""
+
+    obs = ctx.obs
+    craft_prompt = bool(
+        profession == "blacksmith"
+        and ctx.memory.get("bs_state") == "loop"
+        and obs.gumps
+    )
+    if (
+        obs.pending_target is not None
+        or (obs.gumps and not craft_prompt)
+        or obs.shop_buy is not None
+        or obs.shop_sell is not None
+        or obs.popup is not None
+    ):
+        return False
+    memory = ctx.memory
+    if memory.get("smelt_phase", "mine") != "mine":
+        return False
+    if memory.get("mkt_phase", "craft") != "craft":
+        return False
+    bs_state = memory.get("bs_state", "open")
+    if bs_state in {"category", "item", "fetch", "fetch_return"}:
+        return False
+    if bs_state == "loop" and not craft_prompt:
+        return False
+    if memory.get("bs_fetch_held") is not None:
+        return False
+    if memory.get("harvest_relocating"):
+        return False
+    if memory.get("harvest_equip_step") == 1:
+        return False
+    return not _mid_transaction(memory)
 
 
 # ============================================================================
@@ -366,6 +482,7 @@ class CurriculumController:
         min_new_episodes: int = 6,
         episodes: EpisodicMemory | None = None,
         milestones_path: str | Path | None = None,
+        drive_goals: bool = False,
     ) -> None:
         self.inner = inner
         self.client = client
@@ -373,6 +490,7 @@ class CurriculumController:
         self.profession = profession
         self.every_n_reconsiders = every_n_reconsiders
         self.min_new_episodes = min_new_episodes
+        self.drive_goals = drive_goals
         #: Where achieved-transition episodes land. `None` (the default)
         #: creates a standalone `EpisodicMemory` — fine for offline tests
         #: that never construct a real `Agent`. A live caller wiring this
@@ -398,6 +516,9 @@ class CurriculumController:
         #: has completed yet). Read synchronously into `ctx.memory` every
         #: `reconsider()` call — see that method.
         self.current_milestone: str | None = None
+        self.exhausted = False
+        self._initial_pick_started = False
+        self._goal_cache: dict[str, Goal] = {}
         #: Restart-survives ratchet: `(persona, profession, milestone)`
         #: triples already recorded as achieved, seeded from
         #: `milestones_path` at construction time (mirrors `skill_library.py`
@@ -408,20 +529,100 @@ class CurriculumController:
 
     def reconsider(self, ctx: SkillContext) -> Goal | None:
         goal = self.inner.reconsider(ctx)
+        return self._after_inner(ctx, goal)
+
+    def reconsider_versioned(self, ctx: SkillContext, token: object) -> CognitionDecision:
+        """Preserve an inner async cognition's original CAS token and speech.
+
+        Wrapping ``ThreadedCognition`` must not turn a stale result into a fresh
+        one merely because the outer controller was called later.
+        """
+
+        reconsider_versioned = getattr(self.inner, "reconsider_versioned", None)
+        if reconsider_versioned is None:
+            decision = CognitionDecision(self.inner.reconsider(ctx), token)
+        else:
+            decision = reconsider_versioned(ctx, token)
+            if not isinstance(decision, CognitionDecision):
+                raise TypeError("reconsider_versioned must return CognitionDecision")
+        return CognitionDecision(
+            goal=self._after_inner(ctx, decision.goal),
+            based_on_token=decision.based_on_token,
+            pending_say=decision.pending_say,
+        )
+
+    def validate_goal(self, goal: Goal, ctx: SkillContext | None = None) -> bool:
+        """Admission policy for autonomous proposals in goal-driving mode."""
+
+        if not isinstance(goal, Goal):
+            return False
+        if validate_curriculum_goal(goal, self.profession):
+            return True
+        # Goal-driving workers are anchored to calibrated workplaces. A goto
+        # needs a durable return-to-workplace parent, which is a later policy;
+        # until then autonomous excursions fail closed instead of stranding
+        # the next work goal up to 12 tiles from its tools/resources.
+        if self.drive_goals:
+            return False
+        if ctx is None:
+            return False
+        return _validate_goto_goal(goal, ctx.obs.player.pos)
+
+    def goal_progress(self, goal: Goal, ctx: SkillContext) -> float | None:
+        """Return trusted catalog progress for the active curriculum frame."""
+
+        if not validate_curriculum_goal(goal, self.profession):
+            return None
+        milestone = milestone_for(self.profession, str(goal.params["milestone"]))
+        return None if milestone is None else self._safe_progress(milestone, ctx)
+
+    def _after_inner(self, ctx: SkillContext, goal: Goal | None) -> Goal | None:
         # Keep the exposed pick current every tick, not just on a due round —
         # mirrors `ReflectingCognition` reading `self.insights.recent(3)` into
         # `ctx.insights` on every call regardless of whether reflection fires.
         ctx.memory["curriculum_milestone"] = self.current_milestone
+        ctx.memory["curriculum_exhausted"] = self.exhausted
 
         self._reconsiders_since += 1
         new_episodes = ctx.episode_count - self._episode_count_at_last
-        due = new_episodes >= 1 and (
-            self._reconsiders_since >= self.every_n_reconsiders
-            or new_episodes >= self.min_new_episodes
+        initial_due = self.drive_goals and not self._initial_pick_started
+        due = initial_due or (
+            new_episodes >= 1
+            and (
+                self._reconsiders_since >= self.every_n_reconsiders
+                or new_episodes >= self.min_new_episodes
+            )
         )
         if due:
+            if self._start_pick(ctx) and initial_due:
+                self._initial_pick_started = True
+
+        # Existing concrete cognition retains priority. Curriculum work is
+        # proposed only into a genuinely idle intention stack.
+        if self.drive_goals and goal is not None and not self.validate_goal(goal, ctx):
+            # An invalid/far inner proposal has no authority to starve the
+            # trusted catalog. Treat it as idle; Agent admission remains the
+            # second fail-closed boundary.
+            goal = None
+        if goal is not None or not self.drive_goals or ctx.goal is not None:
+            return goal
+        name = self.current_milestone
+        if not isinstance(name, str):
+            return None
+        milestone = milestone_for(self.profession, name)
+        key = (self.persona_name, self.profession, name)
+        if milestone is None or key in self._achieved:
+            return None
+        # A terminal frame can disappear before the background persistence
+        # pass runs. Observation truth suppresses any duplicate re-enqueue.
+        if self._safe_achieved(milestone, ctx):
             self._start_pick(ctx)
-        return goal
+            return None
+        cached = self._goal_cache.get(name)
+        if cached is None:
+            cached = curriculum_goal(self.profession, name)
+            self._goal_cache[name] = cached
+        return cached
 
     def wait_idle(self, timeout: float | None = None) -> bool:
         """Block until any in-flight background evaluation pass has
@@ -431,10 +632,10 @@ class CurriculumController:
 
     # -- background pass ----------------------------------------------------------
 
-    def _start_pick(self, ctx: SkillContext) -> None:
+    def _start_pick(self, ctx: SkillContext) -> bool:
         with self._lock:
             if self._picking:
-                return
+                return False
             self._picking = True
             self._idle.clear()
         # Snapshot what the background thread needs as a fresh `SkillContext`
@@ -456,12 +657,14 @@ class CurriculumController:
         self._episode_count_at_last = ctx.episode_count
         try:
             threading.Thread(target=self._pick_bg, args=(snap,), daemon=True).start()
+            return True
         except RuntimeError:  # spawn failed: _pick_bg's finally will never run —
             # release the guard here and restore the counters so the round stays due.
             self._reconsiders_since, self._episode_count_at_last = reconsiders, count_at_last
             with self._lock:
                 self._picking = False
                 self._idle.set()
+            return False
 
     def _pick_bg(self, snap: SkillContext) -> None:
         """Runs on its own daemon thread, off the goal-delivery path entirely."""
@@ -494,14 +697,25 @@ class CurriculumController:
 
         eligible = [m for m in milestones if (self.persona_name, self.profession, m.name) not in self._achieved]
 
+        # While a curriculum frame is live, its exact catalog focus is latched.
+        # A concurrent background pick may record achievement, but may not
+        # silently redirect the hands to a different milestone mid-frame.
+        active = snap.goal
+        if isinstance(active, Goal) and validate_curriculum_goal(active, self.profession):
+            self.current_milestone = str(active.params["milestone"])
+            return
+
         if _mid_transaction(snap.memory) and self.current_milestone is not None:
             return  # defer: keep whatever was picked before (see module docstring)
 
         if not eligible:
             self.current_milestone = None
+            self.exhausted = True
         elif len(eligible) == 1:
+            self.exhausted = False
             self.current_milestone = eligible[0].name
         else:
+            self.exhausted = False
             self.current_milestone = self._pick_name(eligible, snap)
 
     # -- picking --------------------------------------------------------------------

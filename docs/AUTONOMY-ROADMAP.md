@@ -16,9 +16,10 @@ The body/brain contract, deterministic skills, live ServUO gates, economy
 loops, memory, and measurement kernel are strong foundations. The production
 agent is still a staged worker: `Profession.planner()` runs a fixed priority
 list after the control plane grants skills, tools, and a workplace. Survival
-interrupts now freeze and preserve a durable goal stack, but LLM goals are
-limited to idle/nearby goto; curriculum picks are observational; skill retrieval
-does not steer the planner. Expanding the
+interrupts now freeze and preserve a durable goal stack, and the opt-in B2 path
+turns trusted curriculum picks into profession-bound work goals. The broader
+cognition vocabulary, self-provisioning, workplace-return policy, and dynamic
+skill retrieval still do not steer the planner. Expanding the
 evolution budget before closing those loops would optimize configuration more
 than autonomy.
 
@@ -41,7 +42,7 @@ than autonomy.
 ### B. Intention and planning
 
 1. ✅ Add an interrupt/resume goal stack with progress, completion, and deadlines.
-2. Connect curriculum milestones to closed-vocabulary goals (opt-in first).
+2. ✅ Connect curriculum milestones to closed-vocabulary goals (opt-in first).
 3. Select only verified skills already allowed by the profession; never execute
    arbitrary LLM-authored code or switch a non-yieldable skill mid-transaction.
 4. Expand cognition from idle/goto to validated work, acquire, sell, bank,
@@ -257,3 +258,50 @@ connection during work. The A4 death gate was rerun afterward and all 23 flags
 still passed in 15 ticks, proving resurrection, corpse recovery, and original
 Goal continuity remain intact. After the final first-tick safety pre-emption
 fix, the A1 live gate also reran cleanly: all 17 flee/bandage flags passed.
+
+### B2 — closed curriculum work goals ✅
+
+`--curriculum-goals` is a separate opt-in from the original observational
+`--curriculum`. The controller may construct only the exact schema
+`Goal(kind="curriculum", params={"schema": 1, "profession": ..., "milestone":
+...})`; milestone and profession must match the hand-written catalog. The LLM
+never supplies a Goal kind, action, coordinate, or skill name. `Agent` applies a
+second context-aware admission check before a cognition proposal can enter the
+stack. The controller also preserves an inner `ThreadedCognition` decision's
+original intention token and pending speech, closing the wrapper seam that
+could otherwise have laundered a stale result into a fresh proposal.
+
+An opt-in profession planner binds that Goal to exactly its existing work-skill
+instance. Without an admitted Goal it waits in place instead of wandering away
+from a calibrated workplace; with a valid Goal whose tool/preconditions are
+temporarily missing it also waits. Inventory milestones temporarily raise the
+trusted skill's consume/sell threshold (`20` ore, `10` daggers) and restore the
+normal threshold afterward. Completion comes only from the catalog predicate
+and only at an observation-confirmed FSM yield point: no open target cursor,
+unsafe craft/vendor UI, lifted item, smelt/delivery/market leg, or relocation.
+The visible blacksmith MAKE_LAST prompt is an explicit quiescent boundary; its
+same `loop` state while the prompt is absent remains non-yieldable. Once a
+profession's catalog is exhausted, legacy work resumes instead of idling
+forever.
+
+Catalog progress is merged monotonically into the exact `GoalFrame`; non-finite
+values fail closed. An invalid inner proposal cannot starve trusted curriculum
+work. Autonomous `goto` is deliberately disabled while goal-driving is enabled:
+B2 has no durable return-to-workplace policy yet, so allowing even a bounded
+excursion could strand the next mining/crafting/fishing Goal away from its
+tools. Explicit user/system Goals retain their existing authority.
+
+Offline: 803 tests pass. The B2 adversarial suite covers exact-schema and
+cross-profession rejection, default opt-out parity, idle/precondition waiting,
+threshold override and restoration, unsafe-FSM completion denial, stale-token
+preservation, invalid-proposal starvation, monotonic progress, and NaN/Infinity
+rejection. Ruff and diff checks are clean.
+
+Live `anima-client` + ServUO gate: the GM staged a miner at the calibrated ore
+spot with Mining 51, 20 ore, exactly 9 ingots, one pickaxe, and a visible forge,
+then disconnected before constructing the controller or Agent. The sole
+unachieved milestone produced one validated frame; no profession work ran before
+that frame. The bound shipped skill emitted a real `Use(ore)` followed by
+`TargetObject(exact forge)`, live observations showed ore decrease and ingots
+cross `9 -> 14`, the exact frame archived `SUCCESS` once, one milestone episode
+was recorded, and settle ticks did not re-enqueue it. All 14 gate flags passed.

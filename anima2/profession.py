@@ -16,8 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .curriculum import (
+    curriculum_can_yield,
+    milestone_for,
+    validate_curriculum_goal,
+)
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
+from .skills.base import SkillContext, SkillResult, Status
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
 # walkable tiles with ~19 mineable tiles in reach, ≥33 apart so workers don't crowd.
@@ -174,6 +180,99 @@ NAV_START: tuple[int, int] = MINING_SPOTS[3]  # (2551, 420)
 NAV_DEST: tuple[int, int] = HUNTING_SPOT  # (2587, 408) — spacious, not a one-way alcove
 
 
+class CurriculumGoalComplete(Skill):
+    """Observation-truth terminal for one validated curriculum frame."""
+
+    name = "curriculum_complete"
+    description = "Finish a curriculum goal once its catalog predicate is observed."
+    consumes_goal = True
+
+    def __init__(self, profession: str) -> None:
+        self.profession = profession
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        goal = ctx.goal
+        if goal is None or not validate_curriculum_goal(goal, self.profession):
+            return False
+        milestone = milestone_for(self.profession, str(goal.params["milestone"]))
+        if milestone is None:
+            return False
+        if not curriculum_can_yield(ctx, self.profession):
+            return False
+        try:
+            return bool(milestone.is_achieved(ctx))
+        except Exception:  # noqa: BLE001 — a broken predicate cannot complete work
+            return False
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self.can_run(ctx):
+            return SkillResult(Status.FAILURE)
+        return SkillResult(Status.SUCCESS)
+
+
+class CurriculumBoundWork(Skill):
+    """Expose a profession's existing hands only to its admitted work Goal."""
+
+    def __init__(self, profession: str, inner: Skill) -> None:
+        self.profession = profession
+        self.inner = inner
+        self.name = inner.name
+        self.description = inner.description
+        self._policy_defaults = {
+            name: getattr(inner, name)
+            for name in ("ore_threshold", "sell_threshold")
+            if hasattr(inner, name)
+        }
+
+    def _apply_milestone_policy(self, goal_name: str | None) -> None:
+        for name, value in self._policy_defaults.items():
+            setattr(self.inner, name, value)
+        overrides: dict[tuple[str, str], dict[str, int]] = {
+            ("miner", "miner_hold_20_ore"): {"ore_threshold": 20},
+            ("blacksmith", "blacksmith_hold_10_daggers"): {"sell_threshold": 10},
+        }
+        for name, value in overrides.get((self.profession, goal_name or ""), {}).items():
+            if name in self._policy_defaults:
+                setattr(self.inner, name, value)
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        goal = ctx.goal
+        admitted = goal is not None and validate_curriculum_goal(goal, self.profession)
+        goal_name = str(goal.params["milestone"]) if admitted else None
+        self._apply_milestone_policy(goal_name)
+        exhausted_fallback = goal is None and bool(ctx.memory.get("curriculum_exhausted"))
+        return bool((admitted or exhausted_fallback) and self.inner.can_run(ctx))
+
+    def diagnose(self, ctx: SkillContext) -> str | None:
+        goal = ctx.goal
+        if goal is None or not validate_curriculum_goal(goal, self.profession):
+            return f"{self.name}: no admitted {self.profession} curriculum goal"
+        return self.inner.diagnose(ctx)
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self.can_run(ctx):
+            return SkillResult(Status.FAILURE)
+        return self.inner.step(ctx)
+
+
+class CurriculumWait(Skill):
+    """Hold a calibrated workplace while the next trusted goal is picked."""
+
+    name = "curriculum_wait"
+    description = "Wait in place for the next admitted curriculum goal."
+
+    def __init__(self, profession: str) -> None:
+        self.profession = profession
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        if ctx.goal is None:
+            return not bool(ctx.memory.get("curriculum_exhausted"))
+        return validate_curriculum_goal(ctx.goal, self.profession)
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        return SkillResult(Status.RUNNING)
+
+
 @dataclass
 class Profession:
     key: str
@@ -198,7 +297,7 @@ class Profession:
     #: purely flavor for the hunter below, not a behavioural change elsewhere.
     combat_disposition: str = "neutral"
 
-    def planner(self) -> Planner:
+    def planner(self, *, curriculum_goals: bool = False) -> Planner:
         """Voice a pending line, honour an LLM 'go there' goal, else work, be
         sociable, and wander.
 
@@ -209,7 +308,13 @@ class Profession:
         """
         skills: list[Skill] = [Survive(), RecoverDeath(), SpeakPending(), GoTo()]
         if self.work_skill is not None:
-            skills.append(self.work_skill())
+            work = self.work_skill()
+            if curriculum_goals:
+                skills.append(CurriculumGoalComplete(self.key))
+                skills.append(CurriculumBoundWork(self.key, work))
+                skills.append(CurriculumWait(self.key))
+            else:
+                skills.append(work)
         skills += [Greet(), Wander()]
         return Planner(skills)
 
