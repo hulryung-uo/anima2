@@ -15,7 +15,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 from ..contract import Action, Observation
 from ..persona import Persona
@@ -32,7 +33,59 @@ class Goal:
     """A high-level objective (set by the planner or the LLM cognition loop)."""
 
     kind: str
-    params: dict[str, Any] = field(default_factory=dict)
+    params: Mapping[str, Any] = field(default_factory=dict)
+    _sealed: bool = field(default=False, init=False, repr=False, compare=False)
+    _seal_authority: object | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def seal(self, authority: object) -> Goal:
+        """Freeze a trusted canonical Goal without changing legacy Goals."""
+
+        if not self._sealed:
+            object.__setattr__(self, "params", _deep_freeze(dict(self.params)))
+            object.__setattr__(self, "_seal_authority", authority)
+            object.__setattr__(self, "_sealed", True)
+        return self
+
+    @property
+    def sealed(self) -> bool:
+        return self._sealed
+
+    def sealed_by(self, authority: object) -> bool:
+        return self._sealed and self._seal_authority is authority
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"_sealed", "_seal_authority"} and name in self.__dict__:
+            raise AttributeError("Goal seal metadata cannot be reassigned")
+        if getattr(self, "_sealed", False) and name in {"kind", "params"}:
+            raise AttributeError("sealed Goal intent cannot be mutated")
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in {"kind", "params", "_sealed", "_seal_authority"}:
+            raise AttributeError("Goal intent and seal metadata cannot be deleted")
+        object.__delattr__(self, name)
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        frozen: dict[Any, Any] = {}
+        for key, item in value.items():
+            frozen_key = _deep_freeze(key)
+            try:
+                hash(frozen_key)
+            except TypeError as exc:
+                raise TypeError("sealed Goal mapping keys must be immutable") from exc
+            frozen[frozen_key] = _deep_freeze(item)
+        return MappingProxyType(frozen)
+    if isinstance(value, list | tuple):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_deep_freeze(item) for item in value)
+    if value is None or isinstance(value, str | bytes | bool | int | float):
+        return value
+    raise TypeError(f"unsupported mutable Goal parameter type: {type(value).__name__}")
 
 
 @dataclass
@@ -56,6 +109,10 @@ class SkillContext:
     goal_id: int | None = None
     goal_revision: int = 0
     goal_progress: Any | None = None
+    # Exact execution policy installed by Agent. Capability-bound hands check
+    # this independently of planner metadata so transparent proxies cannot
+    # accidentally strip the admission boundary.
+    goal_policy: Any | None = None
 
 
 @dataclass

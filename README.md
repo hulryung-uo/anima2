@@ -42,11 +42,14 @@ parent identity and observed progress across success and deadline expiry, while
 stale or adversarial cognition cannot overwrite the active stack. B2 now turns
 trusted curriculum milestones into exact, profession-bound work goals behind a
 separate `--curriculum-goals` opt-in; arbitrary/cross-profession proposals fail
-closed and work FSMs only yield at safe observation-confirmed boundaries.
+closed and work FSMs only yield at safe observation-confirmed boundaries. B3
+adds a separate immutable capability registry and a sealed, deadline-bounded
+`blacksmith/bank_gold` Goal whose exact shipped adapter can bank but cannot
+craft, sell, or load a model-named skill.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 803 tests green, ruff clean. The Python
+threading) — live-verified.** 865 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -91,7 +94,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 803 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 865 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -126,6 +129,7 @@ python -m anima2.live_recovery  # A2: poison cure + death/resurrection/corpse/Go
 python -m anima2.live_reconnect # A3: kill the live bridge, reconnect, and resume the same GoTo
 python -m anima2.live_waypoint_recovery # A4: discover healer E5, resurrect, recover corpse, resume Goal
 python -m anima2.live_goal_stack # B1: interrupt, deadline, cognition isolation, resume same Goal
+python -m anima2.live_bank_goal  # B3: invalid-goal differential + exact 100-gold bank transaction
 ```
 
 ## Family

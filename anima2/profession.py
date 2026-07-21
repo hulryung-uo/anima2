@@ -16,6 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .capabilities import (
+    CAPABILITIES,
+    issue_capability_planner_lease,
+    policy_binding_for_context,
+)
 from .curriculum import (
     curriculum_can_yield,
     milestone_for,
@@ -273,6 +278,77 @@ class CurriculumWait(Skill):
         return SkillResult(Status.RUNNING)
 
 
+class CapabilityGoalComplete(Skill):
+    """Finish only the installed capability bound to the active sealed Goal."""
+
+    name = "capability_complete"
+    description = "Finish a verified capability at its observation-confirmed yield point."
+    consumes_goal = True
+
+    def __init__(self, profession: str) -> None:
+        self.profession = profession
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        if ctx.goal is None:
+            return False
+        binding = policy_binding_for_context(ctx, self.profession)
+        if binding is None:
+            return False
+        try:
+            return bool(binding.achieved(ctx) and binding.can_yield(ctx))
+        except Exception:  # noqa: BLE001 — policy callbacks fail closed
+            return False
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        return SkillResult(Status.SUCCESS if self.can_run(ctx) else Status.FAILURE)
+
+
+class CapabilityBoundSkill(Skill):
+    """Lease one preconstructed shipped instance to its exact binding only."""
+
+    def __init__(self, profession: str, inner: Skill) -> None:
+        self.profession = profession
+        self.inner = inner
+        self.name = inner.name
+        self.description = inner.description
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        if ctx.goal is None or not ctx.goal.sealed:
+            return False
+        binding = policy_binding_for_context(ctx, self.profession)
+        return bool(binding is not None and type(self.inner) is binding.skill_type)
+
+    def diagnose(self, ctx: SkillContext) -> str | None:
+        if not self.can_run(ctx):
+            return f"{self.name}: no matching installed capability lease"
+        return None
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self.can_run(ctx):
+            return SkillResult(Status.FAILURE)
+        return self.inner.step(ctx)
+
+
+class CapabilityWait(Skill):
+    """Hold position before admission or while a verified capability is blocked."""
+
+    name = "capability_wait"
+    description = "Wait in place for an admitted capability or its next safe step."
+
+    def __init__(self, profession: str) -> None:
+        self.profession = profession
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        return bool(
+            ctx.goal is None
+            or policy_binding_for_context(ctx, self.profession) is not None
+            or ctx.goal.kind == "capability"
+        )
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        return SkillResult(Status.RUNNING)
+
+
 @dataclass
 class Profession:
     key: str
@@ -297,7 +373,12 @@ class Profession:
     #: purely flavor for the hunter below, not a behavioural change elsewhere.
     combat_disposition: str = "neutral"
 
-    def planner(self, *, curriculum_goals: bool = False) -> Planner:
+    def planner(
+        self,
+        *,
+        curriculum_goals: bool = False,
+        capability_goals: bool = False,
+    ) -> Planner:
         """Voice a pending line, honour an LLM 'go there' goal, else work, be
         sociable, and wander.
 
@@ -306,8 +387,10 @@ class Profession:
         sets a goto goal, so offline/heuristic agents behave exactly as before. On
         arrival the goal clears and the worker falls back to its trade.
         """
+        if curriculum_goals and capability_goals:
+            raise ValueError("curriculum_goals and capability_goals are separate modes")
         skills: list[Skill] = [Survive(), RecoverDeath(), SpeakPending(), GoTo()]
-        if self.work_skill is not None:
+        if self.work_skill is not None and not capability_goals:
             work = self.work_skill()
             if curriculum_goals:
                 skills.append(CurriculumGoalComplete(self.key))
@@ -315,8 +398,29 @@ class Profession:
                 skills.append(CurriculumWait(self.key))
             else:
                 skills.append(work)
+        if capability_goals:
+            bindings = [
+                binding
+                for (profession, _capability), binding in CAPABILITIES.items()
+                if profession == self.key
+            ]
+            if not bindings:
+                raise ValueError(f"profession {self.key!r} has no installed capabilities")
+            skills.append(CapabilityGoalComplete(self.key))
+            for binding in bindings:
+                skills.append(CapabilityBoundSkill(self.key, binding.skill_type()))
+            skills.append(CapabilityWait(self.key))
         skills += [Greet(), Wander()]
-        return Planner(skills)
+        planner = Planner(skills)
+        if capability_goals:
+            planner.capability_profession = self.key
+            planner.capability_ids = frozenset(
+                binding.capability_id for binding in bindings
+            )
+            planner.capability_lease = issue_capability_planner_lease(
+                self.key, tuple(planner.skills)
+            )
+        return planner
 
 
 PROFESSIONS: dict[str, Profession] = {

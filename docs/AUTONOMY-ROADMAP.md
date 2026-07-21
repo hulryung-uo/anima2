@@ -43,7 +43,7 @@ than autonomy.
 
 1. ✅ Add an interrupt/resume goal stack with progress, completion, and deadlines.
 2. ✅ Connect curriculum milestones to closed-vocabulary goals (opt-in first).
-3. Select only verified skills already allowed by the profession; never execute
+3. ✅ Select only verified skills already allowed by the profession; never execute
    arbitrary LLM-authored code or switch a non-yieldable skill mid-transaction.
 4. Expand cognition from idle/goto to validated work, acquire, sell, bank,
    recover, explore, assist, and socialize goals.
@@ -305,3 +305,86 @@ that frame. The bound shipped skill emitted a real `Use(ore)` followed by
 `TargetObject(exact forge)`, live observations showed ore decrease and ingots
 cross `9 -> 14`, the exact frame archived `SUCCESS` once, one milestone episode
 was recorded, and settle ticks did not re-enqueue it. All 14 gate flags passed.
+
+### B3 — immutable verified capability registry + bank goal ✅
+
+B3 deliberately does not reuse the retrieval-oriented `skill_library.REGISTRY`:
+that catalog includes base/superset and safety/social skills whose metadata is
+not execution authority. `capabilities.py` instead owns an immutable registry of
+opaque `(profession, capability)` ids. Each frozen binding supplies one shipped
+leaf skill type, allowed Goal sources, readiness, completion, progress, safe
+yield, and a default deadline. Duplicate/dynamic/LLM-authored classes, module
+paths, graphics, attributes, and free-form arguments are not part of the wire
+schema.
+
+The first genuinely new entry is `("blacksmith", "bank_gold")`, requested only
+as `Goal(kind="capability", params={"schema": 1, "profession": "blacksmith",
+"capability": "bank_gold"})`. Admission verifies exact keys/types, source,
+profession, configured banker route, current pack gold, and idle UI state. It
+then creates a separate, deeply sealed Goal whose kind, nested parameters, and
+seal authority cannot be mutated by the proposal owner, and applies a 120-tick
+deadline. Agent startup requires the exact frozen `CapabilityPolicy` type and
+checks that its profession/capability fingerprint exactly matches the planner;
+duck-typed policies, wrapped callbacks, and foreign/missing handlers fail before
+the first tick.
+
+The registry binds only `BankGold`, an operation-specific adapter over the
+already-live-verified `BlacksmithMarket` bank FSM. It can request/select the
+banker menu, wait for the bank box to synchronize, lift/drop gold, and return;
+it cannot craft, sell, or retrieve another skill by name. The exact leased
+instance remains bound to the sealed frame; raw/malformed capability Goals fall
+through to a no-action wait rather than Wander. Confirmed bank-box balance is
+the only progress/completion evidence, and completion waits for the transaction
+to return to an idle yield point. At the registry deadline an idle frame expires
+immediately; a frame between `PickUp` and `Drop` retains only the narrow lease
+needed to drain that in-flight transaction, then expires at its first safe yield
+point. It cannot begin another attempt after returning idle.
+
+Offline: 865 tests pass. The new adversarial suite covers registry uniqueness
+and immutability, exact schema/injection/cross-profession rejection, source
+authority at the resolver (`COGNITION`/`USER`/`SYSTEM` allowed, `SKILL` denied),
+detached deep sealing, policy/callback forgery, planner-policy mismatch, direct
+Agent API bypasses, opt-out parity, one-handler binding, no-action invalid
+fallback, deadline installation, safe transaction drain, safe expiry, and
+expired-proposal replay rejection independent of bounded telemetry history.
+Direct cancel/replace/interrupt operations also require a current safe-yield
+observation. Capability cognition and planner selection each read detached,
+deep-copied world/memory snapshots; admission and the shipped skill retain the
+authoritative originals, with only an explicitly returned speech line allowed
+back across the cognition boundary. The canonical Goal is likewise never shared
+with either collaborator. Agent accepts only the exact factory `Planner`, keeps
+strong references plus state fingerprints for every installed skill, and checks
+the chosen object on every policy tick—even when no Goal is active. Context,
+metadata, helper-method, or returned-skill substitution therefore cannot unlock
+a bound or unrelated action.
+
+Missing banker readiness drains back to idle. A disappearing bank box after
+`PickUp` first emits a compensating `Drop` to the backpack; if the bank may have
+accepted an uncertain Drop before reconnect, the adapter reopens it while
+retaining ownership. Release is confirmed by the exact serial or by goal-scoped
+pack/bank aggregate deltas, so ServUO stack merging cannot strand the lease. The
+B3 Agent integration deliberately admits autonomous capability frames only
+through cognition today; user/system resolver authority remains available for a
+future explicit admitted-workflow API. Ruff and diff checks are clean.
+
+Live `anima-client` + ServUO gate: after the GM deleted fresh-character gold,
+staged one exact 100-gold proof stack and one banker, and disconnected, a
+cross-profession request was rejected with zero actions and unchanged gold. The
+valid request then created one detached, authority-sealed cognition frame with
+the registry's exact 120-tick budget and selected the registry's exact instance.
+The strengthened gate maps each transaction action back to the owning exact
+factory `CapabilityBoundSkill(BankGold)` selection and rejects every additional
+action in the capability slice. Live actions followed
+`PopupRequest(exact banker) -> PopupSelect(exact
+Bank cliloc entry) -> PickUp(exact gold serial, 100) -> Drop(same serial,
+observed own bank box)`. Observations showed the same serial move backpack to
+bank box, pack `100 -> 0`, bank `0 -> 100`; no hammer `Use`, craft response, or
+`SellItems` occurred. The FSM returned idle, the frame archived `SUCCESS` once,
+and settle ticks did not re-enqueue it. All 15 flags passed in 14 Agent ticks.
+
+This is still intentionally narrow. The shipped village/LLM does not yet invent
+capability Goals; B3 supplies the closed policy and one real operation for the
+next cognition-vocabulary step. `sell_daggers` needs goal-scoped confirmed-sale
+evidence first. Acquire/tool replacement, worker exploration, assist, and
+verified dialogue remain deferred until their completion and return/yield
+contracts are real.

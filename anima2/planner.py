@@ -9,6 +9,7 @@ DESIGN.md A3 ("rules first; bandit/Q-learning later"): the seam where skill
 from __future__ import annotations
 
 from contextvars import ContextVar
+from typing import Callable
 
 from .skills.base import Skill, SkillContext
 
@@ -25,10 +26,16 @@ class Planner:
     fallback (e.g. `Wander`) so the agent is never idle.
     """
 
-    def __init__(self, skills: list[Skill]) -> None:
+    def __init__(
+        self,
+        skills: list[Skill],
+        *,
+        selection_observer: Callable[[Skill, SkillContext], None] | None = None,
+    ) -> None:
         if not skills:
             raise ValueError("Planner needs at least one skill")
         self.skills = skills
+        self.selection_observer = selection_observer
 
     def select(self, ctx: SkillContext) -> Skill:
         return self._select(ctx, _APPLICABILITY.get() or {})
@@ -54,7 +61,10 @@ class Planner:
             # Always enter through the public override seam. A custom planner
             # that delegates to super().select(ctx) inherits this tick's cache;
             # context-local storage also keeps shared planners thread-safe.
-            return self.select(ctx)
+            skill = self.select(ctx)
+            if self.selection_observer is not None:
+                self.selection_observer(skill, ctx)
+            return skill
         finally:
             _APPLICABILITY.reset(token)
 

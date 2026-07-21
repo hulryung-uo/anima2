@@ -531,8 +531,20 @@ class BlacksmithMarket(Blacksmith):
         # stage == "deposit"
         box = self._bankbox(ctx)
         if box is None:
-            # Shouldn't happen once open (the bank box is always a worn-layer
-            # item on the player, like the backpack) — don't wedge forever.
+            # If visibility disappears after PickUp, explicitly release the
+            # cursor back into the backpack before abandoning the trip. Never
+            # erase the held marker without emitting a compensating Drop.
+            held = ctx.memory.pop("bank_held", None)
+            backpack = self._backpack(ctx)
+            if held is not None and backpack is not None:
+                return SkillResult(
+                    Status.RUNNING,
+                    Drop(serial=held, container=backpack.serial),
+                    reward,
+                )
+            if held is not None:
+                ctx.memory["bank_held"] = held
+                return SkillResult(Status.RUNNING, None, reward)
             self._stash_reward(ctx, reward)
             return None
 
@@ -764,6 +776,146 @@ class BlacksmithMarket(Blacksmith):
         if box is None:
             return 0
         return sum(i.amount for i in ctx.obs.items if i.graphic == GOLD_GRAPHIC and i.container == box.serial)
+
+
+class BankGold(BlacksmithMarket):
+    """Operation-specific bank hands: deposit gold, never craft or sell.
+
+    ``BlacksmithMarket`` normally chooses among crafting, selling, and banking.
+    A closed ``blacksmith.bank_gold`` capability must not unlock those sibling
+    powers, so this adapter drives only the already-verified bank and return
+    phases while reusing their exact packet/evidence implementation.
+    """
+
+    name = "bank_gold"
+    description = "Deposit backpack gold into the observed bank box and return."
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        banker = ctx.memory.get("banker_spot")
+        obs = ctx.obs
+        route = (
+            self._route(banker)
+            if banker is not None
+            else [(obs.player.pos.x, obs.player.pos.y)]
+        )
+        pending = ctx.memory.get("cap_bank_release_pending")
+        if pending is not None:
+            if (
+                not isinstance(pending, tuple)
+                or len(pending) != 4
+                or not all(type(value) is int for value in pending)
+            ):
+                # Corrupt transaction ownership never becomes a yield point.
+                return SkillResult(Status.RUNNING)
+            serial, target, pack_before, bank_before = pending
+            backpack = self._backpack(ctx)
+            bankbox = self._bankbox(ctx)
+            safe_containers = {
+                container.serial
+                for container in (backpack, bankbox)
+                if container is not None
+            }
+            observed = next(
+                (item for item in obs.items if item.serial == serial),
+                None,
+            )
+            released = bool(
+                (observed is not None and observed.container in safe_containers)
+                or self._pack_gold(ctx) > pack_before
+                or self._bankbox_gold(ctx) > bank_before
+            )
+            if released:
+                ctx.memory.pop("cap_bank_release_pending", None)
+                ctx.memory.pop("cap_bank_recovery_drop_sent", None)
+                ctx.memory.pop("cap_bank_reopen_started", None)
+            else:
+                if bankbox is not None:
+                    target = bankbox.serial
+                    ctx.memory["cap_bank_release_pending"] = (
+                        serial,
+                        target,
+                        pack_before,
+                        bank_before,
+                    )
+                    return SkillResult(
+                        Status.RUNNING,
+                        Drop(serial=serial, container=target),
+                    )
+                if backpack is not None and not ctx.memory.get(
+                    "cap_bank_recovery_drop_sent"
+                ):
+                    target = backpack.serial
+                    ctx.memory["cap_bank_release_pending"] = (
+                        serial,
+                        target,
+                        pack_before,
+                        bank_before,
+                    )
+                    ctx.memory["cap_bank_recovery_drop_sent"] = True
+                    return SkillResult(
+                        Status.RUNNING,
+                        Drop(serial=serial, container=target),
+                    )
+
+                # The Drop may already have reached a now-hidden bank box
+                # across a bridge restart. Reopen/synchronize the bank while
+                # retaining ownership, then the aggregate delta above can
+                # prove either deposit or backpack recovery.
+                if not ctx.memory.get("cap_bank_reopen_started"):
+                    for key in (
+                        "bank_leg",
+                        "bank_stage",
+                        "bank_banker",
+                        "bank_find_wait",
+                        "bank_popup_wait",
+                        "bank_popup_total",
+                        "bank_settle",
+                    ):
+                        ctx.memory.pop(key, None)
+                    ctx.memory["mkt_phase"] = "bank"
+                    ctx.memory["cap_bank_reopen_started"] = True
+                recovery = self._bank_step(ctx, route)
+                if recovery is None:
+                    ctx.memory.pop("cap_bank_reopen_started", None)
+                    return SkillResult(Status.RUNNING)
+                return self._payout(ctx, recovery)
+        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
+        phase = ctx.memory.get("mkt_phase", "craft")
+        tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
+        if phase not in {"bank", "bank_return"}:
+            phase = ctx.memory["mkt_phase"] = "bank"
+
+        if phase == "bank":
+            result = self._bank_step(ctx, route)
+            if result is not None:
+                if isinstance(result.action, Drop):
+                    ctx.memory["cap_bank_release_pending"] = (
+                        result.action.serial,
+                        result.action.container,
+                        self._pack_gold(ctx),
+                        self._bankbox_gold(ctx),
+                    )
+                return self._payout(ctx, result)
+            ctx.memory["bank_giveup_gold"] = self._pack_gold(ctx)
+            ctx.memory["bank_giveup_tick"] = tick
+            for key in (
+                "bank_paid", "bank_box_start", "bank_deposit_attempts", "bank_held",
+                "bank_leg", "bank_stage", "bank_banker", "bank_find_wait",
+                "bank_popup_wait", "bank_popup_total", "bank_settle",
+            ):
+                ctx.memory.pop(key, None)
+            phase = ctx.memory["mkt_phase"] = "bank_return"
+
+        if phase == "bank_return":
+            result = self._market_return_step(ctx, "bank_return", route)
+            if result is not None:
+                return self._payout(ctx, result)
+            ctx.memory.pop("bank_return_leg", None)
+            ctx.memory["mkt_phase"] = "craft"
+
+        # Deliberately do not fall through to Blacksmith.step(): completion is
+        # evaluated from the next Observation before any hammer action can run.
+        return self._payout(ctx, SkillResult(Status.RUNNING))
 
 
 #: Sentinel `_popup_click` returns when the open popup has no entry matching

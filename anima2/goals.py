@@ -48,6 +48,14 @@ class GoalOutcome(Enum):
 
 
 @dataclass(frozen=True)
+class GoalAdmission:
+    """A canonical autonomous Goal plus its bounded lifetime budget."""
+
+    goal: Goal
+    deadline_ticks: int | None = None
+
+
+@dataclass(frozen=True)
 class GoalProgress:
     """Immutable, observation-derived progress owned by one goal frame."""
 
@@ -326,20 +334,28 @@ class GoalStack:
         self._assert_invariants()
         return frame
 
-    def expire_due(self, tick: int) -> tuple[GoalFrame, ...]:
+    def expire_due(
+        self,
+        tick: int,
+        *,
+        defer_ids: frozenset[int] = frozenset(),
+    ) -> tuple[GoalFrame, ...]:
         """Expire every due frame, including suspended parents.
 
         Deadlines are absolute fast-loop ticks, not active-time budgets.  A
         safety interrupt therefore cannot accidentally keep an obsolete parent
-        alive forever.  Surviving frames keep their order and the newest one is
-        made active.
+        alive forever. ``defer_ids`` is a narrow transaction-drain lease: those
+        due frames remain live for this call while every other due frame still
+        expires. Surviving frames keep their order and the newest one is active.
         """
 
         _require_tick(tick)
         expired = [
             frame
             for frame in reversed(self._frames)
-            if frame.deadline_tick is not None and tick >= frame.deadline_tick
+            if frame.id not in defer_ids
+            and frame.deadline_tick is not None
+            and tick >= frame.deadline_tick
         ]
         if expired:
             expired_ids = {frame.id for frame in expired}
