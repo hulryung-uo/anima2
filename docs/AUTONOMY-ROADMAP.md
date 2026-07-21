@@ -382,9 +382,83 @@ bank box, pack `100 -> 0`, bank `0 -> 100`; no hammer `Use`, craft response, or
 `SellItems` occurred. The FSM returned idle, the frame archived `SUCCESS` once,
 and settle ticks did not re-enqueue it. All 15 flags passed in 14 Agent ticks.
 
-This is still intentionally narrow. The shipped village/LLM does not yet invent
-capability Goals; B3 supplies the closed policy and one real operation for the
-next cognition-vocabulary step. `sell_daggers` needs goal-scoped confirmed-sale
-evidence first. Acquire/tool replacement, worker exploration, assist, and
-verified dialogue remain deferred until their completion and return/yield
-contracts are real.
+This is still intentionally narrow. `sell_daggers` needs goal-scoped
+confirmed-sale evidence first. Acquire/tool replacement, worker exploration,
+assist, and verified dialogue remain deferred until their completion and
+return/yield contracts are real.
+
+### B4 — closed capability cognition selector ✅
+
+`CapabilityCognition` is a separate opt-in instead of an expansion of the
+legacy, permissive `LLMCognition` parser. The provider may return exactly one
+complete JSON object in one of two schemas:
+`{"schema":1,"decision":"idle"}` or
+`{"schema":1,"decision":"capability","capability":"<opaque id>"}`.
+Duplicate keys, extra fields, prose, multiple objects, non-finite constants,
+old/future schemas, coerced types, case/whitespace variants, unknown ids, and
+oversized responses all produce no Goal. The wire format has no Goal kind,
+action, coordinate, arguments, source, binding, class/module path, or deadline.
+Model-invalid output does not trigger a heuristic interpretation. A missing
+client or provider-call exception uses the first registry-ordered ready id as
+the offline liveness fallback.
+
+Candidate discovery is advisory and reads only immutable registry bindings
+whose source and readiness predicates pass against the detached cognition
+snapshot. Trusted code then constructs a new unsealed exact-shape request;
+`Agent` independently rechecks current live readiness, creates the distinct
+privately sealed canonical frame, and owns its 120-tick deadline. A readiness
+change between selection and delivery therefore fails closed. While any Goal
+is active the selector returns it without calling the provider; it cannot
+create speech or a second choice between `PickUp` and `Drop`, so priority
+`SpeakPending` cannot starve transaction hands.
+
+Village wiring is behind default-off `--capability-goals`. In the current
+registry only the first miner+blacksmith trade pair has the calibrated banker
+route needed by `bank_gold`; that blacksmith receives the exact capability
+planner, frozen policy, and `ThreadedCognition(CapabilityCognition(...))` (plus
+the existing reflection wrapper in tiered mode). The Control plane explicitly
+adds `Gold 100` for that operation instead of depending on shard-specific
+fresh-character wealth; capability hands deliberately cannot craft/sell their
+own prerequisite yet. The online roster is checked again after partial login
+failures, before GM staging, so a lost half-pair cannot silently downgrade to
+legacy behavior. Unsupported roster members keep their legacy planner/cognition.
+A solo blacksmith and combinations with curriculum modes fail before opening a
+body instead of silently waiting forever. `--account-prefix` permits isolated,
+repeatable first-run account sets while keeping the historical `anima*` default.
+The chronicle detector also recognizes the capability adapter's confirmed
+`bank -> craft` payout without weakening the legacy `bank -> bank_return`
+evidence path.
+
+Offline: 922 tests pass, Ruff and diff checks are clean. The new suite covers
+strict parsing, ready/active zero-call behavior, deterministic provider-failure
+fallback, prompt opacity, stale-snapshot admission recheck, canonical cognition
+frame/deadline/source, village flag preflight/propagation, chronicle integration,
+post-login pair validation, exact runtime/Agent construction, prerequisite
+staging, multi-stack reward accounting, and opt-out regression.
+
+Live `anima-client` + ServUO gate: production
+`ThreadedCognition(CapabilityCognition(...))` first received an otherwise-valid
+reply polluted with an `action` field. It completed with zero Goal, transaction
+action, or gold change. Its next exact `bank_gold` choice created one privately
+sealed COGNITION frame with the registry deadline. The provider was called only
+three times before/during admission and never during the owned transaction. The
+same exact 100-gold serial then followed the B3-owned four-action path into the
+observed bank box, pack `100 -> 0`, bank `0 -> 100`, returned idle, archived one
+SUCCESS, and did not replay. All 16 B4 flags passed in 15 Agent ticks; the
+unchanged B3 mode was rerun afterward and all 16 current gate flags passed in
+14 ticks.
+
+The actual production village CLI was then run—not a direct Agent fixture—with
+a fresh account prefix, one miner+blacksmith pair, `--capability-goals`, 60
+ticks, and the real chronicle. The paired smith independently banked both the
+shard's 1000 starting gold and the explicit 100 proof gold. Its observed episode
+reward reached 1100, and the flushed `banked_gold` event recorded exactly 1100.
+That live run exposed and fixed the earlier single-last-stack chronicle
+undercount; bank-phase rewards are now accumulated until the verified return to
+idle.
+
+B4 closes selection, not the whole life loop. `bank_gold` is still the only
+installed operation and its banker/gold prerequisites are staged. Craft, sell,
+acquire/replace tools, recover work location, explore, assist, and socialize
+must each land as separately evidenced capabilities before this becomes a
+self-sustaining player.

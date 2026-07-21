@@ -195,15 +195,17 @@ class ReplicateClient:
 
 #: `{role: tier}` — `LLMCognition`'s frequent in-character chatter is cheap and
 #: frequent; `LLMReflection` and item 1's `LLMWikiReportProducer` (both not yet
-#: wired to a tier as of this item) and item 5's curriculum picker are occasional
+#: wired to a tier as of this item), item 5's curriculum picker, and B4's
+#: capability picker are occasional
 #: and worth a better model. `wiki_judge`/`curriculum_pick` have no call site yet
-#: (items 1/5 land later) — present here so they're tiered from birth per
+#: (items 1/5 originally landed later) — present here so they're tiered from birth per
 #: PHASE4.md's own dependency-order note.
 ROLE_TIER: dict[str, str] = {
     "chatter": "cheap",
     "reflection": "standard",
     "wiki_judge": "standard",
     "curriculum_pick": "standard",
+    "capability_pick": "standard",
 }
 
 #: `{tier: model}` — the model each tier resolves to when Anthropic is available.

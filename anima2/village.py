@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from .agent import Agent
+from .capabilities import CAPABILITIES, CapabilityPolicy
 from .chronicle import ChronicleEvent, ChronicleLedger
 from .contract import Observation, Say, Walk
 from .control import GmControl
@@ -175,12 +176,26 @@ def _sold_to_vendor(prev_memory: dict, memory: dict, new_episode: Episode | None
     return None
 
 
-def _banked_gold(prev_memory: dict, memory: dict, new_episode: Episode | None) -> float | None:
+def _banked_gold(
+    prev_memory: dict,
+    memory: dict,
+    new_episode: Episode | None,
+    bank_reward_accum: float | None = None,
+) -> float | None:
     """blacksmith -> world: `mkt_phase` transitions out of `"bank"` — mirrors
     `_sold_to_vendor` exactly, off `BlacksmithMarket._bank_step`'s own
     confirmed-deposit accounting instead."""
-    if prev_memory.get("mkt_phase") == "bank" and memory.get("mkt_phase") == "bank_return":
+    if prev_memory.get("mkt_phase") != "bank":
+        return None
+    phase = memory.get("mkt_phase")
+    if phase == "bank_return":
+        if bank_reward_accum is not None:
+            return bank_reward_accum if bank_reward_accum > 0 else None
         return _reward_if_named(new_episode, "blacksmith")
+    if phase == "craft":
+        if bank_reward_accum is not None:
+            return bank_reward_accum if bank_reward_accum > 0 else None
+        return _reward_if_named(new_episode, "bank_gold")
     return None
 
 
@@ -234,10 +249,28 @@ def _accumulate_hunt_reward(current: float, new_episode: Episode | None) -> floa
     return current
 
 
+def _accumulate_bank_reward(
+    current: float,
+    prev_memory: dict,
+    new_episode: Episode | None,
+) -> float:
+    """Accumulate every confirmed stack deposited during one bank phase."""
+
+    if (
+        prev_memory.get("mkt_phase") == "bank"
+        and new_episode is not None
+        and new_episode.reward > 0
+        and new_episode.summary.startswith(("blacksmith", "bank_gold"))
+    ):
+        return current + new_episode.reward
+    return current
+
+
 def _chronicle_events_this_tick(
     job: str, counterpart: str | None, prev_memory: dict, memory: dict, new_episode: Episode | None,
     *, fetch_entry_ingots: int | None, pack_ingots_now: int,
     deliver_phase_reward: float = 0.0, hunt_reward_accum: float = 0.0,
+    bank_reward_accum: float | None = None,
 ) -> list[tuple[str, str | None, float]]:
     """Every chronicle event `job`'s own detectors fired this tick, as
     `(kind, to_persona, amount)` triples — `village.py`'s only place that
@@ -262,7 +295,12 @@ def _chronicle_events_this_tick(
         amount = _sold_to_vendor(prev_memory, memory, new_episode)
         if amount is not None:
             events.append(("sold_to_vendor", None, amount))
-        amount = _banked_gold(prev_memory, memory, new_episode)
+        amount = _banked_gold(
+            prev_memory,
+            memory,
+            new_episode,
+            bank_reward_accum,
+        )
         if amount is not None:
             events.append(("banked_gold", None, amount))
     elif job == "hunter":
@@ -304,6 +342,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # several ticks, not as one lump sum on the transition/growth tick).
     deliver_phase_reward = 0.0
     hunt_reward_accum = 0.0
+    bank_reward_accum = 0.0
     for _ in range(ticks):
         if not agent.body.connected:
             break
@@ -323,10 +362,17 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                 deliver_phase_reward = _accumulate_deliver_reward(deliver_phase_reward, prev_memory, new_episode)
             if job == "hunter":
                 hunt_reward_accum = _accumulate_hunt_reward(hunt_reward_accum, new_episode)
+            if job == "blacksmith":
+                bank_reward_accum = _accumulate_bank_reward(
+                    bank_reward_accum,
+                    prev_memory,
+                    new_episode,
+                )
             for kind, to_persona, amount in _chronicle_events_this_tick(
                 job, counterpart, prev_memory, memory, new_episode,
                 fetch_entry_ingots=fetch_entry_ingots, pack_ingots_now=pack_ingots_now,
                 deliver_phase_reward=deliver_phase_reward, hunt_reward_accum=hunt_reward_accum,
+                bank_reward_accum=bank_reward_accum,
             ):
                 # queue_event is O(1), in-memory-only, threading.Lock-guarded
                 # — safe to call from this (or any other agent's) worker
@@ -353,6 +399,8 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                 fetch_entry_ingots = None
             if memory.get("smelt_phase") != "deliver":
                 deliver_phase_reward = 0.0  # never entered/no longer in the deliver phase
+            if memory.get("mkt_phase") != "bank":
+                bank_reward_accum = 0.0
             prev_memory = dict(memory)
             prev_recorded = agent.episodes.total_recorded
 
@@ -386,14 +434,115 @@ class _CountingClient:
         return self.inner.complete(system, user)
 
 
+def _capability_mode_enabled(
+    profession: Profession,
+    banker_spot: object,
+    requested: bool,
+) -> bool:
+    return bool(
+        requested
+        and banker_spot
+        and any(bound == profession.key for bound, _capability in CAPABILITIES)
+    )
+
+
+def _staging_items(plan_entry: dict, capability_goals: bool) -> list[str]:
+    """Provision every prerequisite the selected closed operation cannot create."""
+
+    items = list(plan_entry["prof"].items)
+    if _capability_mode_enabled(
+        plan_entry["prof"], plan_entry["banker_spot"], capability_goals
+    ):
+        # Capability mode intentionally removes craft/sell hands, so it cannot
+        # turn the staged ingots into its own first deposit. Do not depend on a
+        # shard's optional fresh-character starting gold.
+        items.append("Gold 100")
+    return items
+
+
+def _build_capability_runtime(
+    profession: Profession,
+    client: object | None,
+    *,
+    reflection: object | None = None,
+    insights: object | None = None,
+):
+    """Build the exact planner/cognition/policy triple used by the village."""
+
+    from .capability_cognition import CapabilityCognition
+    from .cognition import ReflectingCognition, ThreadedCognition
+
+    inner = CapabilityCognition(client, profession.key)
+    cognition = (
+        ThreadedCognition(ReflectingCognition(inner, reflection, insights=insights))
+        if reflection is not None
+        else ThreadedCognition(inner)
+    )
+    return (
+        profession.planner(capability_goals=True),
+        cognition,
+        CapabilityPolicy(profession.key),
+    )
+
+
+def _build_villager_agent(
+    plan_entry: dict,
+    planner,
+    cognition,
+    capability_policy: CapabilityPolicy | None,
+    curriculum_ctrl,
+    curriculum_goals: bool,
+) -> Agent:
+    """Single construction seam shared by legacy, curriculum, and capability modes."""
+
+    return Agent(
+        body=plan_entry["body"],
+        persona=plan_entry["persona"],
+        planner=planner,
+        cognition=cognition,
+        cognition_interval=12,
+        profession=plan_entry["prof"].key,
+        goal_policy=capability_policy,
+        goal_validator=(
+            curriculum_ctrl.validate_goal
+            if curriculum_goals and curriculum_ctrl is not None
+            else None
+        ),
+        goal_progress=(
+            curriculum_ctrl.goal_progress
+            if curriculum_goals and curriculum_ctrl is not None
+            else None
+        ),
+    )
+
+
 def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
                 ticks: int = 60, stagger: float = 4.0, forum: bool = False,
+                account_prefix: str = "anima",
                 chatter: bool = False, llm_tiers: str | None = None,
                 tune_deliver_threshold: bool = False, ledger_path: str | None = None,
                 curriculum: bool = False, persist_insights: bool = False,
                 curriculum_goals: bool = False,
+                capability_goals: bool = False,
                 chronicle: bool = False, chronicle_path: str | None = None,
                 talkativeness_gate: bool = False) -> None:
+    if capability_goals and (curriculum or curriculum_goals):
+        raise ValueError("capability goals cannot be combined with curriculum modes")
+    if (
+        not account_prefix
+        or len(account_prefix) > 24
+        or not account_prefix.isascii()
+        or not account_prefix.isalnum()
+    ):
+        raise ValueError("account_prefix must be 1-24 ASCII alphanumeric characters")
+    registry_professions = {profession for profession, _capability in CAPABILITIES}
+    if capability_goals and not any(key in registry_professions for key in roster):
+        raise ValueError("roster has no profession with an installed capability")
+    # The current bank capability needs the calibrated banker staged only for
+    # the first miner+blacksmith trade pair. Fail before opening sockets rather
+    # than silently turning a solo smith into a permanent waiter.
+    if capability_goals and not {"miner", "blacksmith"}.issubset(roster):
+        raise ValueError("bank_gold capability requires a miner+blacksmith trade pair")
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[_LiveIpcBody, Profession, Persona]] = []
@@ -401,19 +550,28 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
         for i, key in enumerate(roster):
             prof = PROFESSIONS[key]
             persona = _persona_for(prof, i)
+            account = f"{account_prefix}{i}"
             try:
                 body = ResilientIpcBody.spawn(
-                    host, port, f"anima{i}", f"anima{i}", pump_ms=300,
+                    host, port, account, account, pump_ms=300,
                 )
             except Exception as e:  # noqa: BLE001
-                print(f"  anima{i} ({key}): login failed ({e})")
+                print(f"  {account} ({key}): login failed ({e})")
                 continue
             online.append((body, prof, persona))
-            print(f"  anima{i}: {persona.name} the {key}")
+            print(f"  {account}: {persona.name} the {key}")
             time.sleep(stagger)
         if not online:
+            if capability_goals:
+                raise RuntimeError("no capability villagers came online")
             print("no villagers came online")
             return
+        if capability_goals:
+            online_professions = {profession.key for _body, profession, _persona in online}
+            if not {"miner", "blacksmith"}.issubset(online_professions):
+                raise RuntimeError(
+                    "capability runtime lost its miner+blacksmith pair during login"
+                )
 
         _run_online_village(
             online,
@@ -427,6 +585,7 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
             ledger_path=ledger_path,
             curriculum=curriculum,
             curriculum_goals=curriculum_goals,
+            capability_goals=capability_goals,
             persist_insights=persist_insights,
             chronicle=chronicle,
             chronicle_path=chronicle_path,
@@ -458,6 +617,7 @@ def _run_online_village(
     ledger_path: str | None,
     curriculum: bool,
     curriculum_goals: bool = False,
+    capability_goals: bool = False,
     persist_insights: bool,
     chronicle: bool,
     chronicle_path: str | None,
@@ -549,8 +709,12 @@ def _run_online_village(
         for p in plan:
             serial = p["body"].ready["player"]["serial"]
             if p["workplace"] is not None:
-                gx, gy, gz = gm.stage(serial, *p["workplace"],
-                                      skills=p["prof"].skills, items=p["prof"].items)
+                gx, gy, gz = gm.stage(
+                    serial,
+                    *p["workplace"],
+                    skills=p["prof"].skills,
+                    items=_staging_items(p, capability_goals),
+                )
                 for stype, dx, dy in p["prof"].structures:
                     gm.command_at(f"[Add {stype}", gx + dx, gy + dy, gz)
                 if p["vendor_spot"]:
@@ -646,13 +810,16 @@ def _run_online_village(
     # is off, matching `session_chronicle`'s own no-op-by-default shape.
     yesterday_texts: dict[str, str] = {}
     for i, p in enumerate(plan):
+        capability_enabled = _capability_mode_enabled(
+            p["prof"], p["banker_spot"], capability_goals
+        )
+        capability_policy = None
+        planner = None
         cognition = None
         if tiered_clients is not None:
             from .cognition import LLMCognition, LLMReflection, ReflectingCognition, ThreadedCognition
             from .memory import load_insights
 
-            inner = LLMCognition(call_counters[ROLE_TIER["chatter"]], job=p["prof"].key,
-                                 talkativeness_gate=talkativeness_gate)
             reflection = LLMReflection(call_counters[ROLE_TIER["reflection"]])
             # PHASE6.md item 1: resume this persona's distilled insights from a
             # prior session, if any — `load_insights` returns an empty (but
@@ -672,13 +839,37 @@ def _run_online_village(
                 prior = insights.recent(1)
                 if prior:
                     yesterday_texts[p["persona"].name] = prior[-1].text
-            cognition = ThreadedCognition(ReflectingCognition(inner, reflection, insights=insights))
+            if capability_enabled:
+                planner, cognition, capability_policy = _build_capability_runtime(
+                    p["prof"],
+                    (
+                        None
+                        if llm_tiers == "stub"
+                        else call_counters[ROLE_TIER["capability_pick"]]
+                    ),
+                    reflection=reflection,
+                    insights=insights,
+                )
+            else:
+                inner = LLMCognition(
+                    call_counters[ROLE_TIER["chatter"]],
+                    job=p["prof"].key,
+                    talkativeness_gate=talkativeness_gate,
+                )
+                cognition = ThreadedCognition(
+                    ReflectingCognition(inner, reflection, insights=insights)
+                )
+        elif capability_enabled:
+            planner, cognition, capability_policy = _build_capability_runtime(
+                p["prof"], chat_client
+            )
         elif chat_client is not None:
             from .cognition import LLMCognition, ThreadedCognition
 
             cognition = ThreadedCognition(LLMCognition(chat_client, job=p["prof"].key,
                                                        talkativeness_gate=talkativeness_gate))
-        planner = p["prof"].planner(curriculum_goals=curriculum_goals)
+        if planner is None:
+            planner = p["prof"].planner(curriculum_goals=curriculum_goals)
 
         # PHASE4.md item 4: pick a deliver_threshold once per miner, at
         # construction time (session granularity — held fixed for the whole
@@ -732,15 +923,14 @@ def _run_online_village(
             )  # default milestones_path = data/milestones.jsonl
             cognition = curriculum_ctrl
 
-        agent = Agent(body=p["body"], persona=p["persona"], planner=planner,
-                      cognition=cognition, cognition_interval=12,
-                      profession=p["prof"].key,
-                      goal_validator=(curriculum_ctrl.validate_goal
-                                      if curriculum_goals and curriculum_ctrl is not None
-                                      else None),
-                      goal_progress=(curriculum_ctrl.goal_progress
-                                     if curriculum_goals and curriculum_ctrl is not None
-                                     else None))
+        agent = _build_villager_agent(
+            p,
+            planner,
+            cognition,
+            capability_policy,
+            curriculum_ctrl,
+            curriculum_goals,
+        )
         if curriculum_ctrl is not None:
             curriculum_ctrl.episodes = agent.episodes  # rebind: milestone Episodes land in the agent's own memory
         if p["nodes"]:
@@ -866,6 +1056,11 @@ def main() -> None:
     ap.add_argument("--ticks", type=int, default=60)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=2594)
+    ap.add_argument(
+        "--account-prefix",
+        default="anima",
+        help="account/password prefix for isolated or repeatable village runs",
+    )
     ap.add_argument("--forum", action="store_true", help="post each villager's day to uotavern")
     ap.add_argument("--chatter", action="store_true", help="LLM cognition: speak in character while working")
     # Opt-in, unset by default: zero effect on any currently-passing roster unless
@@ -891,6 +1086,11 @@ def main() -> None:
         "--curriculum-goals",
         action="store_true",
         help="drive admitted profession work from curriculum milestones (B2 opt-in)",
+    )
+    ap.add_argument(
+        "--capability-goals",
+        action="store_true",
+        help="choose verified operation capabilities from a closed vocabulary (B4 opt-in)",
     )
     # Opt-in, unset by default (Phase 6 item 1): zero effect on any currently-
     # passing roster unless passed, and only takes effect at all when
@@ -926,10 +1126,12 @@ def main() -> None:
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
               + ["townsfolk"] * args.townsfolk + ["hunter"] * args.hunters)
     run_village(roster, host=args.host, port=args.port, ticks=args.ticks,
+                account_prefix=args.account_prefix,
                 forum=args.forum, chatter=args.chatter, llm_tiers=args.llm_tiers,
                 tune_deliver_threshold=args.tune_deliver_threshold, ledger_path=args.ledger_path,
                 curriculum=args.curriculum, persist_insights=args.persist_insights,
                 curriculum_goals=args.curriculum_goals,
+                capability_goals=args.capability_goals,
                 chronicle=args.chronicle, chronicle_path=args.chronicle_path,
                 talkativeness_gate=args.talkativeness_gate)
 

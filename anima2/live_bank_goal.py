@@ -1,4 +1,4 @@
-"""Live B3 gate: a closed bank capability drives one verified transaction.
+"""Live B3/B4 gate: a closed bank capability drives one verified transaction.
 
 The fixture gives a fresh blacksmith one exact 100-gold stack and stages a
 pinned banker.  The GM connection then closes before the Policy, Agent, goals,
@@ -21,6 +21,7 @@ Targets the B3 opt-in API::
 Usage::
 
     python -m anima2.live_bank_goal --suffix b3manual
+    python -m anima2.live_bank_goal --autonomous --suffix b4manual
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import argparse
 from dataclasses import dataclass
 
 from .agent import Agent
+from .capability_cognition import CapabilityCognition
 from .capabilities import (
     CapabilityPolicy,
     capability_goal,
@@ -45,6 +47,7 @@ from .contract import (
     SellItems,
     Use,
 )
+from .cognition import ThreadedCognition
 from .control import GmControl
 from .goals import GoalOutcome, GoalSource
 from .ipc_body import ResilientIpcBody
@@ -137,6 +140,24 @@ class _InvalidThenValidCognition:
         if self.calls == 2:
             return self.valid
         return ctx.goal
+
+
+class _SequencedCapabilityClient:
+    """One strict negative reply, one valid choice, then explicit idle."""
+
+    def __init__(self) -> None:
+        self.responses = [
+            '{"schema":1,"decision":"capability","capability":"bank_gold",'
+            '"action":"drop"}',
+            '{"schema":1,"decision":"capability","capability":"bank_gold"}',
+            '{"schema":1,"decision":"idle"}',
+        ]
+        self.calls: list[tuple[str, str]] = []
+
+    def complete(self, system: str, user: str) -> str:
+        self.calls.append((system, user))
+        index = min(len(self.calls) - 1, len(self.responses) - 1)
+        return self.responses[index]
 
 
 def _backpack_serial(obs: Observation) -> int | None:
@@ -306,7 +327,14 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         valid_goal = capability_goal(_PROFESSION, _CAPABILITY)
         invalid_goal = _cross_profession(valid_goal)
         policy = CapabilityPolicy(_PROFESSION)
-        cognition = _InvalidThenValidCognition(invalid_goal, valid_goal)
+        capability_client: _SequencedCapabilityClient | None = None
+        if args.autonomous:
+            capability_client = _SequencedCapabilityClient()
+            cognition = ThreadedCognition(
+                CapabilityCognition(capability_client, _PROFESSION)
+            )
+        else:
+            cognition = _InvalidThenValidCognition(invalid_goal, valid_goal)
         profession_planner = PROFESSIONS[_PROFESSION].planner(capability_goals=True)
         tracer = _SelectionTracer(body)
         profession_planner.selection_observer = tracer
@@ -324,14 +352,25 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         # Negative differential: the malformed cross-profession proposal gets
         # a complete live tick, but may not unlock any banking/crafting hand.
         negative_action_offset = len(body.actions)
-        agent.tick()
+        if args.autonomous:
+            agent.tick()  # launch the strict-invalid model decision
+            if not cognition.wait_idle(timeout=5.0):
+                raise RuntimeError("autonomous invalid decision did not finish")
+            agent.tick()  # deliver invalid; launch the valid decision
+        else:
+            agent.tick()
         negative_actions = body.actions[negative_action_offset:]
         assert body.last_obs is not None
         negative_pack_gold = _pack_gold(body.last_obs)
-        invalid_rejected = (
+        invalid_rejected = bool(
             agent.goal_stack.current is None
-            and int(agent.memory.get("cognition_admission_rejections", 0)) >= 1
+            and (
+                capability_client is not None and len(capability_client.calls) >= 1
+                or int(agent.memory.get("cognition_admission_rejections", 0)) >= 1
+            )
         )
+        if args.autonomous and not cognition.wait_idle(timeout=5.0):
+            raise RuntimeError("autonomous valid decision did not finish")
 
         target_goal_id: int | None = None
         target_action_offset: int | None = None
@@ -536,6 +575,16 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
                 and not negative_transaction_actions
                 and negative_pack_gold == 100
             ),
+            "closed_cognition_prompt_and_schema": bool(
+                not args.autonomous
+                or (
+                    capability_client is not None
+                    and len(capability_client.calls) == 3
+                    and all("bank_gold" in user for _system, user in capability_client.calls[:2])
+                    and all("BankGold" not in user for _system, user in capability_client.calls[:2])
+                    and all("BlacksmithMarket" not in user for _system, user in capability_client.calls[:2])
+                )
+            ),
             "valid_goal_enqueued_once": bool(
                 target_goal_id is not None
                 and len(target_frames) == 1
@@ -579,7 +628,8 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             f"serial={serial} banker={banker_serial} gold={getattr(baseline_gold, 'serial', None)} "
             f"bankbox={final_bankbox} pack=100->{_pack_gold(final_obs)} "
             f"bank=0->{_bank_gold(final_obs)} goal_id={target_goal_id} "
-            f"ticks={agent.ticks} cognition={cognition.calls}"
+            f"ticks={agent.ticks} cognition="
+            f"{len(capability_client.calls) if capability_client is not None else cognition.calls}"
         )
         return flags, detail
 
@@ -597,6 +647,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--ticks", type=int, default=100)
     parser.add_argument("--settle-ticks", type=int, default=5)
     parser.add_argument("--snapshot-every", type=int, default=5)
+    parser.add_argument(
+        "--autonomous",
+        action="store_true",
+        help="use production ThreadedCognition(CapabilityCognition) for the B4 gate",
+    )
     return parser
 
 
@@ -605,11 +660,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         flags, detail = _run(args)
     except Exception as exc:
-        print(f"[FLAG] B3 BANK GOAL GATE FAILED: {type(exc).__name__}: {exc}")
+        label = "B4 CAPABILITY COGNITION GATE" if args.autonomous else "B3 BANK GOAL GATE"
+        print(f"[FLAG] {label} FAILED: {type(exc).__name__}: {exc}")
         return 1
+    label = "B4 CAPABILITY COGNITION GATE" if args.autonomous else "B3 BANK GOAL GATE"
     return 0 if print_gate_verdict(
         flags,
-        label="B3 BANK GOAL GATE",
+        label=label,
         detail=detail,
     ) else 1
 

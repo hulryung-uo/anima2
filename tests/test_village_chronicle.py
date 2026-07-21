@@ -20,6 +20,7 @@ from anima2.contract import ItemView, Observation, PlayerView, Position
 from anima2.memory import Episode
 from anima2.village import (
     _accumulate_deliver_reward,
+    _accumulate_bank_reward,
     _accumulate_hunt_reward,
     _banked_gold,
     _chronicle_events_this_tick,
@@ -298,6 +299,37 @@ def test_banked_gold_fires_on_confirmed_deposit():
     now = {"mkt_phase": "bank_return"}
     episode = _ep("blacksmith_market → running", 100.0)
     assert _banked_gold(prev, now, episode) == 100.0
+
+
+def test_banked_gold_accepts_capability_return_to_idle() -> None:
+    prev = {"mkt_phase": "bank"}
+    now = {"mkt_phase": "craft"}
+    episode = _ep("bank_gold → running", 100.0)
+    assert _banked_gold(prev, now, episode) == 100.0
+
+
+def test_banked_gold_uses_the_full_multistack_phase_accumulator() -> None:
+    accumulator = _accumulate_bank_reward(
+        0.0,
+        {"mkt_phase": "bank"},
+        _ep("bank_gold → running", 100.0),
+    )
+    accumulator = _accumulate_bank_reward(
+        accumulator,
+        {"mkt_phase": "bank"},
+        _ep("bank_gold → running", 1000.0),
+    )
+
+    assert accumulator == 1100.0
+    assert (
+        _banked_gold(
+            {"mkt_phase": "bank"},
+            {"mkt_phase": "craft"},
+            _ep("bank_gold → running", 1000.0),
+            accumulator,
+        )
+        == 1100.0
+    )
 
 
 def test_banked_gold_negative_control_gave_up_deposit_no_confirmed_reward():

@@ -276,6 +276,35 @@ def valid_capability_planner_lease(
     )
 
 
+def ready_capability_ids(
+    profession: str,
+    ctx: SkillContext,
+    source: GoalSource = GoalSource.COGNITION,
+) -> tuple[str, ...]:
+    """Return advisory, registry-ordered choices ready in a cognition snapshot.
+
+    This helper grants no execution authority. The Agent later resolves the
+    returned opaque id against its live context, creates a separate canonical
+    Goal, and installs the deadline. A stale or mutated snapshot therefore
+    cannot make an unready operation executable.
+    """
+
+    if type(profession) is not str or not isinstance(ctx, SkillContext):
+        return ()
+    if not isinstance(source, GoalSource):
+        return ()
+    ready: list[str] = []
+    for (bound_profession, capability_id), binding in CAPABILITIES.items():
+        if bound_profession != profession or source not in binding.allowed_sources:
+            continue
+        try:
+            if binding.ready(ctx) and not binding.achieved(ctx):
+                ready.append(capability_id)
+        except Exception:  # noqa: BLE001 — proposal discovery fails closed
+            continue
+    return tuple(ready)
+
+
 def capability_goal(profession: str, capability: str) -> Goal:
     """Construct an unsealed request; admission returns a separate sealed copy."""
 

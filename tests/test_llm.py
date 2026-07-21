@@ -148,6 +148,7 @@ def test_role_tier_covers_the_four_specified_call_sites():
         "reflection": "standard",
         "wiki_judge": "standard",
         "curriculum_pick": "standard",
+        "capability_pick": "standard",
     }
 
 
