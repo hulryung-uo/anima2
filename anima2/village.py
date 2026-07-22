@@ -89,7 +89,10 @@ def _pack_ingot_count(obs: Observation) -> int:
     return sum(i.amount for i in obs.items if i.graphic in _CHRONICLE_INGOT_GRAPHICS and i.container == bp.serial)
 
 
-def _reward_if_named(new_episode: Episode | None, prefix: str) -> float | None:
+def _reward_if_named(
+    new_episode: Episode | None,
+    prefix: str | tuple[str, ...],
+) -> float | None:
     """`new_episode`'s own reward, iff it was actually recorded THIS tick
     (the caller only ever passes an episode here when `agent.episodes.
     total_recorded` grew since the last check — see `_run_worker`), its
@@ -166,13 +169,60 @@ def _picked_up_ingots(
     return None
 
 
-def _sold_to_vendor(prev_memory: dict, memory: dict, new_episode: Episode | None) -> float | None:
+def _sold_to_vendor(
+    prev_memory: dict,
+    memory: dict,
+    new_episode: Episode | None,
+    sell_reward_accum: float | None = None,
+) -> float | None:
     """blacksmith -> world: `mkt_phase` transitions out of `"sell"` (`skills/
     market.py::BlacksmithMarket._sell_step`'s own same-tick fallthrough to
     `"sell_return"`) with a confirmed reward-bearing episode — `amount` is
     the gold gained (`_sell_step`'s own confirmed-gain accounting)."""
-    if prev_memory.get("mkt_phase") == "sell" and memory.get("mkt_phase") == "sell_return":
-        return _reward_if_named(new_episode, "blacksmith")
+    def _capability_sale_amount(snapshot: dict) -> float | None:
+        goal_id = snapshot.get("cap_sell_goal_id")
+        sent = snapshot.get("cap_sell_sent_daggers")
+        expected = snapshot.get("cap_sell_expected_gold")
+        offered = snapshot.get("cap_sell_offered_items")
+        dagger_delta = snapshot.get("cap_sell_dagger_delta")
+        gold_delta = snapshot.get("cap_sell_gold_delta")
+        if (
+            type(goal_id) is int
+            and snapshot.get("cap_sell_sent_goal_id") == goal_id
+            and type(sent) is int
+            and sent > 0
+            and type(expected) is int
+            and expected > 0
+            and isinstance(offered, tuple)
+            and offered
+            and all(
+                isinstance(entry, tuple)
+                and len(entry) == 3
+                and all(type(value) is int and value > 0 for value in entry)
+                for entry in offered
+            )
+            and sum(amount for _serial, amount, _price in offered) == sent
+            and sum(amount * price for _serial, amount, price in offered) == expected
+            and snapshot.get("cap_sell_offered_cleared") is True
+            and snapshot.get("cap_sell_offered_removed") == sent
+            and type(dagger_delta) is int
+            and dagger_delta >= sent
+            and type(gold_delta) is int
+            and gold_delta >= expected
+        ):
+            return float(expected)
+        return None
+
+    capability_amount = _capability_sale_amount(memory)
+    if capability_amount is not None and _capability_sale_amount(prev_memory) is None:
+        return capability_amount
+    if (
+        prev_memory.get("mkt_phase") == "sell"
+        and memory.get("mkt_phase") in {"sell_return", "craft"}
+    ):
+        if sell_reward_accum is not None:
+            return sell_reward_accum if sell_reward_accum > 0 else None
+        return _reward_if_named(new_episode, ("blacksmith", "sell_daggers"))
     return None
 
 
@@ -266,10 +316,28 @@ def _accumulate_bank_reward(
     return current
 
 
+def _accumulate_sell_reward(
+    current: float,
+    prev_memory: dict,
+    new_episode: Episode | None,
+) -> float:
+    """Accumulate sale gold that can arrive before dagger removal is observed."""
+
+    if (
+        prev_memory.get("mkt_phase") == "sell"
+        and new_episode is not None
+        and new_episode.reward > 0
+        and new_episode.summary.startswith(("blacksmith", "sell_daggers"))
+    ):
+        return current + new_episode.reward
+    return current
+
+
 def _chronicle_events_this_tick(
     job: str, counterpart: str | None, prev_memory: dict, memory: dict, new_episode: Episode | None,
     *, fetch_entry_ingots: int | None, pack_ingots_now: int,
     deliver_phase_reward: float = 0.0, hunt_reward_accum: float = 0.0,
+    sell_reward_accum: float | None = None,
     bank_reward_accum: float | None = None,
 ) -> list[tuple[str, str | None, float]]:
     """Every chronicle event `job`'s own detectors fired this tick, as
@@ -292,7 +360,12 @@ def _chronicle_events_this_tick(
         amount = _picked_up_ingots(prev_memory, memory, fetch_entry_ingots, pack_ingots_now)
         if amount is not None:
             events.append(("picked_up_ingots", counterpart, amount))
-        amount = _sold_to_vendor(prev_memory, memory, new_episode)
+        amount = _sold_to_vendor(
+            prev_memory,
+            memory,
+            new_episode,
+            sell_reward_accum,
+        )
         if amount is not None:
             events.append(("sold_to_vendor", None, amount))
         amount = _banked_gold(
@@ -342,6 +415,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # several ticks, not as one lump sum on the transition/growth tick).
     deliver_phase_reward = 0.0
     hunt_reward_accum = 0.0
+    sell_reward_accum = 0.0
     bank_reward_accum = 0.0
     for _ in range(ticks):
         if not agent.body.connected:
@@ -363,6 +437,11 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             if job == "hunter":
                 hunt_reward_accum = _accumulate_hunt_reward(hunt_reward_accum, new_episode)
             if job == "blacksmith":
+                sell_reward_accum = _accumulate_sell_reward(
+                    sell_reward_accum,
+                    prev_memory,
+                    new_episode,
+                )
                 bank_reward_accum = _accumulate_bank_reward(
                     bank_reward_accum,
                     prev_memory,
@@ -372,6 +451,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                 job, counterpart, prev_memory, memory, new_episode,
                 fetch_entry_ingots=fetch_entry_ingots, pack_ingots_now=pack_ingots_now,
                 deliver_phase_reward=deliver_phase_reward, hunt_reward_accum=hunt_reward_accum,
+                sell_reward_accum=sell_reward_accum,
                 bank_reward_accum=bank_reward_accum,
             ):
                 # queue_event is O(1), in-memory-only, threading.Lock-guarded
@@ -401,6 +481,8 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                 deliver_phase_reward = 0.0  # never entered/no longer in the deliver phase
             if memory.get("mkt_phase") != "bank":
                 bank_reward_accum = 0.0
+            if memory.get("mkt_phase") != "sell":
+                sell_reward_accum = 0.0
             prev_memory = dict(memory)
             prev_recorded = agent.episodes.total_recorded
 
@@ -453,9 +535,11 @@ def _staging_items(plan_entry: dict, capability_goals: bool) -> list[str]:
     if _capability_mode_enabled(
         plan_entry["prof"], plan_entry["banker_spot"], capability_goals
     ):
-        # Capability mode intentionally removes craft/sell hands, so it cannot
-        # turn the staged ingots into its own first deposit. Do not depend on a
-        # shard's optional fresh-character starting gold.
+        # Closed hands cannot craft their own first sale inventory. Five
+        # explicit daggers make both selector choices real, while Gold 100
+        # guarantees the subsequent bank milestone independently of a shard's
+        # optional fresh-character starting gold.
+        items.extend(["Dagger"] * 5)
         items.append("Gold 100")
     return items
 
@@ -538,11 +622,11 @@ def run_village(roster: list[str], *, host: str = "127.0.0.1", port: int = 2594,
     registry_professions = {profession for profession, _capability in CAPABILITIES}
     if capability_goals and not any(key in registry_professions for key in roster):
         raise ValueError("roster has no profession with an installed capability")
-    # The current bank capability needs the calibrated banker staged only for
-    # the first miner+blacksmith trade pair. Fail before opening sockets rather
-    # than silently turning a solo smith into a permanent waiter.
+    # The current market capabilities need the calibrated vendor/banker staged
+    # only for the first miner+blacksmith trade pair. Fail before opening
+    # sockets rather than silently turning a solo smith into a permanent waiter.
     if capability_goals and not {"miner", "blacksmith"}.issubset(roster):
-        raise ValueError("bank_gold capability requires a miner+blacksmith trade pair")
+        raise ValueError("market capabilities require a miner+blacksmith trade pair")
     # 1) Bring every agent online (staggered logins dodge the ServUO throttle).
     print(f"releasing {len(roster)} villagers: {roster}")
     online: list[tuple[_LiveIpcBody, Profession, Persona]] = []

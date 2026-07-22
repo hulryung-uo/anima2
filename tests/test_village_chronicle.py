@@ -22,6 +22,7 @@ from anima2.village import (
     _accumulate_deliver_reward,
     _accumulate_bank_reward,
     _accumulate_hunt_reward,
+    _accumulate_sell_reward,
     _banked_gold,
     _chronicle_events_this_tick,
     _delivered_ingots,
@@ -272,13 +273,9 @@ def test_pack_ingot_count_zero_when_no_backpack_visible():
 
 # --- sold_to_vendor / banked_gold (blacksmith -> world) ---------------------
 #
-# Unlike delivered_ingots/looted_corpse, these stay single-episode-reward
-# checks: a vendor sale is one SellItems action covering every dagger at
-# once, and GOLD_GRAPHIC never fragments into multiple piles the way
-# ORE_GRAPHICS/INGOT_GRAPHICS do (`skills/market.py`'s own module docstring:
-# "no small/large-pile variants the way ore/ingots have") — neither is
-# exposed to the multi-tick-fragmented-payment pattern that motivated
-# delivered_ingots/looted_corpse's own fix.
+# A sale is one SellItems action, but live observation packets can expose the
+# gold gain one tick before the dagger removal. The sale reward therefore has
+# its own phase accumulator, matching the bank detector's packet-lag defense.
 
 
 def test_sold_to_vendor_fires_on_confirmed_sale():
@@ -292,6 +289,61 @@ def test_sold_to_vendor_negative_control_gave_up_sale_no_confirmed_reward():
     prev = {"mkt_phase": "sell"}
     now = {"mkt_phase": "sell_return"}
     assert _sold_to_vendor(prev, now, None) is None
+
+
+def test_sold_to_vendor_uses_reward_observed_before_phase_exit() -> None:
+    accumulator = _accumulate_sell_reward(
+        0.0,
+        {"mkt_phase": "sell"},
+        _ep("sell_daggers → running", 50.0),
+    )
+    accumulator = _accumulate_sell_reward(
+        accumulator,
+        {"mkt_phase": "sell"},
+        _ep("sell_daggers → running", 0.0),
+    )
+
+    assert accumulator == 50.0
+    assert (
+        _sold_to_vendor(
+            {"mkt_phase": "sell"},
+            {"mkt_phase": "sell_return"},
+            _ep("sell_daggers → running", 0.0),
+            accumulator,
+        )
+        == 50.0
+    )
+
+
+def test_sold_to_vendor_accepts_co_located_capability_return_to_idle() -> None:
+    assert (
+        _sold_to_vendor(
+            {"mkt_phase": "sell"},
+            {"mkt_phase": "craft"},
+            _ep("sell_daggers → running", 50.0),
+            50.0,
+        )
+        == 50.0
+    )
+
+
+def test_sold_to_vendor_accepts_goal_scoped_gold_observed_after_phase_exit() -> None:
+    prev = {
+        "mkt_phase": "craft",
+        "cap_sell_goal_id": 17,
+        "cap_sell_sent_goal_id": 17,
+        "cap_sell_sent_daggers": 5,
+        "cap_sell_expected_gold": 50,
+        "cap_sell_offered_items": ((0x700, 5, 10),),
+        "cap_sell_offered_removed": 5,
+        "cap_sell_offered_cleared": True,
+        "cap_sell_dagger_delta": 5,
+        "cap_sell_gold_delta": 0,
+    }
+    now = {**prev, "cap_sell_gold_delta": 50}
+
+    assert _sold_to_vendor(prev, now, None, 0.0) == 50.0
+    assert _sold_to_vendor(now, now, None, 0.0) is None
 
 
 def test_banked_gold_fires_on_confirmed_deposit():

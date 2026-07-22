@@ -48,10 +48,13 @@ adds a separate immutable capability registry and a sealed, deadline-bounded
 craft, sell, or load a model-named skill. B4 connects that boundary to real
 cognition: an opt-in selector may emit only strict JSON for `idle` or an
 observation-ready opaque capability id; Agent still rechecks and seals it.
+B5 adds a separately leased `blacksmith/sell_daggers` operation. Its success
+requires goal-scoped proof of the exact vendor offer, dagger removal, quoted
+gold arrival, and safe return before the selector proceeds to `bank_gold`.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 922 tests green, ruff clean. The Python
+threading) — live-verified.** 947 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -96,7 +99,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 922 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 947 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):

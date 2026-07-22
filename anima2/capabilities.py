@@ -16,7 +16,8 @@ from typing import Callable, Mapping
 from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
-from .skills.market import BankGold
+from .skills.craft import DAGGER_GRAPHIC
+from .skills.market import BankGold, SellDaggers
 
 _BACKPACK_LAYER = 0x15
 _BANKBOX_LAYER = 0x1D
@@ -101,6 +102,17 @@ def _bank_gold(ctx: SkillContext) -> int:
     return _container_gold(ctx, _bankbox_serial(ctx))
 
 
+def _pack_daggers(ctx: SkillContext) -> int:
+    backpack = _backpack_serial(ctx)
+    if backpack is None:
+        return 0
+    return sum(
+        item.amount
+        for item in ctx.obs.items
+        if item.graphic == DAGGER_GRAPHIC and item.container == backpack
+    )
+
+
 def _valid_spot(value: object) -> bool:
     if not isinstance(value, (tuple, list)) or not value:
         return False
@@ -150,6 +162,123 @@ def _bank_progress(ctx: SkillContext) -> float:
     return max(0.0, min(1.0, _bank_gold(ctx) / 100.0))
 
 
+_SELL_TRANSACTION_KEYS = (
+    "sell_leg",
+    "sell_stage",
+    "sell_vendor",
+    "sell_find_wait",
+    "sell_popup_wait",
+    "sell_popup_total",
+    "sell_ask_wait",
+    "sell_confirm_wait",
+    "sell_return_leg",
+)
+
+
+def _sell_can_yield(ctx: SkillContext) -> bool:
+    obs = ctx.obs
+    ui_clear = bool(
+        obs.popup is None and obs.shop_buy is None and obs.shop_sell is None
+    )
+    finished = bool(
+        type(ctx.goal_id) is int
+        and ctx.memory.get("cap_sell_finished_goal_id") == ctx.goal_id
+    )
+    return bool(
+        ctx.memory.get("mkt_phase", "craft") == "craft"
+        and all(ctx.memory.get(key) is None for key in _SELL_TRANSACTION_KEYS)
+        and ctx.memory.get("bank_held") is None
+        and ctx.memory.get("cap_bank_release_pending") is None
+        and obs.pending_target is None
+        and not obs.gumps
+        and (ui_clear or finished)
+    )
+
+
+def _sell_ready(ctx: SkillContext) -> bool:
+    return bool(
+        _valid_spot(ctx.memory.get("vendor_spot"))
+        and _backpack_serial(ctx) is not None
+        and _pack_daggers(ctx) >= 5
+        and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+        and _sell_can_yield(ctx)
+    )
+
+
+def _sell_achieved(ctx: SkillContext) -> bool:
+    goal_id = ctx.goal_id
+    sent = ctx.memory.get("cap_sell_sent_daggers")
+    expected_gold = ctx.memory.get("cap_sell_expected_gold")
+    dagger_delta = ctx.memory.get("cap_sell_dagger_delta")
+    gold_delta = ctx.memory.get("cap_sell_gold_delta")
+    offered = ctx.memory.get("cap_sell_offered_items")
+    offered_valid = bool(
+        isinstance(offered, tuple)
+        and offered
+        and all(
+            isinstance(entry, tuple)
+            and len(entry) == 3
+            and all(type(value) is int and value > 0 for value in entry)
+            for entry in offered
+        )
+    )
+    return bool(
+        type(goal_id) is int
+        and ctx.memory.get("cap_sell_goal_id") == goal_id
+        and ctx.memory.get("cap_sell_sent_goal_id") == goal_id
+        and ctx.memory.get("cap_sell_finished_goal_id") == goal_id
+        and ctx.memory.get("cap_sell_returned_goal_id") == goal_id
+        and type(sent) is int
+        and sent > 0
+        and type(expected_gold) is int
+        and expected_gold > 0
+        and offered_valid
+        and sum(amount for _serial, amount, _price in offered) == sent
+        and sum(amount * price for _serial, amount, price in offered)
+        == expected_gold
+        and ctx.memory.get("cap_sell_offered_cleared") is True
+        and ctx.memory.get("cap_sell_offered_removed") == sent
+        and type(dagger_delta) is int
+        and dagger_delta >= sent
+        and type(gold_delta) is int
+        and gold_delta >= expected_gold
+        and ctx.obs.popup is None
+        and ctx.obs.shop_buy is None
+        and ctx.obs.shop_sell is None
+        and _sell_can_yield(ctx)
+    )
+
+
+def _sell_progress(ctx: SkillContext) -> float:
+    if ctx.memory.get("cap_sell_goal_id") != ctx.goal_id:
+        return 0.0
+    sent = ctx.memory.get("cap_sell_sent_daggers")
+    expected_gold = ctx.memory.get("cap_sell_expected_gold")
+    if type(sent) is not int or sent <= 0 or type(expected_gold) is not int or expected_gold <= 0:
+        return 0.0
+    dagger_delta = ctx.memory.get("cap_sell_offered_removed", 0)
+    gold_delta = ctx.memory.get("cap_sell_gold_delta", 0)
+    if type(dagger_delta) is not int or type(gold_delta) is not int:
+        return 0.0
+    return max(
+        0.0,
+        min(1.0, min(dagger_delta / sent, gold_delta / expected_gold)),
+    )
+
+
+_SELL_DAGGERS = CapabilityBinding(
+    capability_id="sell_daggers",
+    profession="blacksmith",
+    skill_type=SellDaggers,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_sell_ready,
+    achieved=_sell_achieved,
+    progress=_sell_progress,
+    can_yield=_sell_can_yield,
+    default_deadline_ticks=180,
+)
+
+
 _BANK_GOLD = CapabilityBinding(
     capability_id="bank_gold",
     profession="blacksmith",
@@ -163,7 +292,10 @@ _BANK_GOLD = CapabilityBinding(
 )
 
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
-    {(_BANK_GOLD.profession, _BANK_GOLD.capability_id): _BANK_GOLD}
+    {
+        (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
+        (_BANK_GOLD.profession, _BANK_GOLD.capability_id): _BANK_GOLD,
+    }
 )
 
 

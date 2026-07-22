@@ -144,13 +144,17 @@ def _paired_smith_plan() -> dict:
     }
 
 
-def test_capability_staging_explicitly_provisions_first_bank_gold() -> None:
+def test_capability_staging_explicitly_provisions_first_sale_and_bank() -> None:
     plan = _paired_smith_plan()
 
     enabled = village._staging_items(plan, True)
     disabled = village._staging_items(plan, False)
 
-    assert enabled == [*PROFESSIONS["blacksmith"].items, "Gold 100"]
+    assert enabled == [
+        *PROFESSIONS["blacksmith"].items,
+        *(["Dagger"] * 5),
+        "Gold 100",
+    ]
     assert disabled == PROFESSIONS["blacksmith"].items
 
 
@@ -163,7 +167,7 @@ def test_runtime_builder_uses_exact_closed_components() -> None:
     assert type(cognition.inner) is CapabilityCognition
     assert type(policy) is CapabilityPolicy
     assert planner.capability_profession == "blacksmith"
-    assert planner.capability_ids == frozenset({"bank_gold"})
+    assert planner.capability_ids == frozenset({"sell_daggers", "bank_gold"})
     assert planner.capability_lease is not None
 
 

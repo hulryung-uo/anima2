@@ -28,7 +28,7 @@ from anima2.planner import Planner
 from anima2.profession import PROFESSIONS
 from anima2.skills import SpeakPending
 from anima2.skills.base import Goal, Skill, SkillContext, SkillResult, Status
-from anima2.skills.market import BankGold
+from anima2.skills.market import BankGold, SellDaggers
 
 
 def _ctx(
@@ -36,6 +36,8 @@ def _ctx(
     *,
     gold: int = 0,
     bank_gold: int = 0,
+    daggers: int = 0,
+    goal_id: int | None = None,
     goal_policy: CapabilityPolicy | None = None,
 ) -> SkillContext:
     player = PlayerView(
@@ -91,11 +93,24 @@ def _ctx(
                 distance=0,
             )
         )
+    if daggers:
+        items.append(
+            ItemView(
+                serial=6,
+                graphic=0x0F52,
+                amount=daggers,
+                pos=player.pos,
+                container=backpack.serial,
+                layer=0,
+                distance=0,
+            )
+        )
     return SkillContext(
         obs=Observation(player=player, items=items),
         persona=Persona(name="Tormund"),
         goal=goal,
-        memory={"banker_spot": (100, 100)},
+        memory={"banker_spot": (100, 100), "vendor_spot": (100, 100)},
+        goal_id=goal_id,
         goal_policy=goal_policy,
     )
 
@@ -116,11 +131,25 @@ def _contains_bank_gold(skill: Skill) -> bool:
     return False
 
 
+def _contains_sell_daggers(skill: Skill) -> bool:
+    current: object = skill
+    seen: set[int] = set()
+    while isinstance(current, Skill) and id(current) not in seen:
+        if isinstance(current, SellDaggers):
+            return True
+        seen.add(id(current))
+        current = getattr(current, "inner", None)
+    return False
+
+
 def test_capability_registry_is_unique_and_deeply_immutable():
     bindings = _registry_bindings()
     keys = [(binding.profession, binding.capability_id) for binding in bindings]
 
-    assert keys == [("blacksmith", "bank_gold")]
+    assert keys == [
+        ("blacksmith", "sell_daggers"),
+        ("blacksmith", "bank_gold"),
+    ]
     assert len(keys) == len(set(keys))
     assert not isinstance(CAPABILITIES, list)
 
@@ -259,6 +288,7 @@ def test_capability_planner_opt_out_preserves_the_legacy_skill_order():
             type(skill) for skill in default.skills
         ]
         assert not any(_contains_bank_gold(skill) for skill in opted_out.skills)
+        assert not any(_contains_sell_daggers(skill) for skill in opted_out.skills)
 
 
 def test_registry_and_profession_planners_expose_the_same_closed_capability_set():
@@ -279,9 +309,13 @@ def test_registry_and_profession_planners_expose_the_same_closed_capability_set(
             continue
 
         planner = profession.planner(capability_goals=True)
+        sell_skills = [skill for skill in planner.skills if _contains_sell_daggers(skill)]
         bank_skills = [skill for skill in planner.skills if _contains_bank_gold(skill)]
+        planner_keys.extend((profession.key, "sell_daggers") for _ in sell_skills)
         planner_keys.extend((profession.key, "bank_gold") for _ in bank_skills)
+        assert len(sell_skills) == 1
         assert len(bank_skills) == 1
+        assert type(sell_skills[0].inner) is SellDaggers
         assert type(bank_skills[0].inner) is resolved.binding.skill_type
         names = {skill.name for skill in planner.skills}
         assert "capability_complete" in names
@@ -313,6 +347,134 @@ def test_valid_blacksmith_bank_goal_selects_the_bound_bank_skill():
     )
 
     assert _contains_bank_gold(selected)
+
+
+def test_valid_blacksmith_sell_goal_selects_only_the_bound_sell_skill():
+    goal = capability_goal("blacksmith", "sell_daggers")
+    resolved = resolve_capability(
+        goal,
+        "blacksmith",
+        GoalSource.COGNITION,
+        _ctx(goal, daggers=5),
+    )
+    assert resolved is not None
+    planner = PROFESSIONS["blacksmith"].planner(capability_goals=True)
+
+    selected = planner.select(
+        _ctx(
+            resolved.goal,
+            daggers=5,
+            goal_id=17,
+            goal_policy=CapabilityPolicy("blacksmith"),
+        )
+    )
+
+    assert _contains_sell_daggers(selected)
+    assert not _contains_bank_gold(selected)
+
+
+def test_sell_completion_evidence_is_exactly_goal_scoped() -> None:
+    binding = CAPABILITIES[("blacksmith", "sell_daggers")]
+    ctx = _ctx(daggers=0, gold=50, goal_id=17)
+    ctx.memory.update(
+        {
+            "cap_sell_goal_id": 17,
+            "cap_sell_sent_goal_id": 17,
+            "cap_sell_finished_goal_id": 17,
+            "cap_sell_returned_goal_id": 17,
+            "cap_sell_sent_daggers": 5,
+            "cap_sell_expected_gold": 50,
+            "cap_sell_offered_items": ((6, 5, 10),),
+            "cap_sell_offered_removed": 5,
+            "cap_sell_offered_cleared": True,
+            "cap_sell_dagger_delta": 5,
+            "cap_sell_gold_delta": 50,
+            "mkt_phase": "craft",
+        }
+    )
+
+    assert binding.achieved(ctx)
+    assert binding.progress(ctx) == 1.0
+
+    ctx.goal_id = 18
+    assert not binding.achieved(ctx)
+    assert binding.progress(ctx) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cap_sell_sent_goal_id", None),
+        ("cap_sell_finished_goal_id", None),
+        ("cap_sell_returned_goal_id", None),
+        ("cap_sell_offered_removed", 4),
+        ("cap_sell_offered_cleared", False),
+        ("cap_sell_dagger_delta", 4),
+        ("cap_sell_gold_delta", 49),
+        ("mkt_phase", "sell_return"),
+    ],
+)
+def test_sell_completion_requires_send_both_deltas_and_safe_return(
+    field: str, value: object
+) -> None:
+    binding = CAPABILITIES[("blacksmith", "sell_daggers")]
+    ctx = _ctx(daggers=0, gold=50, goal_id=17)
+    ctx.memory.update(
+        {
+            "cap_sell_goal_id": 17,
+            "cap_sell_sent_goal_id": 17,
+            "cap_sell_finished_goal_id": 17,
+            "cap_sell_returned_goal_id": 17,
+            "cap_sell_sent_daggers": 5,
+            "cap_sell_expected_gold": 50,
+            "cap_sell_offered_items": ((6, 5, 10),),
+            "cap_sell_offered_removed": 5,
+            "cap_sell_offered_cleared": True,
+            "cap_sell_dagger_delta": 5,
+            "cap_sell_gold_delta": 50,
+            "mkt_phase": "craft",
+            field: value,
+        }
+    )
+
+    assert not binding.achieved(ctx)
+
+
+def test_sell_deadline_and_preemption_wait_for_vendor_transaction_yield() -> None:
+    proposal = capability_goal("blacksmith", "sell_daggers")
+    policy = CapabilityPolicy("blacksmith")
+    resolved = resolve_capability(
+        proposal,
+        "blacksmith",
+        GoalSource.COGNITION,
+        _ctx(proposal, daggers=5),
+    )
+    assert resolved is not None
+    ctx = _ctx(
+        resolved.goal,
+        daggers=5,
+        goal_id=17,
+        goal_policy=policy,
+    )
+    ctx.memory.update({"mkt_phase": "sell", "sell_stage": "confirm"})
+
+    assert not policy.deadline_can_expire(resolved.goal, ctx)
+    assert not policy.can_preempt(resolved.goal, ctx)
+
+    ctx.memory["mkt_phase"] = "craft"
+    ctx.memory.pop("sell_stage")
+
+    assert policy.deadline_can_expire(resolved.goal, ctx)
+    assert policy.can_preempt(resolved.goal, ctx)
+
+    # A completed/given-up operation owns no cursor resource. A stale vendor
+    # UI must not retain the lease forever, though it still cannot be SUCCESS.
+    ctx.memory["cap_sell_finished_goal_id"] = 17
+    ctx.obs.popup = object()  # type: ignore[assignment]
+
+    assert policy.deadline_can_expire(resolved.goal, ctx)
+    assert policy.can_preempt(resolved.goal, ctx)
+    assert not CAPABILITIES[("blacksmith", "sell_daggers")].achieved(ctx)
 
 
 @pytest.mark.parametrize(
@@ -374,6 +536,22 @@ def _capability_agent(proposal: Goal) -> Agent:
         goal_policy=policy,
     )
     agent.memory["banker_spot"] = (100, 100)
+    return agent
+
+
+def _sell_capability_agent(proposal: Goal) -> Agent:
+    ctx = _ctx(daggers=5)
+    policy = CapabilityPolicy("blacksmith")
+    agent = Agent(
+        body=_StaticBody(ctx.obs),  # type: ignore[arg-type]
+        persona=ctx.persona,
+        planner=PROFESSIONS["blacksmith"].planner(capability_goals=True),
+        cognition=_FixedCognition(proposal),
+        cognition_interval=1,
+        profession="blacksmith",
+        goal_policy=policy,
+    )
+    agent.memory["vendor_spot"] = (100, 100)
     return agent
 
 
@@ -519,6 +697,36 @@ def test_due_capability_expires_immediately_at_a_safe_unachieved_yield_point() -
     assert agent.goal_stack.history[-1].outcome is GoalOutcome.EXPIRED
 
 
+def test_due_sell_capability_defers_and_rejects_cancel_until_safe_yield() -> None:
+    agent = _sell_capability_agent(
+        capability_goal("blacksmith", "sell_daggers")
+    )
+    agent.tick()
+    assert agent.goal_stack.current is not None
+    assert agent.goal_stack.current.deadline_tick == 180
+    agent.cognition = NullCognition()
+    agent.ticks = agent.goal_stack.current.deadline_tick or 0
+    agent.memory.update({"mkt_phase": "sell", "sell_stage": "confirm"})
+
+    agent.tick()
+
+    assert agent.goal is not None
+    assert not any(
+        frame.outcome is GoalOutcome.EXPIRED for frame in agent.goal_stack.history
+    )
+    with pytest.raises(RuntimeError, match="safe-yield"):
+        agent.cancel_goal()
+
+    agent.memory["mkt_phase"] = "craft"
+    agent.memory.pop("sell_stage", None)
+    agent.memory.pop("sell_find_wait", None)
+    agent.memory.pop("sell_confirm_wait", None)
+    agent.tick()
+
+    assert agent.goal is None
+    assert agent.goal_stack.history[-1].outcome is GoalOutcome.EXPIRED
+
+
 def test_observed_success_wins_when_it_arrives_at_the_deadline() -> None:
     agent = _capability_agent(capability_goal("blacksmith", "bank_gold"))
     agent.tick()
@@ -552,6 +760,29 @@ def test_expired_cognition_proposal_cannot_refresh_its_deadline() -> None:
     assert len(expired) == 1
     assert agent.goal is None
     assert agent.memory["cognition_expired_replay_rejections"] >= 1
+
+
+def test_fresh_equal_capability_decision_can_retry_after_expiry() -> None:
+    expired_proposal = capability_goal("blacksmith", "bank_gold")
+    agent = _capability_agent(expired_proposal)
+    agent.tick()
+    assert agent.goal_stack.current is not None
+    agent.ticks = agent.goal_stack.current.deadline_tick or 0
+    agent.memory.update({"mkt_phase": "craft", "bank_held": None})
+    agent.tick()
+    assert agent.goal is None
+
+    fresh_proposal = capability_goal("blacksmith", "bank_gold")
+    assert fresh_proposal == expired_proposal
+    assert fresh_proposal is not expired_proposal
+    agent.cognition = _FixedCognition(fresh_proposal)
+
+    agent.tick()
+
+    assert agent.goal is not None
+    assert agent.goal == fresh_proposal
+    assert agent.goal_stack.current is not None
+    assert agent.goal_stack.current.outcome is None
 
 
 def test_goal_seal_is_deep_and_its_metadata_cannot_be_reopened() -> None:

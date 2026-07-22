@@ -462,3 +462,58 @@ installed operation and its banker/gold prerequisites are staged. Craft, sell,
 acquire/replace tools, recover work location, explore, assist, and socialize
 must each land as separately evidenced capabilities before this becomes a
 self-sustaining player.
+
+### B5 — verified dagger sale + sale→bank composition ✅
+
+The registry now exposes a second opaque operation,
+`("blacksmith", "sell_daggers")`, before `bank_gold`. `SellDaggers` is a leaf
+adapter over the already verified vendor FSM and can only request/select the
+Sell context entry, answer the observed sell list with dagger lines, and return
+to idle. It never falls through to crafting or banking. Readiness requires a
+configured vendor route, an idle UI/FSM, a backpack, and at least five observed
+daggers.
+
+Completion evidence is scoped to the active `goal_id`; an earlier sale cannot
+satisfy a later frame. The adapter records every exact offered dagger serial,
+quantity, and quoted unit price only when it emits `SellItems`, then requires
+all offered serial quantities to disappear and the full quoted gold delta in
+later Observations, plus a completed safe return. Aggregate inventory totals
+alone are insufficient. Gold
+alone, dagger removal alone, an attempted packet, stale memory, or a busy vendor
+UI cannot complete the frame. Once its hands are finished, stale UI cannot hold
+preemption or expiry forever. A failed trip is not replayed inside the same
+frame; its 180-tick deadline may expire at that safe yield. Return success also
+requires the observed player position to equal the recorded work stand; a
+stalled return is a safe failure, never a false homecoming.
+
+Capability village staging adds five daggers as explicit first-sale inventory
+and retains the explicit 100 gold bank prerequisite. With both ids ready, the
+deterministic offline selector chooses the registry's sale first and then banks.
+The chronicle sale detector now accumulates sale rewards across observation
+ticks and accepts a co-located direct `sell -> craft` return; this was caught
+live when the server exposed gold growth before dagger removal and the smith was
+already within vendor reach.
+
+Expired-request replay protection now tombstones only the exact producer-owned
+request object. That stale object cannot refresh its deadline even after goal
+history eviction, while a newly constructed equal-valued decision can start a
+legitimate retry.
+
+Offline: 947 tests pass, Ruff, compile, and diff checks are clean. The B5 live
+gate used production `ThreadedCognition(CapabilityCognition(...))`: an
+extra-field response produced no Goal or action, while the exact choice created
+one sealed 180-tick COGNITION frame. The exact five staged dagger serials followed
+`PopupRequest -> PopupSelect(Sell) -> SellItems`, disappeared once, and produced
+the vendor's exact 50-gold quote. No `Use`, craft response, `PickUp`, `Drop`, or
+bank action occurred; every transaction action was owned by the factory's exact
+`CapabilityBoundSkill(SellDaggers)`. All 16 flags passed in 12 Agent ticks.
+
+The production village CLI was then run with a fresh account prefix, one
+miner+blacksmith pair, `--capability-goals`, and the real chronicle. It recorded
+`sold_to_vendor` for 50 gold at tick 16 and `banked_gold` for 1150 gold at tick
+45, proving the selector composed the two separately leased operations.
+
+B5 still provisions its first daggers. The next autonomy step is a separately
+evidenced crafting capability, followed by inventory/tool acquisition and a
+durable repeat policy, so the smith can replenish sale inventory instead of
+performing only the staged first cycle.

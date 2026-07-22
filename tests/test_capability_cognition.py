@@ -26,6 +26,8 @@ def _ctx(
     pack_gold: int = 100,
     bank_gold: int = 0,
     banker_spot: object = (100, 100),
+    daggers: int = 0,
+    vendor_spot: object = (100, 100),
 ) -> SkillContext:
     player = PlayerView(
         serial=1,
@@ -76,7 +78,23 @@ def _ctx(
                 distance=0,
             )
         )
-    memory = {} if banker_spot is None else {"banker_spot": banker_spot}
+    if daggers:
+        items.append(
+            ItemView(
+                serial=6,
+                graphic=0x0F52,
+                amount=daggers,
+                pos=player.pos,
+                container=backpack.serial,
+                layer=0,
+                distance=0,
+            )
+        )
+    memory = {}
+    if banker_spot is not None:
+        memory["banker_spot"] = banker_spot
+    if vendor_spot is not None:
+        memory["vendor_spot"] = vendor_spot
     return SkillContext(
         obs=Observation(player=player, items=items),
         persona=Persona(name="Tormund", title="a blacksmith"),
@@ -100,6 +118,19 @@ def test_ready_capability_ids_returns_only_observation_ready_profession_ids() ->
     assert ready_capability_ids("blacksmith", _ctx(), GoalSource.SKILL) == ()
 
 
+def test_ready_capability_ids_exposes_real_registry_ordered_choice() -> None:
+    assert ready_capability_ids("blacksmith", _ctx(daggers=5)) == (
+        "sell_daggers",
+        "bank_gold",
+    )
+    assert ready_capability_ids(
+        "blacksmith", _ctx(pack_gold=0, daggers=5)
+    ) == ("sell_daggers",)
+    assert ready_capability_ids(
+        "blacksmith", _ctx(daggers=5, vendor_spot=None)
+    ) == ("bank_gold",)
+
+
 def test_exact_capability_decision_returns_exact_unsealed_wire_goal() -> None:
     client = StubLLMClient(_CAPABILITY_REPLY)
 
@@ -114,6 +145,26 @@ def test_exact_capability_decision_returns_exact_unsealed_wire_goal() -> None:
         "profession": "blacksmith",
         "capability": "bank_gold",
     }
+    assert len(client.calls) == 1
+
+
+def test_exact_second_ready_capability_can_be_selected() -> None:
+    client = StubLLMClient(
+        '{"schema":1,"decision":"capability","capability":"bank_gold"}'
+    )
+
+    goal = CapabilityCognition(client, "blacksmith").reconsider(_ctx(daggers=5))
+
+    assert goal == capability_goal("blacksmith", "bank_gold")
+    assert len(client.calls) == 1
+
+
+def test_installed_but_not_ready_capability_is_rejected() -> None:
+    client = StubLLMClient(
+        '{"schema":1,"decision":"capability","capability":"sell_daggers"}'
+    )
+
+    assert CapabilityCognition(client, "blacksmith").reconsider(_ctx()) is None
     assert len(client.calls) == 1
 
 
@@ -240,6 +291,12 @@ def test_no_client_uses_the_deterministic_ready_fallback() -> None:
     assert goal is not None and not goal.sealed
 
 
+def test_no_client_prefers_sale_when_both_operations_are_ready() -> None:
+    goal = CapabilityCognition(None, "blacksmith").reconsider(_ctx(daggers=5))
+
+    assert goal == capability_goal("blacksmith", "sell_daggers")
+
+
 def test_transport_exception_uses_the_deterministic_ready_fallback() -> None:
     class _FailingClient:
         calls = 0
@@ -270,6 +327,19 @@ def test_prompt_exposes_only_ready_opaque_ids_not_implementation_names() -> None
     assert "BankGold" not in prompt
     assert "BlacksmithMarket" not in prompt
     assert "anima2." not in prompt
+
+
+def test_prompt_exposes_both_ready_opaque_ids_only() -> None:
+    client = StubLLMClient(_IDLE_REPLY)
+
+    CapabilityCognition(client, "blacksmith").reconsider(_ctx(daggers=5))
+
+    system, user = client.calls[0]
+    prompt = system + "\n" + user
+    assert "sell_daggers" in prompt
+    assert "bank_gold" in prompt
+    assert "SellDaggers" not in prompt
+    assert "BankGold" not in prompt
 
 
 class _StaticBody:

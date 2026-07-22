@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import weakref
 from copy import deepcopy
 from dataclasses import replace
 from typing import Callable, Protocol
@@ -191,11 +192,12 @@ class Agent:
         self._intention_epoch = object()
         self._goal_safety_active = False
         self._last_observation: Observation | None = None
-        # Capability tombstones are independent of GoalStack's bounded
-        # telemetry history. The installed registry is finite, so retaining
-        # one immutable canonical Goal per expired capability is bounded by
-        # the policy vocabulary rather than by runtime duration.
-        self._expired_capability_replays: list[Goal] = []
+        # Reject the exact producer-owned request object that already expired,
+        # while permitting a fresh equal-valued capability decision to retry.
+        # Weak references keep stale async objects recognizable without making
+        # repeated legitimate attempts an unbounded lifetime allocation.
+        self._expired_capability_replays: list[weakref.ReferenceType[Goal]] = []
+        self._active_capability_proposal: tuple[int, Goal] | None = None
         if goal is not None and goal.kind == "capability":
             raise ValueError("capability Goals must enter through CapabilityPolicy admission")
         if goal is not None:
@@ -393,8 +395,15 @@ class Agent:
             goal = frame.goal
             if goal.kind != "capability" or not goal.sealed:
                 continue
-            if not any(goal == prior for prior in self._expired_capability_replays):
-                self._expired_capability_replays.append(goal)
+            active = self._active_capability_proposal
+            if active is None or active[0] != frame.id:
+                continue
+            proposal = active[1]
+            live = [ref for ref in self._expired_capability_replays if ref() is not None]
+            if not any(ref() is proposal for ref in live):
+                live.append(weakref.ref(proposal))
+            self._expired_capability_replays = live
+            self._active_capability_proposal = None
 
     def _on_goal_transition(self, old: Goal | None, *, stop_route: bool) -> None:
         for key in _GOTO_TRANSIENT_KEYS:
@@ -438,6 +447,15 @@ class Agent:
                 int(self.memory.get("cognition_admission_rejections", 0)) + 1
             )
             return False
+        untrusted_proposal = proposal
+        replayed_capability = proposal.kind == "capability" and any(
+            ref() is proposal for ref in self._expired_capability_replays
+        )
+        if replayed_capability:
+            self.memory["cognition_expired_replay_rejections"] = (
+                int(self.memory.get("cognition_expired_replay_rejections", 0)) + 1
+            )
+            return False
         deadline_tick = None
         if self.goal_admitter is not None:
             try:
@@ -455,14 +473,11 @@ class Agent:
                     int(self.memory.get("cognition_admission_rejections", 0)) + 1
                 )
                 return False
-            replayed_capability = proposal.kind == "capability" and any(
-                proposal == prior for prior in self._expired_capability_replays
-            )
             replayed_other = proposal.kind != "capability" and any(
                 frame.outcome is GoalOutcome.EXPIRED and frame.goal == proposal
                 for frame in self.goal_stack.history
             )
-            if replayed_capability or replayed_other:
+            if replayed_other:
                 self.memory["cognition_expired_replay_rejections"] = (
                     int(self.memory.get("cognition_expired_replay_rejections", 0)) + 1
                 )
@@ -484,6 +499,9 @@ class Agent:
             tick=self.ticks,
             deadline_tick=deadline_tick,
         )
+        frame = self.goal_stack.current
+        if proposal.kind == "capability" and frame is not None:
+            self._active_capability_proposal = (frame.id, untrusted_proposal)
         return True
 
     def _record_route_action(self, action: Action, obs: Observation) -> None:

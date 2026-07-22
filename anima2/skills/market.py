@@ -778,6 +778,183 @@ class BlacksmithMarket(Blacksmith):
         return sum(i.amount for i in ctx.obs.items if i.graphic == GOLD_GRAPHIC and i.container == box.serial)
 
 
+class SellDaggers(BlacksmithMarket):
+    """Operation-specific vendor hands: sell daggers, never craft or bank.
+
+    The capability keeps observation evidence scoped to the active goal frame.
+    Merely opening a vendor window, sending ``SellItems``, or observing a gold
+    change is insufficient on its own: completion requires the exact offered
+    dagger quantity to disappear, at least its quoted value to arrive, and the
+    smith to return to the safe idle phase for the same ``goal_id``.
+    """
+
+    name = "sell_daggers"
+    description = "Sell observed backpack daggers to the configured vendor and return."
+
+    _CLEANUP_KEYS = (
+        "sell_gold_start",
+        "sell_paid",
+        "sell_daggers_start",
+        "sell_leg",
+        "sell_stage",
+        "sell_vendor",
+        "sell_find_wait",
+        "sell_popup_wait",
+        "sell_popup_total",
+        "sell_ask_wait",
+        "sell_confirm_wait",
+    )
+
+    def _begin_goal(self, ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int:
+            return False
+        if ctx.memory.get("cap_sell_goal_id") == goal_id:
+            return True
+
+        vendor = ctx.memory.get("vendor_spot")
+        try:
+            route = tuple(self._route(vendor))
+        except (IndexError, TypeError, ValueError):
+            return False
+        if not route:
+            return False
+
+        ctx.memory["cap_sell_goal_id"] = goal_id
+        ctx.memory["cap_sell_route"] = route
+        ctx.memory["cap_sell_start_daggers"] = self._pack_daggers(ctx)
+        ctx.memory["cap_sell_start_gold"] = self._pack_gold(ctx)
+        for key in (
+            "cap_sell_sent_goal_id",
+            "cap_sell_sent_daggers",
+            "cap_sell_expected_gold",
+            "cap_sell_offered_items",
+            "cap_sell_offered_removed",
+            "cap_sell_offered_cleared",
+            "cap_sell_dagger_delta",
+            "cap_sell_gold_delta",
+            "cap_sell_finished_goal_id",
+            "cap_sell_returned_goal_id",
+        ):
+            ctx.memory.pop(key, None)
+        return True
+
+    def _observe_evidence(self, ctx: SkillContext) -> None:
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_sell_sent_goal_id") != goal_id:
+            return
+        start_daggers = ctx.memory.get("cap_sell_start_daggers")
+        start_gold = ctx.memory.get("cap_sell_start_gold")
+        if type(start_daggers) is not int or type(start_gold) is not int:
+            return
+        ctx.memory["cap_sell_dagger_delta"] = max(
+            0, start_daggers - self._pack_daggers(ctx)
+        )
+        ctx.memory["cap_sell_gold_delta"] = max(
+            0, self._pack_gold(ctx) - start_gold
+        )
+        offered = ctx.memory.get("cap_sell_offered_items")
+        if (
+            not isinstance(offered, tuple)
+            or not offered
+            or not all(
+                isinstance(entry, tuple)
+                and len(entry) == 3
+                and all(type(value) is int and value > 0 for value in entry)
+                for entry in offered
+            )
+        ):
+            return
+        backpack = self._backpack(ctx)
+        current = {
+            item.serial: item.amount
+            for item in ctx.obs.items
+            if backpack is not None and item.container == backpack.serial
+        }
+        ctx.memory["cap_sell_offered_removed"] = sum(
+            max(0, amount - min(amount, current.get(serial, 0)))
+            for serial, amount, _price in offered
+        )
+        ctx.memory["cap_sell_offered_cleared"] = all(
+            current.get(serial, 0) == 0 for serial, _amount, _price in offered
+        )
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self._begin_goal(ctx):
+            return SkillResult(Status.RUNNING)
+        self._observe_evidence(ctx)
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_sell_finished_goal_id") == goal_id:
+            return self._payout(ctx, SkillResult(Status.RUNNING))
+
+        obs = ctx.obs
+        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
+        route = [tuple(point) for point in ctx.memory["cap_sell_route"]]
+        phase = ctx.memory.get("mkt_phase", "craft")
+        tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
+        if phase not in {"sell", "sell_return"}:
+            phase = ctx.memory["mkt_phase"] = "sell"
+
+        if phase == "sell":
+            result = self._sell_step(ctx, route)
+            if result is not None:
+                if isinstance(result.action, SellItems):
+                    offered = {
+                        serial: (amount, price)
+                        for serial, amount, price in (
+                            (item.serial, item.amount, item.price)
+                            for item in (obs.shop_sell.items if obs.shop_sell else [])
+                            if item.graphic == DAGGER_GRAPHIC
+                        )
+                    }
+                    sent_daggers = sum(
+                        amount
+                        for serial, amount in result.action.items
+                        if serial in offered and amount == offered[serial][0]
+                    )
+                    expected_gold = sum(
+                        amount * offered[serial][1]
+                        for serial, amount in result.action.items
+                        if serial in offered and amount == offered[serial][0]
+                    )
+                    if sent_daggers > 0 and expected_gold > 0:
+                        offered_items = tuple(
+                            (serial, amount, offered[serial][1])
+                            for serial, amount in result.action.items
+                            if serial in offered and amount == offered[serial][0]
+                        )
+                        ctx.memory["cap_sell_sent_goal_id"] = goal_id
+                        ctx.memory["cap_sell_sent_daggers"] = sent_daggers
+                        ctx.memory["cap_sell_expected_gold"] = expected_gold
+                        ctx.memory["cap_sell_offered_items"] = offered_items
+                return self._payout(ctx, result)
+            ctx.memory["sell_giveup_daggers"] = self._pack_daggers(ctx)
+            ctx.memory["sell_giveup_tick"] = tick
+            for key in self._CLEANUP_KEYS:
+                ctx.memory.pop(key, None)
+            phase = ctx.memory["mkt_phase"] = "sell_return"
+
+        if phase == "sell_return":
+            result = self._market_return_step(ctx, "sell_return", route)
+            if result is not None:
+                return self._payout(ctx, result)
+            ctx.memory.pop("sell_return_leg", None)
+            ctx.memory["mkt_phase"] = "craft"
+            ctx.memory["cap_sell_finished_goal_id"] = goal_id
+            stand = ctx.memory.get("bs_stand")
+            if (
+                isinstance(stand, (tuple, list))
+                and len(stand) == 2
+                and (obs.player.pos.x, obs.player.pos.y) == tuple(stand)
+            ):
+                ctx.memory["cap_sell_returned_goal_id"] = goal_id
+            self._observe_evidence(ctx)
+
+        # Deliberately do not fall through to Blacksmith.step(): completion is
+        # evaluated from the next Observation before any hammer/bank action.
+        return self._payout(ctx, SkillResult(Status.RUNNING))
+
+
 class BankGold(BlacksmithMarket):
     """Operation-specific bank hands: deposit gold, never craft or sell.
 

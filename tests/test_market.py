@@ -37,6 +37,7 @@ from anima2.skills.market import (
     SELL_CLILOC,
     SELL_CONFIRM_TIMEOUT,
     BlacksmithMarket,
+    SellDaggers,
 )
 
 HAMMER = 0x13E3
@@ -82,11 +83,25 @@ def _popup(serial, clilocs):
     return PopupMenu(serial=serial, entries=[PopupEntry(index=i, cliloc=c) for i, c in enumerate(clilocs)])
 
 
-def _ctx(items, *, memory=None, pos=Position(0, 0, 0), gumps=(), shop_sell=None, mobiles=(), popup=None):
+def _ctx(
+    items,
+    *,
+    memory=None,
+    pos=Position(0, 0, 0),
+    gumps=(),
+    shop_sell=None,
+    mobiles=(),
+    popup=None,
+    goal_id=None,
+):
     obs = Observation(player=PlayerView(serial=1, pos=pos), items=[_tool(), *items],
                       gumps=list(gumps), shop_sell=shop_sell, mobiles=list(mobiles), popup=popup)
-    return SkillContext(obs=obs, persona=Persona(name="T"),
-                        memory=memory if memory is not None else {})
+    return SkillContext(
+        obs=obs,
+        persona=Persona(name="T"),
+        memory=memory if memory is not None else {},
+        goal_id=goal_id,
+    )
 
 
 # --- opt-in / backwards compatibility -------------------------------------------
@@ -338,6 +353,173 @@ def test_sell_reward_pays_only_on_confirmed_gold_gain():
     res4 = BlacksmithMarket().step(_ctx(items4, memory=mem, pos=pos, mobiles=[vendor], shop_sell=sell))
     assert res4.reward == 50.0
     assert mem["mkt_phase"] == "sell_return"
+
+
+def test_sell_capability_owns_exact_vendor_sequence_and_goal_evidence():
+    vendor = _mobile(VENDOR_MOBILE, *VENDOR)
+    popup = _popup(VENDOR_MOBILE, [SELL_CLILOC])
+    sell = ShopSell(
+        vendor=VENDOR_SERIAL,
+        items=[
+            ShopSellItem(
+                serial=0x700,
+                graphic=DAGGER_GRAPHIC,
+                hue=0,
+                amount=5,
+                price=10,
+                name="dagger",
+            ),
+            ShopSellItem(
+                serial=0x40,
+                graphic=HAMMER,
+                hue=0,
+                amount=1,
+                price=10,
+                name="smith hammer",
+            ),
+        ],
+    )
+    mem = {"vendor_spot": VENDOR, "bs_stand": (0, 0)}
+    skill = SellDaggers()
+    before = [_backpack(), _dagger(0x700, amount=5)]
+
+    request = skill.step(
+        _ctx(before, memory=mem, pos=Position(*VENDOR, 0), mobiles=[vendor], goal_id=17)
+    )
+    select = skill.step(
+        _ctx(
+            before,
+            memory=mem,
+            pos=Position(*VENDOR, 0),
+            mobiles=[vendor],
+            popup=popup,
+            goal_id=17,
+        )
+    )
+    offer = skill.step(
+        _ctx(
+            before,
+            memory=mem,
+            pos=Position(*VENDOR, 0),
+            mobiles=[vendor],
+            shop_sell=sell,
+            goal_id=17,
+        )
+    )
+
+    assert isinstance(request.action, PopupRequest)
+    assert isinstance(select.action, PopupSelect)
+    assert isinstance(offer.action, SellItems)
+    assert offer.action.items == [(0x700, 5)]
+    assert mem["cap_sell_sent_goal_id"] == 17
+    assert mem["cap_sell_sent_daggers"] == 5
+    assert mem["cap_sell_expected_gold"] == 50
+    assert mem["cap_sell_offered_items"] == ((0x700, 5, 10),)
+
+    after = [_backpack(), _gold(0x900, amount=50)]
+    return_step = skill.step(
+        _ctx(after, memory=mem, pos=Position(*VENDOR, 0), mobiles=[vendor], goal_id=17)
+    )
+    finish = skill.step(
+        _ctx(after, memory=mem, pos=Position(0, 0, 0), goal_id=17)
+    )
+
+    assert isinstance(return_step.action, Walk)
+    assert finish.action is None
+    assert mem["mkt_phase"] == "craft"
+    assert mem["cap_sell_finished_goal_id"] == 17
+    assert mem["cap_sell_dagger_delta"] == 5
+    assert mem["cap_sell_gold_delta"] == 50
+    assert mem["cap_sell_offered_removed"] == 5
+    assert mem["cap_sell_offered_cleared"] is True
+    assert not any(isinstance(result.action, (Use, Drop)) for result in (request, select, offer, return_step, finish))
+
+
+def test_sell_capability_failed_frame_does_not_replay_or_leak_into_next_goal():
+    skill = SellDaggers()
+    mem = {
+        "vendor_spot": VENDOR,
+        "bs_stand": (0, 0),
+        "mkt_phase": "sell_return",
+        "cap_sell_goal_id": 17,
+        "cap_sell_route": (VENDOR,),
+        "cap_sell_start_daggers": 5,
+        "cap_sell_start_gold": 0,
+        "cap_sell_sent_goal_id": 17,
+        "cap_sell_sent_daggers": 5,
+        "cap_sell_expected_gold": 50,
+        "cap_sell_offered_items": ((0x700, 5, 10),),
+    }
+    unchanged = [_backpack(), _dagger(0x700, amount=5)]
+
+    finish = skill.step(_ctx(unchanged, memory=mem, goal_id=17))
+    repeat = skill.step(_ctx(unchanged, memory=mem, goal_id=17))
+
+    assert finish.action is None and repeat.action is None
+    assert mem["cap_sell_finished_goal_id"] == 17
+    assert mem["cap_sell_dagger_delta"] == 0
+    assert mem["cap_sell_gold_delta"] == 0
+
+    skill.step(_ctx(unchanged, memory=mem, goal_id=18))
+
+    assert mem["cap_sell_goal_id"] == 18
+    assert "cap_sell_sent_goal_id" not in mem
+    assert "cap_sell_finished_goal_id" not in mem
+
+
+def test_sell_capability_return_stall_never_claims_verified_homecoming():
+    skill = SellDaggers()
+    mem = {
+        "vendor_spot": VENDOR,
+        "bs_stand": (0, 0),
+        "mkt_phase": "sell_return",
+        "sell_return_stall": skill.stall_limit - 1,
+        "sell_return_last_pos": (5, 5),
+        "cap_sell_goal_id": 17,
+        "cap_sell_route": (VENDOR,),
+        "cap_sell_start_daggers": 5,
+        "cap_sell_start_gold": 0,
+        "cap_sell_sent_goal_id": 17,
+        "cap_sell_sent_daggers": 5,
+        "cap_sell_expected_gold": 50,
+        "cap_sell_offered_items": ((0x700, 5, 10),),
+    }
+    sold = [_backpack(), _gold(0x900, amount=50)]
+
+    result = skill.step(
+        _ctx(sold, memory=mem, pos=Position(5, 5, 0), goal_id=17)
+    )
+
+    assert result.action is None
+    assert mem["mkt_phase"] == "craft"
+    assert mem["cap_sell_finished_goal_id"] == 17
+    assert "cap_sell_returned_goal_id" not in mem
+
+
+def test_sell_capability_tracks_each_offered_serial_not_only_aggregate_delta():
+    skill = SellDaggers()
+    offered = tuple((0x700 + index, 1, 10) for index in range(5))
+    mem = {
+        "cap_sell_goal_id": 17,
+        "cap_sell_start_daggers": 6,
+        "cap_sell_start_gold": 0,
+        "cap_sell_sent_goal_id": 17,
+        "cap_sell_sent_daggers": 5,
+        "cap_sell_expected_gold": 50,
+        "cap_sell_offered_items": offered,
+        "cap_sell_finished_goal_id": 17,
+        "mkt_phase": "craft",
+    }
+    # Aggregate totals look complete (6 -> 1 daggers, 0 -> 50 gold), but one
+    # exact serial offered to the vendor still remains in the backpack.
+    items = [_backpack(), _dagger(0x700, amount=1), _gold(0x900, amount=50)]
+
+    skill.step(_ctx(items, memory=mem, goal_id=17))
+
+    assert mem["cap_sell_dagger_delta"] == 5
+    assert mem["cap_sell_gold_delta"] == 50
+    assert mem["cap_sell_offered_removed"] == 4
+    assert mem["cap_sell_offered_cleared"] is False
 
 
 def test_sell_confirm_gives_up_after_a_bounded_wait():
