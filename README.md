@@ -54,12 +54,15 @@ gold arrival, and safe return before the selector proceeds to `bank_gold`.
 B6 adds `blacksmith/craft_daggers`: it can use only the owned backpack hammer
 and iron, verifies every live craft-gump reply, attributes successful and
 failed ingot consumption to the active goal, closes the UI, and replenishes the
-pack to one five-dagger sale batch. The production village now composes
-sale → bank → craft and records all three outcomes in its chronicle.
+pack to one five-dagger sale batch. B7 makes `bank_gold` repeatable: each goal
+freezes the exact pack piles and the settled bank baseline, owns the matching
+pickup/drop actions, and succeeds only after equal pack and bank deltas plus a
+safe return. The production village now repeats sale → bank → craft instead of
+stopping after the first bank balance, and Chronicle records each goal once.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 1002 tests green, ruff clean. The Python
+threading) — live-verified.** 1035 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -104,7 +107,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 1002 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 1035 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -142,6 +145,7 @@ python -m anima2.live_reconnect # A3: kill the live bridge, reconnect, and resum
 python -m anima2.live_waypoint_recovery # A4: discover healer E5, resurrect, recover corpse, resume Goal
 python -m anima2.live_goal_stack # B1: interrupt, deadline, cognition isolation, resume same Goal
 python -m anima2.live_bank_goal  # B3: invalid-goal differential + exact 100-gold bank transaction
+python -m anima2.live_repeat_bank_goal # B7: second deposit over an existing bank balance
 ```
 
 ## Family

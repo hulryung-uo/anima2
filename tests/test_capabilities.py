@@ -398,6 +398,30 @@ def test_valid_blacksmith_bank_goal_selects_the_bound_bank_skill():
     assert _contains_bank_gold(selected)
 
 
+def test_bank_goal_is_ready_for_new_pack_gold_with_a_preexisting_bank_balance():
+    goal = capability_goal("blacksmith", "bank_gold")
+    ctx = _ctx(goal, gold=40, bank_gold=1_000)
+
+    resolved = resolve_capability(
+        goal,
+        "blacksmith",
+        GoalSource.COGNITION,
+        ctx,
+    )
+
+    assert resolved is not None
+
+
+def test_preexisting_bank_gold_alone_neither_admits_nor_achieves_a_new_goal():
+    goal = capability_goal("blacksmith", "bank_gold")
+    ctx = _ctx(goal, bank_gold=1_000, goal_id=17)
+    binding = CAPABILITIES[("blacksmith", "bank_gold")]
+
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, ctx) is None
+    assert not binding.achieved(ctx)
+    assert binding.progress(ctx) == 0.0
+
+
 def test_valid_blacksmith_sell_goal_selects_only_the_bound_sell_skill():
     goal = capability_goal("blacksmith", "sell_daggers")
     resolved = resolve_capability(
@@ -492,6 +516,81 @@ def _completed_craft_ctx(*, goal_id: int = 17) -> SkillContext:
         }
     )
     return ctx
+
+
+def _completed_bank_ctx(
+    *,
+    goal_id: int = 17,
+    start_bank_gold: int = 250,
+    piles: tuple[tuple[int, int], ...] = ((4, 100),),
+) -> SkillContext:
+    expected = sum(amount for _serial, amount in piles)
+    ctx = _ctx(bank_gold=start_bank_gold + expected, goal_id=goal_id)
+    ctx.memory.update(
+        {
+            "cap_bank_goal_id": goal_id,
+            "cap_bank_baseline_goal_id": goal_id,
+            "cap_bank_sent_goal_id": goal_id,
+            "cap_bank_finished_goal_id": goal_id,
+            "cap_bank_returned_goal_id": goal_id,
+            "cap_bank_route": ((100, 100),),
+            "cap_bank_start_piles": piles,
+            "cap_bank_expected_gold": expected,
+            "cap_bank_start_pack_gold": expected,
+            "cap_bank_start_bank_gold": start_bank_gold,
+            "cap_bank_box_serial": 3,
+            "cap_bank_lifted_items": piles,
+            "cap_bank_dropped_items": tuple(
+                (serial, amount, 3) for serial, amount in piles
+            ),
+            "cap_bank_pack_delta": expected,
+            "cap_bank_bank_delta": expected,
+            "cap_bank_confirmed": expected,
+            "cap_bank_final_pack_gold": 0,
+            "cap_bank_start_piles_removed": expected,
+            "cap_bank_start_piles_cleared": True,
+            "mkt_phase": "craft",
+        }
+    )
+    return ctx
+
+
+def test_bank_completion_evidence_is_exactly_goal_scoped() -> None:
+    binding = CAPABILITIES[("blacksmith", "bank_gold")]
+    ctx = _completed_bank_ctx(start_bank_gold=1_000)
+
+    assert binding.achieved(ctx)
+    assert binding.progress(ctx) == 1.0
+    assert binding.can_yield(ctx)
+
+    ctx.goal_id = 18
+    assert not binding.achieved(ctx)
+    assert binding.progress(ctx) == 0.0
+    assert binding.can_yield(ctx)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cap_bank_pack_delta", 99),
+        ("cap_bank_pack_delta", 101),
+        ("cap_bank_bank_delta", 99),
+        ("cap_bank_bank_delta", 101),
+        ("cap_bank_confirmed", 99),
+        ("cap_bank_confirmed", 101),
+        ("cap_bank_final_pack_gold", 1),
+        ("cap_bank_start_piles_removed", 99),
+        ("cap_bank_start_piles_cleared", False),
+    ],
+)
+def test_bank_completion_rejects_under_over_and_one_sided_delta_evidence(
+    field: str, value: object
+) -> None:
+    binding = CAPABILITIES[("blacksmith", "bank_gold")]
+    ctx = _completed_bank_ctx()
+    ctx.memory[field] = value
+
+    assert not binding.achieved(ctx)
 
 
 def test_craft_completion_evidence_is_exactly_goal_scoped() -> None:
@@ -798,6 +897,41 @@ def _capability_agent(proposal: Goal) -> Agent:
     return agent
 
 
+def _mark_active_bank_goal_terminal(agent: Agent, *, achieved: bool = False) -> None:
+    frame = agent.goal_stack.current
+    assert frame is not None
+    goal_id = frame.id
+    for key in (
+        "bank_leg",
+        "bank_stage",
+        "bank_banker",
+        "bank_find_wait",
+        "bank_popup_wait",
+        "bank_popup_total",
+        "bank_settle",
+        "bank_deposit_attempts",
+        "bank_return_leg",
+        "bank_held",
+        "cap_bank_release_pending",
+        "cap_bank_recovery_drop_sent",
+        "cap_bank_reopen_started",
+    ):
+        agent.memory.pop(key, None)
+    agent.memory.update(
+        {
+            "mkt_phase": "craft",
+            "cap_bank_goal_id": goal_id,
+            "cap_bank_finished_goal_id": goal_id,
+        }
+    )
+    if not achieved:
+        return
+
+    completed = _completed_bank_ctx(goal_id=goal_id, start_bank_gold=0)
+    agent.body.observation = completed.obs  # type: ignore[attr-defined]
+    agent.memory.update(completed.memory)
+
+
 def _sell_capability_agent(proposal: Goal) -> Agent:
     ctx = _ctx(daggers=5)
     policy = CapabilityPolicy("blacksmith")
@@ -948,7 +1082,7 @@ def test_due_capability_expires_immediately_at_a_safe_unachieved_yield_point() -
     agent.cognition = NullCognition()
     assert agent.goal_stack.current is not None
     agent.ticks = agent.goal_stack.current.deadline_tick or 0
-    agent.memory.update({"mkt_phase": "craft", "bank_held": None})
+    _mark_active_bank_goal_terminal(agent)
 
     agent.tick()
 
@@ -992,9 +1126,7 @@ def test_observed_success_wins_when_it_arrives_at_the_deadline() -> None:
     agent.cognition = NullCognition()
     assert agent.goal_stack.current is not None
     agent.ticks = agent.goal_stack.current.deadline_tick or 0
-    completed_ctx = _ctx(bank_gold=100)
-    agent.body.observation = completed_ctx.obs  # type: ignore[attr-defined]
-    agent.memory.update({"mkt_phase": "craft", "bank_held": None})
+    _mark_active_bank_goal_terminal(agent, achieved=True)
 
     agent.tick()
 
@@ -1008,7 +1140,7 @@ def test_expired_cognition_proposal_cannot_refresh_its_deadline() -> None:
     agent.tick()
     assert agent.goal_stack.current is not None
     agent.ticks = agent.goal_stack.current.deadline_tick or 0
-    agent.memory.update({"mkt_phase": "craft", "bank_held": None})
+    _mark_active_bank_goal_terminal(agent)
 
     for _ in range(5):
         agent.tick()
@@ -1027,7 +1159,7 @@ def test_fresh_equal_capability_decision_can_retry_after_expiry() -> None:
     agent.tick()
     assert agent.goal_stack.current is not None
     agent.ticks = agent.goal_stack.current.deadline_tick or 0
-    agent.memory.update({"mkt_phase": "craft", "bank_held": None})
+    _mark_active_bank_goal_terminal(agent)
     agent.tick()
     assert agent.goal is None
 
@@ -1167,7 +1299,7 @@ def test_expired_capability_tombstone_survives_goal_history_eviction() -> None:
     agent.tick()
     assert agent.goal_stack.current is not None
     agent.ticks = agent.goal_stack.current.deadline_tick or 0
-    agent.memory.update({"mkt_phase": "craft", "bank_held": None})
+    _mark_active_bank_goal_terminal(agent)
     agent.tick()
     assert agent.goal is None
 
@@ -1558,7 +1690,7 @@ def test_post_init_capability_helper_override_is_rejected_before_step() -> None:
     assert agent.memory["capability_skill_rejections"] == 1
 
 
-def test_merged_gold_stack_confirms_pending_release_by_bank_delta() -> None:
+def test_merged_gold_stack_releases_pending_cursor_by_bank_delta() -> None:
     ctx = _ctx(bank_gold=150)
     ctx.memory.update(
         {
@@ -1573,7 +1705,9 @@ def test_merged_gold_stack_confirms_pending_release_by_bank_delta() -> None:
 
     assert result.action is None
     assert "cap_bank_release_pending" not in ctx.memory
-    assert ctx.memory["mkt_phase"] == "craft"
+    # Without a goal id this recovery-only call must not start or complete a
+    # fresh deposit merely because the bank already contains enough gold.
+    assert ctx.memory["mkt_phase"] == "bank"
 
 
 def test_hidden_bank_after_uncertain_drop_reopens_instead_of_retrying_forever() -> None:

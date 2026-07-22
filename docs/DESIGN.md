@@ -86,8 +86,15 @@ B6 adds `blacksmith/craft_daggers` as the third choice. Its owned-resource leaf
 turned exactly 15 live iron ingots into five new dagger serials through ten
 registry-owned actions, closed the craft gump, and succeeded once; a production
 village then recorded sale, bank, and a four-dagger refill in that order.
+B7 replaces the bank operation's absolute one-shot threshold with a goal-scoped
+transaction proof. A synchronized post-popup bank baseline prevents old bank
+contents from satisfying a new goal; exact starting gold piles, their owned
+pickup/drop actions, equal pack/bank deltas, and the return marker must all agree.
+The isolated repeat gate moved a fresh 100 gold over an existing 100 balance,
+and a production run recorded sale 50, bank 1150, craft 4, sale 40, bank 40,
+craft 4 without replaying the first bank event.
 See [`AUTONOMY-ROADMAP.md`](AUTONOMY-ROADMAP.md).
-1002 tests green, ruff clean; the full village, smelting, reflection,
+1035 tests green, ruff clean; the full village, smelting, reflection,
 wiki-grounded cognition, miner→blacksmith→vendor→bank trade loop, hunt/loot
 loop, A* navigate differential proof, (Phase 4 item 2) role-tiered cognition
 cost routing, (Phase 4 item 1) the wiki write loop (`Wiki.file_report()`
@@ -123,7 +130,7 @@ clean redesign of the original [`anima`](https://github.com/hulryung-uo/anima) (
 | [`anima-client`](https://github.com/hulryung-uo/anima-client) | The new cross-platform client wrapping anima-core (+ future web renderer) | Rust/TS | Phase 1 |
 | [`anima`](https://github.com/hulryung-uo/anima) (v1) | Original Python AI player + **Foundry** evolution loop | Python | working; mined for assets/lessons |
 | **`anima2`** (this) | **Brain** — the autonomous agent on top of anima-core | Python | Phase 3 complete (economy & interaction loop; inter-agent trade, sell/bank, hunt/loot, A* navigate); Phase 4 complete (learning stack: wiki write loop, cognition cost tiering, skill library v0, `deliver_threshold` bandit tuning, automatic curriculum — all five items live-verified); Phase 5 complete (independent
-fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 complete (all six items live-verified — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation; cognition-aware eval making `cognition_tier`/`sociability` genuinely move the trajectory behind a `cognition_provider` off-switch; and the decisive evolution-vs-random rerun, whose honest verdict was that random beat evolution decisively at this small budget on the enriched harness); Phase 7 begun (work breakdown written, see [`PHASE7.md`](PHASE7.md) — four items; item 1 live-verified — profession-conditional pool routing fixed and the fishing `nodes_pool` threaded through `evolve.py`/`live_evolve_gate.py`, so a fisher genome is staged at a fishing spot with its matched water node instead of a Minoc mining coordinate); autonomy A1/A2/A3/A4 and B1-B6 live-verified (survival, death/corpse recovery, bounded IPC restart, identity-preserving goal interrupts/deadlines, cognition isolation, closed curriculum work goals, immutable operation capabilities, strict closed-vocabulary selection, and verified sale→bank→craft composition); 1002 tests green |
+fitness oracle, repeatable eval harness, MAP-Elites archive, evolution loop — items 1/2/4 live-verified, item 3 landed offline); Phase 6 complete (all six items live-verified — persistent lives via disk-backed `ReflectionMemory`; the village chronicle relationship ledger; the forum as a continuing chronicle; a second, fishing-based eval scenario making `evolve.py::PROFESSION_SCENARIO`'s profession axis a real mutation; cognition-aware eval making `cognition_tier`/`sociability` genuinely move the trajectory behind a `cognition_provider` off-switch; and the decisive evolution-vs-random rerun, whose honest verdict was that random beat evolution decisively at this small budget on the enriched harness); Phase 7 begun (work breakdown written, see [`PHASE7.md`](PHASE7.md) — four items; item 1 live-verified — profession-conditional pool routing fixed and the fishing `nodes_pool` threaded through `evolve.py`/`live_evolve_gate.py`, so a fisher genome is staged at a fishing spot with its matched water node instead of a Minoc mining coordinate); autonomy A1/A2/A3/A4 and B1-B7 live-verified (survival, death/corpse recovery, bounded IPC restart, identity-preserving goal interrupts/deadlines, cognition isolation, closed curriculum work goals, immutable operation capabilities, strict closed-vocabulary selection, and verified repeating sale→bank→craft composition); 1035 tests green |
 
 anima2 is to the body what a driver is to a car. The Interface⊥Brain split (see
 anima-client DESIGN.md D2) is the whole point: anima2 never parses bytes — it only

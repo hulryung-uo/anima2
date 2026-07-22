@@ -36,6 +36,7 @@ from anima2.skills.market import (
     POPUP_TIMEOUT,
     SELL_CLILOC,
     SELL_CONFIRM_TIMEOUT,
+    BankGold,
     BlacksmithMarket,
     SellDaggers,
 )
@@ -632,6 +633,129 @@ def test_sell_return_walks_home_then_resumes_crafting():
 
 
 # --- bank: trigger + walk -----------------------------------------------------------
+
+
+def test_bank_capability_freezes_the_admitted_route_for_the_whole_goal():
+    skill = BankGold()
+    original_route = [(3, 0), (3, 3)]
+    items = [_backpack(), _gold(0x800, amount=40), _bankbox(0x900)]
+    mem = {"banker_spot": original_route}
+
+    outbound = skill.step(
+        _ctx(items, memory=mem, pos=Position(0, 0, 0), goal_id=17)
+    )
+    mem["banker_spot"] = [(99, 99)]
+    second_leg = skill.step(
+        _ctx(items, memory=mem, pos=Position(3, 0, 0), goal_id=17)
+    )
+
+    assert isinstance(outbound.action, Walk)
+    assert isinstance(second_leg.action, Walk)
+    assert mem["cap_bank_route"] == ((3, 0), (3, 3))
+    assert mem["bank_leg"] == 1
+
+
+def test_finished_bank_capability_never_reenters_with_remaining_pack_gold():
+    skill = BankGold()
+    items = [_backpack(), _gold(0x800, amount=40), _bankbox(0x900)]
+    mem = {
+        "banker_spot": BANKER,
+        "mkt_phase": "craft",
+        "cap_bank_goal_id": 17,
+        "cap_bank_route": (BANKER,),
+        "cap_bank_start_piles": ((0x800, 40),),
+        "cap_bank_expected_gold": 40,
+        "cap_bank_start_pack_gold": 40,
+        "cap_bank_finished_goal_id": 17,
+    }
+
+    first = skill.step(_ctx(items, memory=mem, goal_id=17))
+    second = skill.step(_ctx(items, memory=mem, goal_id=17))
+
+    assert first.action is None and second.action is None
+    assert mem["mkt_phase"] == "craft"
+    assert "bank_stage" not in mem
+    assert "mkt_tick" not in mem
+
+
+def test_bank_capability_resets_retry_budget_after_each_confirmed_stack():
+    skill = BankGold()
+    pos = Position(*BANKER, 0)
+    bank_gold = _gold(0xA00, amount=200, bp=0x900)
+    before = [
+        _backpack(),
+        _gold(0x800, amount=60),
+        _gold(0x801, amount=40),
+        _bankbox(0x900),
+        bank_gold,
+    ]
+    mem = {
+        "banker_spot": BANKER,
+        "bs_stand": BANKER,
+        "mkt_phase": "bank",
+        "bank_stage": "settle",
+        "bank_banker": BANKER_MOBILE,
+        "bank_settle": BANK_SETTLE_TICKS - 1,
+    }
+
+    lift_first = skill.step(_ctx(before, memory=mem, pos=pos, goal_id=17))
+    after_lift = [
+        _backpack(),
+        _gold(0x801, amount=40),
+        _bankbox(0x900),
+        bank_gold,
+    ]
+    drop_first = skill.step(
+        _ctx(after_lift, memory=mem, pos=pos, goal_id=17)
+    )
+    # Even if the first pile consumed its entire retry budget before finally
+    # landing, that budget must not strand the independent second pile.
+    mem["bank_deposit_attempts"] = BANK_DEPOSIT_ATTEMPTS
+    first_confirmed = [
+        _backpack(),
+        _gold(0x801, amount=40),
+        _bankbox(0x900),
+        _gold(0xA00, amount=260, bp=0x900),
+    ]
+    lift_second = skill.step(
+        _ctx(first_confirmed, memory=mem, pos=pos, goal_id=17)
+    )
+
+    assert lift_first.action == PickUp(serial=0x800, amount=60)
+    assert drop_first.action == Drop(serial=0x800, container=0x900)
+    assert lift_second.action == PickUp(serial=0x801, amount=40)
+    assert mem["bank_deposit_attempts"] == 1
+    assert mem["cap_bank_lifted_items"] == ((0x800, 60), (0x801, 40))
+    assert mem["cap_bank_confirmed"] == 60
+
+
+def test_new_bank_goal_resets_prior_goal_evidence_and_captures_all_pack_stacks():
+    skill = BankGold()
+    items = [
+        _backpack(),
+        _gold(0x810, amount=25),
+        _gold(0x811, amount=15),
+        _bankbox(0x900),
+    ]
+    mem = {
+        "banker_spot": BANKER,
+        "mkt_phase": "craft",
+        "cap_bank_goal_id": 17,
+        "cap_bank_sent_goal_id": 17,
+        "cap_bank_finished_goal_id": 17,
+        "cap_bank_lifted_items": ((0x800, 100),),
+        "cap_bank_dropped_items": ((0x800, 100, 0x900),),
+    }
+
+    skill.step(_ctx(items, memory=mem, goal_id=18))
+
+    assert mem["cap_bank_goal_id"] == 18
+    assert mem["cap_bank_start_piles"] == ((0x810, 25), (0x811, 15))
+    assert mem["cap_bank_expected_gold"] == 40
+    assert "cap_bank_sent_goal_id" not in mem
+    assert "cap_bank_finished_goal_id" not in mem
+    assert "cap_bank_lifted_items" not in mem
+    assert "cap_bank_dropped_items" not in mem
 
 
 def test_below_bank_threshold_stays_in_craft():

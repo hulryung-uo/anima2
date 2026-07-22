@@ -143,8 +143,13 @@ _IDLE_REPLY = '{"schema":1,"decision":"idle"}'
 def test_ready_capability_ids_returns_only_observation_ready_profession_ids() -> None:
     assert ready_capability_ids("blacksmith", _ctx()) == ("bank_gold",)
     assert ready_capability_ids("miner", _ctx()) == ()
-    assert ready_capability_ids("blacksmith", _ctx(pack_gold=99)) == ()
-    assert ready_capability_ids("blacksmith", _ctx(bank_gold=100)) == ()
+    assert ready_capability_ids("blacksmith", _ctx(pack_gold=1)) == ("bank_gold",)
+    assert ready_capability_ids(
+        "blacksmith", _ctx(pack_gold=40, bank_gold=100)
+    ) == ("bank_gold",)
+    assert ready_capability_ids(
+        "blacksmith", _ctx(pack_gold=0, bank_gold=100)
+    ) == ()
     assert ready_capability_ids("blacksmith", _ctx(banker_spot=None)) == ()
     assert ready_capability_ids("blacksmith", _ctx(), GoalSource.SKILL) == ()
 
@@ -339,11 +344,11 @@ def test_oversize_response_is_rejected_even_if_its_json_suffix_is_valid() -> Non
 @pytest.mark.parametrize(
     "ctx",
     [
-        _ctx(pack_gold=99),
-        _ctx(bank_gold=100),
+        _ctx(pack_gold=0),
+        _ctx(pack_gold=0, bank_gold=100),
         _ctx(banker_spot=None),
     ],
-    ids=["insufficient-pack-gold", "already-achieved", "no-banker-route"],
+    ids=["no-pack-gold", "existing-bank-only", "no-banker-route"],
 )
 def test_no_ready_capability_skips_the_client(ctx: SkillContext) -> None:
     client = StubLLMClient(_CAPABILITY_REPLY)

@@ -555,7 +555,51 @@ The smith retained one base dagger, created the four missing items to restore
 the five-item batch, then sold that replenished inventory in the next cycle.
 
 B6 closes first-cycle inventory replenishment, but not indefinite autonomy.
-`bank_gold` is still an absolute one-shot policy once the bank already holds
-100 gold, and iron/tool supply remains finite. B7 should make banking
-goal-scoped and repeatable; later capabilities must acquire iron, replace tools,
-and recover resources without GM staging.
+At this point `bank_gold` was still an absolute one-shot policy once the bank
+already held 100 gold, and iron/tool supply remained finite.
+
+### B7 — repeatable goal-scoped banking ✅
+
+`blacksmith/bank_gold` no longer treats an absolute bank balance as completion.
+Each admitted goal freezes the configured route and every owned backpack gold
+pile, then copies the bank-box baseline only after the real Bank popup and
+settle barrier have synchronized its existing contents. The leaf records each
+exact `PickUp` and matching `Drop` into the character's own bank box. Success
+requires the same goal id, the complete starting manifest, equal exact pack
+decrease and bank increase, every source pile cleared, no held/recovery state,
+and return to the original safe stand. A stale prior goal or an already-large
+bank therefore contributes zero progress to a new deposit.
+
+Readiness now accepts any positive pack gold. This is intentional: a normal
+five-dagger sale pays only 40–50 gold, so retaining the old 100-gold admission
+threshold would make the economy wait through several otherwise complete sale
+cycles. The legacy `BlacksmithMarket` threshold remains unchanged. Multi-stack
+banking also resets its bounded retry allowance after each newly confirmed
+stack, preventing a successful early pile from exhausting later piles' budget.
+
+Chronicle derives one terminal `(goal_id, confirmed_amount)` token from the
+same baseline/action/delta evidence. Partial deposits that genuinely reached
+the bank may still be recorded as economic facts even though the capability
+does not succeed, malformed capability evidence cannot fall back to a legacy
+reward, and a completed token remains valid through later sibling market
+phases so it cannot replay when a sale returns to `craft`.
+
+Offline: 1035 tests pass; Ruff, compile, and diff checks are clean. The isolated
+repeat gate first established `pack=100, bank=100`, then production
+`ThreadedCognition(CapabilityCognition)` created one sealed goal whose exact
+actions were `PopupRequest → PopupSelect(Bank) → PickUp(100) → Drop(100)`.
+All 16 flags passed twice, ending at `pack=0, bank=200` with exact goal-scoped
+proof and one SUCCESS frame. The original B4 bank gate also retained all 16
+flags.
+
+A fresh 180-tick miner+blacksmith production run then recorded exactly:
+`sold_to_vendor 50` (tick 16), `banked_gold 1150` (45), `crafted_daggers 4`
+(77), `sold_to_vendor 40` (100), `banked_gold 40` (127), and
+`crafted_daggers 4` (162). This proves a second sale's smaller proceeds became
+a distinct bank goal over an existing balance and the loop continued. The run
+also exposed and closed a Chronicle replay bug before this milestone was
+accepted.
+
+B7 closes repeat banking, but iron and smith-tool supply remain finite. B8
+should add separately verified acquisition/replacement capabilities and their
+recovery policy without broadening model-selected execution authority.

@@ -151,14 +151,25 @@ def _valid_spot(value: object) -> bool:
     )
 
 
-def _bank_ready(ctx: SkillContext) -> bool:
+_BANK_TRANSACTION_KEYS = (
+    "bank_leg",
+    "bank_stage",
+    "bank_banker",
+    "bank_find_wait",
+    "bank_popup_wait",
+    "bank_popup_total",
+    "bank_settle",
+    "bank_deposit_attempts",
+    "bank_return_leg",
+    "cap_bank_recovery_drop_sent",
+    "cap_bank_reopen_started",
+)
+
+
+def _bank_ui_clear(ctx: SkillContext) -> bool:
     obs = ctx.obs
     return bool(
-        _valid_spot(ctx.memory.get("banker_spot"))
-        and _backpack_serial(ctx) is not None
-        and _pack_gold(ctx) >= 100
-        and _bank_gold(ctx) < 100
-        and obs.pending_target is None
+        obs.pending_target is None
         and not obs.gumps
         and obs.popup is None
         and obs.shop_buy is None
@@ -166,26 +177,125 @@ def _bank_ready(ctx: SkillContext) -> bool:
     )
 
 
-def _bank_can_yield(ctx: SkillContext) -> bool:
-    obs = ctx.obs
+def _bank_idle(ctx: SkillContext) -> bool:
     return bool(
         ctx.memory.get("mkt_phase", "craft") == "craft"
         and ctx.memory.get("bank_held") is None
         and ctx.memory.get("cap_bank_release_pending") is None
-        and obs.pending_target is None
-        and not obs.gumps
-        and obs.popup is None
-        and obs.shop_buy is None
-        and obs.shop_sell is None
+        and all(ctx.memory.get(key) is None for key in _BANK_TRANSACTION_KEYS)
+        and _bank_ui_clear(ctx)
+    )
+
+
+def _bank_ready(ctx: SkillContext) -> bool:
+    return bool(
+        _valid_spot(ctx.memory.get("banker_spot"))
+        and _backpack_serial(ctx) is not None
+        and _pack_gold(ctx) > 0
+        and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+        and _bank_idle(ctx)
+    )
+
+
+def _bank_can_yield(ctx: SkillContext) -> bool:
+    goal_id = ctx.goal_id
+    started = type(goal_id) is int and ctx.memory.get("cap_bank_goal_id") == goal_id
+    terminal = bool(
+        started and ctx.memory.get("cap_bank_finished_goal_id") == goal_id
+    )
+    return bool(
+        type(goal_id) is int
+        and (not started or terminal)
+        and _bank_idle(ctx)
     )
 
 
 def _bank_achieved(ctx: SkillContext) -> bool:
-    return _bank_gold(ctx) >= 100 and _bank_can_yield(ctx)
+    goal_id = ctx.goal_id
+    expected = ctx.memory.get("cap_bank_expected_gold")
+    start_pack = ctx.memory.get("cap_bank_start_pack_gold")
+    start_bank = ctx.memory.get("cap_bank_start_bank_gold")
+    box_serial = ctx.memory.get("cap_bank_box_serial")
+    piles = ctx.memory.get("cap_bank_start_piles")
+    lifted = ctx.memory.get("cap_bank_lifted_items")
+    dropped = ctx.memory.get("cap_bank_dropped_items")
+    manifest_valid = bool(
+        isinstance(piles, tuple)
+        and piles
+        and all(
+            isinstance(entry, tuple)
+            and len(entry) == 2
+            and all(type(value) is int and value > 0 for value in entry)
+            for entry in piles
+        )
+        and len({serial for serial, _amount in piles}) == len(piles)
+    )
+    lifted_valid = bool(
+        isinstance(lifted, tuple)
+        and all(
+            isinstance(entry, tuple)
+            and len(entry) == 2
+            and all(type(value) is int and value > 0 for value in entry)
+            for entry in lifted
+        )
+        and len(set(lifted)) == len(lifted)
+    )
+    dropped_valid = bool(
+        isinstance(dropped, tuple)
+        and all(
+            isinstance(entry, tuple)
+            and len(entry) == 3
+            and all(type(value) is int and value > 0 for value in entry)
+            for entry in dropped
+        )
+        and len(set(dropped)) == len(dropped)
+    )
+    return bool(
+        type(goal_id) is int
+        and ctx.memory.get("cap_bank_goal_id") == goal_id
+        and ctx.memory.get("cap_bank_baseline_goal_id") == goal_id
+        and ctx.memory.get("cap_bank_sent_goal_id") == goal_id
+        and ctx.memory.get("cap_bank_finished_goal_id") == goal_id
+        and ctx.memory.get("cap_bank_returned_goal_id") == goal_id
+        and type(expected) is int
+        and expected > 0
+        and start_pack == expected
+        and type(start_bank) is int
+        and start_bank >= 0
+        and type(box_serial) is int
+        and box_serial > 0
+        and manifest_valid
+        and sum(amount for _serial, amount in piles) == expected
+        and lifted_valid
+        and set(lifted) == set(piles)
+        and dropped_valid
+        and set(dropped)
+        == {(serial, amount, box_serial) for serial, amount in piles}
+        and ctx.memory.get("cap_bank_pack_delta") == expected
+        and ctx.memory.get("cap_bank_bank_delta") == expected
+        and ctx.memory.get("cap_bank_confirmed") == expected
+        and ctx.memory.get("cap_bank_final_pack_gold") == 0
+        and ctx.memory.get("cap_bank_start_piles_removed") == expected
+        and ctx.memory.get("cap_bank_start_piles_cleared") is True
+        and _bank_can_yield(ctx)
+    )
 
 
 def _bank_progress(ctx: SkillContext) -> float:
-    return max(0.0, min(1.0, _bank_gold(ctx) / 100.0))
+    goal_id = ctx.goal_id
+    expected = ctx.memory.get("cap_bank_expected_gold")
+    if (
+        type(goal_id) is not int
+        or ctx.memory.get("cap_bank_goal_id") != goal_id
+        or type(expected) is not int
+        or expected <= 0
+    ):
+        return 0.0
+    pack_delta = ctx.memory.get("cap_bank_pack_delta", 0)
+    bank_delta = ctx.memory.get("cap_bank_confirmed", 0)
+    if type(pack_delta) is not int or type(bank_delta) is not int:
+        return 0.0
+    return max(0.0, min(1.0, min(pack_delta, bank_delta) / expected))
 
 
 _SELL_TRANSACTION_KEYS = (

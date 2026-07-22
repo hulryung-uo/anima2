@@ -233,9 +233,130 @@ def _banked_gold(
     new_episode: Episode | None,
     bank_reward_accum: float | None = None,
 ) -> float | None:
-    """blacksmith -> world: `mkt_phase` transitions out of `"bank"` — mirrors
-    `_sold_to_vendor` exactly, off `BlacksmithMarket._bank_step`'s own
-    confirmed-deposit accounting instead."""
+    """blacksmith -> world: one confirmed bank deposit.
+
+    A capability-owned deposit is identified by its goal-scoped baseline,
+    action manifest, and terminal return evidence.  Its observed confirmed
+    amount wins over the older phase/reward detector, including when a
+    bounded operation could confirm only part of its original baseline.  A
+    malformed active capability goal fails closed instead of falling through
+    to a coincidental positive episode reward.
+
+    The phase/reward branch remains for the legacy ``BlacksmithMarket`` path,
+    which does not publish ``cap_bank_goal_id``.
+    """
+
+    def _completion(snapshot: dict) -> tuple[int, float] | None:
+        goal_id = snapshot.get("cap_bank_goal_id")
+        start_piles = snapshot.get("cap_bank_start_piles")
+        expected = snapshot.get("cap_bank_expected_gold")
+        start_bank = snapshot.get("cap_bank_start_bank_gold")
+        bankbox = snapshot.get("cap_bank_box_serial")
+        lifted = snapshot.get("cap_bank_lifted_items")
+        dropped = snapshot.get("cap_bank_dropped_items")
+        pack_delta = snapshot.get("cap_bank_pack_delta")
+        bank_delta = snapshot.get("cap_bank_bank_delta")
+        confirmed = snapshot.get("cap_bank_confirmed")
+
+        start_valid = bool(
+            isinstance(start_piles, tuple)
+            and start_piles
+            and all(
+                isinstance(entry, tuple)
+                and len(entry) == 2
+                and type(entry[0]) is int
+                and entry[0] > 0
+                and type(entry[1]) is int
+                and entry[1] > 0
+                for entry in start_piles
+            )
+            and len({serial for serial, _amount in start_piles}) == len(start_piles)
+        )
+        lifted_valid = bool(
+            isinstance(lifted, tuple)
+            and lifted
+            and all(
+                isinstance(entry, tuple)
+                and len(entry) == 2
+                and type(entry[0]) is int
+                and entry[0] > 0
+                and type(entry[1]) is int
+                and entry[1] > 0
+                for entry in lifted
+            )
+            and len({serial for serial, _amount in lifted}) == len(lifted)
+        )
+        dropped_valid = bool(
+            isinstance(dropped, tuple)
+            and dropped
+            and all(
+                isinstance(entry, tuple)
+                and len(entry) == 3
+                and type(entry[0]) is int
+                and entry[0] > 0
+                and type(entry[1]) is int
+                and entry[1] > 0
+                and type(entry[2]) is int
+                and entry[2] > 0
+                for entry in dropped
+            )
+        )
+        start_by_serial = dict(start_piles) if start_valid else {}
+        lifted_within_baseline = bool(
+            lifted_valid
+            and all(
+                serial in start_by_serial and amount <= start_by_serial[serial]
+                for serial, amount in lifted
+            )
+        )
+        dropped_matches_lifted = bool(
+            dropped_valid
+            and type(bankbox) is int
+            and bankbox > 0
+            and tuple((serial, amount) for serial, amount, _target in dropped)
+            == lifted
+            and all(target == bankbox for _serial, _amount, target in dropped)
+        )
+
+        if (
+            type(goal_id) is int
+            and goal_id > 0
+            and snapshot.get("cap_bank_baseline_goal_id") == goal_id
+            and snapshot.get("cap_bank_sent_goal_id") == goal_id
+            and snapshot.get("cap_bank_finished_goal_id") == goal_id
+            and snapshot.get("cap_bank_returned_goal_id") == goal_id
+            and start_valid
+            and type(expected) is int
+            and expected > 0
+            and sum(amount for _serial, amount in start_piles) == expected
+            and type(start_bank) is int
+            and start_bank >= 0
+            and lifted_within_baseline
+            and dropped_matches_lifted
+            and type(pack_delta) is int
+            and confirmed is not None
+            and type(bank_delta) is int
+            and type(confirmed) is int
+            and 0 < confirmed <= expected
+            and confirmed <= sum(amount for _serial, amount in lifted)
+            and confirmed <= pack_delta <= expected
+            and confirmed <= bank_delta <= expected
+        ):
+            return goal_id, float(confirmed)
+        return None
+
+    # Presence, rather than truthiness, makes a corrupt ``None``/boolean goal
+    # id an active but invalid capability record.  It must not earn through
+    # the legacy reward fallback.
+    if "cap_bank_goal_id" in memory:
+        current = _completion(memory)
+        if current is None:
+            return None
+        previous = _completion(prev_memory)
+        if previous is not None and previous[0] == current[0]:
+            return None
+        return current[1]
+
     if prev_memory.get("mkt_phase") != "bank":
         return None
     phase = memory.get("mkt_phase")

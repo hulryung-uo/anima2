@@ -469,6 +469,10 @@ class BlacksmithMarket(Blacksmith):
         reward = confirmed_deposit - paid
         if reward > 0:
             ctx.memory["bank_paid"] = paid + reward
+            # The retry budget belongs to one pile, not the whole trip.  A
+            # newly observed bank-box increase proves that the previous pile
+            # landed, so the next pack pile receives a fresh bounded budget.
+            ctx.memory["bank_deposit_attempts"] = 0
         else:
             reward = 0.0
 
@@ -967,14 +971,204 @@ class BankGold(BlacksmithMarket):
     name = "bank_gold"
     description = "Deposit backpack gold into the observed bank box and return."
 
-    def step(self, ctx: SkillContext) -> SkillResult:
-        banker = ctx.memory.get("banker_spot")
-        obs = ctx.obs
-        route = (
-            self._route(banker)
-            if banker is not None
-            else [(obs.player.pos.x, obs.player.pos.y)]
+    _CLEANUP_KEYS = (
+        "bank_paid",
+        "bank_box_start",
+        "bank_deposit_attempts",
+        "bank_held",
+        "bank_leg",
+        "bank_stage",
+        "bank_banker",
+        "bank_find_wait",
+        "bank_popup_wait",
+        "bank_popup_total",
+        "bank_settle",
+    )
+
+    _GOAL_EVIDENCE_KEYS = (
+        "cap_bank_baseline_goal_id",
+        "cap_bank_start_bank_gold",
+        "cap_bank_box_serial",
+        "cap_bank_sent_goal_id",
+        "cap_bank_lifted_items",
+        "cap_bank_dropped_items",
+        "cap_bank_pack_delta",
+        "cap_bank_bank_delta",
+        "cap_bank_confirmed",
+        "cap_bank_final_pack_gold",
+        "cap_bank_start_piles_removed",
+        "cap_bank_start_piles_cleared",
+        "cap_bank_finished_goal_id",
+        "cap_bank_returned_goal_id",
+    )
+
+    def _pack_gold_manifest(self, ctx: SkillContext) -> tuple[tuple[int, int], ...]:
+        backpack = self._backpack(ctx)
+        if backpack is None:
+            return ()
+        return tuple(
+            sorted(
+                (item.serial, item.amount)
+                for item in ctx.obs.items
+                if item.graphic == GOLD_GRAPHIC
+                and item.container == backpack.serial
+                and type(item.serial) is int
+                and type(item.amount) is int
+                and item.amount > 0
+            )
         )
+
+    def _begin_goal(self, ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int:
+            return False
+        if ctx.memory.get("cap_bank_goal_id") == goal_id:
+            return True
+
+        banker = ctx.memory.get("banker_spot")
+        try:
+            route = tuple(self._route(banker))
+        except (IndexError, TypeError, ValueError):
+            return False
+        piles = self._pack_gold_manifest(ctx)
+        expected = sum(amount for _serial, amount in piles)
+        if not route or expected <= 0:
+            return False
+
+        for key in self._GOAL_EVIDENCE_KEYS:
+            ctx.memory.pop(key, None)
+        ctx.memory["cap_bank_goal_id"] = goal_id
+        ctx.memory["cap_bank_route"] = route
+        ctx.memory["cap_bank_start_piles"] = piles
+        ctx.memory["cap_bank_expected_gold"] = expected
+        ctx.memory["cap_bank_start_pack_gold"] = expected
+        ctx.memory["cap_bank_start_pos"] = (
+            ctx.obs.player.pos.x,
+            ctx.obs.player.pos.y,
+        )
+        return True
+
+    def _observe_evidence(self, ctx: SkillContext) -> None:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int or ctx.memory.get("cap_bank_goal_id") != goal_id:
+            return
+        expected = ctx.memory.get("cap_bank_expected_gold")
+        piles = ctx.memory.get("cap_bank_start_piles")
+        if (
+            type(expected) is not int
+            or expected <= 0
+            or not isinstance(piles, tuple)
+            or not piles
+            or not all(
+                isinstance(entry, tuple)
+                and len(entry) == 2
+                and all(type(value) is int and value > 0 for value in entry)
+                for entry in piles
+            )
+            or len({serial for serial, _amount in piles}) != len(piles)
+            or sum(amount for _serial, amount in piles) != expected
+        ):
+            return
+
+        pack_now = self._pack_gold(ctx)
+        ctx.memory["cap_bank_final_pack_gold"] = pack_now
+        ctx.memory["cap_bank_pack_delta"] = max(0, expected - pack_now)
+        backpack = self._backpack(ctx)
+        current = {
+            item.serial: item.amount
+            for item in ctx.obs.items
+            if backpack is not None
+            and item.graphic == GOLD_GRAPHIC
+            and item.container == backpack.serial
+        }
+        ctx.memory["cap_bank_start_piles_removed"] = sum(
+            max(0, amount - min(amount, current.get(serial, 0)))
+            for serial, amount in piles
+        )
+        ctx.memory["cap_bank_start_piles_cleared"] = all(
+            current.get(serial, 0) == 0 for serial, _amount in piles
+        )
+
+        box_start = ctx.memory.get("bank_box_start")
+        box = self._bankbox(ctx)
+        if (
+            ctx.memory.get("cap_bank_baseline_goal_id") != goal_id
+            and type(box_start) is int
+            and box_start >= 0
+            and box is not None
+        ):
+            ctx.memory["cap_bank_baseline_goal_id"] = goal_id
+            ctx.memory["cap_bank_start_bank_gold"] = box_start
+            ctx.memory["cap_bank_box_serial"] = box.serial
+
+        baseline = ctx.memory.get("cap_bank_start_bank_gold")
+        if (
+            ctx.memory.get("cap_bank_baseline_goal_id") == goal_id
+            and type(baseline) is int
+            and baseline >= 0
+            and box is not None
+            and box.serial == ctx.memory.get("cap_bank_box_serial")
+        ):
+            observed = max(0, self._bankbox_gold(ctx) - baseline)
+            prior = ctx.memory.get("cap_bank_confirmed", 0)
+            if type(prior) is not int or prior < 0:
+                return
+            confirmed = max(prior, observed)
+            ctx.memory["cap_bank_bank_delta"] = confirmed
+            ctx.memory["cap_bank_confirmed"] = confirmed
+
+    def _remember_lift(self, ctx: SkillContext, action: PickUp) -> None:
+        goal_id = ctx.goal_id
+        manifest = ctx.memory.get("cap_bank_start_piles")
+        if (
+            type(goal_id) is not int
+            or not isinstance(manifest, tuple)
+            or (action.serial, action.amount) not in manifest
+        ):
+            return
+        lifted = ctx.memory.get("cap_bank_lifted_items", ())
+        if not isinstance(lifted, tuple):
+            return
+        entry = (action.serial, action.amount)
+        if entry not in lifted:
+            ctx.memory["cap_bank_lifted_items"] = (*lifted, entry)
+        ctx.memory["cap_bank_sent_goal_id"] = goal_id
+
+    def _remember_drop(self, ctx: SkillContext, action: Drop) -> None:
+        box_serial = ctx.memory.get("cap_bank_box_serial")
+        lifted = ctx.memory.get("cap_bank_lifted_items")
+        if type(box_serial) is not int or action.container != box_serial:
+            return
+        if not isinstance(lifted, tuple):
+            return
+        amount = next(
+            (amount for serial, amount in lifted if serial == action.serial),
+            None,
+        )
+        if type(amount) is not int or amount <= 0:
+            return
+        dropped = ctx.memory.get("cap_bank_dropped_items", ())
+        if not isinstance(dropped, tuple):
+            return
+        entry = (action.serial, amount, action.container)
+        if entry not in dropped:
+            ctx.memory["cap_bank_dropped_items"] = (*dropped, entry)
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        obs = ctx.obs
+        started = self._begin_goal(ctx)
+        if started:
+            self._observe_evidence(ctx)
+        goal_id = ctx.goal_id
+        banker = ctx.memory.get("banker_spot")
+        if started:
+            route = [tuple(point) for point in ctx.memory["cap_bank_route"]]
+        else:
+            route = (
+                self._route(banker)
+                if banker is not None
+                else [(obs.player.pos.x, obs.player.pos.y)]
+            )
         pending = ctx.memory.get("cap_bank_release_pending")
         if pending is not None:
             if (
@@ -1056,6 +1250,11 @@ class BankGold(BlacksmithMarket):
                     ctx.memory.pop("cap_bank_reopen_started", None)
                     return SkillResult(Status.RUNNING)
                 return self._payout(ctx, recovery)
+        if not started:
+            return SkillResult(Status.RUNNING)
+        if ctx.memory.get("cap_bank_finished_goal_id") == goal_id:
+            return self._payout(ctx, SkillResult(Status.RUNNING))
+
         ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
         phase = ctx.memory.get("mkt_phase", "craft")
         tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
@@ -1065,7 +1264,13 @@ class BankGold(BlacksmithMarket):
         if phase == "bank":
             result = self._bank_step(ctx, route)
             if result is not None:
+                # `_bank_step` establishes its trustworthy bank baseline on
+                # the same tick it may emit the first PickUp.
+                self._observe_evidence(ctx)
+                if isinstance(result.action, PickUp):
+                    self._remember_lift(ctx, result.action)
                 if isinstance(result.action, Drop):
+                    self._remember_drop(ctx, result.action)
                     ctx.memory["cap_bank_release_pending"] = (
                         result.action.serial,
                         result.action.container,
@@ -1073,13 +1278,10 @@ class BankGold(BlacksmithMarket):
                         self._bankbox_gold(ctx),
                     )
                 return self._payout(ctx, result)
+            self._observe_evidence(ctx)
             ctx.memory["bank_giveup_gold"] = self._pack_gold(ctx)
             ctx.memory["bank_giveup_tick"] = tick
-            for key in (
-                "bank_paid", "bank_box_start", "bank_deposit_attempts", "bank_held",
-                "bank_leg", "bank_stage", "bank_banker", "bank_find_wait",
-                "bank_popup_wait", "bank_popup_total", "bank_settle",
-            ):
+            for key in self._CLEANUP_KEYS:
                 ctx.memory.pop(key, None)
             phase = ctx.memory["mkt_phase"] = "bank_return"
 
@@ -1089,6 +1291,15 @@ class BankGold(BlacksmithMarket):
                 return self._payout(ctx, result)
             ctx.memory.pop("bank_return_leg", None)
             ctx.memory["mkt_phase"] = "craft"
+            ctx.memory["cap_bank_finished_goal_id"] = goal_id
+            stand = ctx.memory.get("bs_stand")
+            if (
+                isinstance(stand, (tuple, list))
+                and len(stand) == 2
+                and (obs.player.pos.x, obs.player.pos.y) == tuple(stand)
+            ):
+                ctx.memory["cap_bank_returned_goal_id"] = goal_id
+            self._observe_evidence(ctx)
 
         # Deliberately do not fall through to Blacksmith.step(): completion is
         # evaluated from the next Observation before any hammer action can run.

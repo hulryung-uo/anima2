@@ -393,6 +393,98 @@ def test_banked_gold_negative_control_gave_up_deposit_no_confirmed_reward():
     assert _banked_gold(prev, now, None) is None
 
 
+def _completed_bank_goal(goal_id: int = 17, confirmed: int = 100) -> dict:
+    return {
+        "mkt_phase": "craft",
+        "cap_bank_goal_id": goal_id,
+        "cap_bank_baseline_goal_id": goal_id,
+        "cap_bank_start_piles": ((0x700, 40), (0x701, 60)),
+        "cap_bank_expected_gold": 100,
+        "cap_bank_start_bank_gold": 250,
+        "cap_bank_box_serial": 0x900,
+        "cap_bank_sent_goal_id": goal_id,
+        "cap_bank_lifted_items": ((0x700, 40), (0x701, 60)),
+        "cap_bank_dropped_items": (
+            (0x700, 40, 0x900),
+            (0x701, 60, 0x900),
+        ),
+        "cap_bank_pack_delta": confirmed,
+        "cap_bank_bank_delta": confirmed,
+        "cap_bank_confirmed": confirmed,
+        "cap_bank_finished_goal_id": goal_id,
+        "cap_bank_returned_goal_id": goal_id,
+    }
+
+
+def test_banked_gold_fires_once_for_each_goal_scoped_completion() -> None:
+    completed17 = _completed_bank_goal()
+    completed18 = _completed_bank_goal(goal_id=18)
+
+    assert _banked_gold({}, completed17, None) == 100.0
+    assert _banked_gold(completed17, completed17, None) is None
+    assert _banked_gold(completed17, completed18, None) == 100.0
+
+
+def test_banked_gold_old_completion_stays_valid_across_sibling_market_phases() -> None:
+    completed = _completed_bank_goal()
+    selling = {**completed, "mkt_phase": "sell"}
+    returned_to_craft = {**completed, "mkt_phase": "craft"}
+
+    assert _banked_gold(selling, returned_to_craft, None) is None
+
+
+def test_banked_gold_capability_reports_partial_confirmed_terminal_amount() -> None:
+    completed = _completed_bank_goal(confirmed=40)
+    completed.update(
+        {
+            "cap_bank_lifted_items": ((0x700, 40),),
+            "cap_bank_dropped_items": ((0x700, 40, 0x900),),
+        }
+    )
+
+    assert _banked_gold({}, completed, None) == 40.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cap_bank_goal_id", True),
+        ("cap_bank_baseline_goal_id", 18),
+        ("cap_bank_start_piles", ((0x700, 40), (0x700, 60))),
+        ("cap_bank_expected_gold", 99),
+        ("cap_bank_start_bank_gold", -1),
+        ("cap_bank_box_serial", 0),
+        ("cap_bank_sent_goal_id", 18),
+        ("cap_bank_lifted_items", ((0x702, 100),)),
+        (
+            "cap_bank_dropped_items",
+            ((0x700, 40, 0x900), (0x701, 60, 0x901)),
+        ),
+        ("cap_bank_pack_delta", 99),
+        ("cap_bank_bank_delta", 99),
+        ("cap_bank_confirmed", 0),
+        ("cap_bank_finished_goal_id", 18),
+        ("cap_bank_returned_goal_id", 18),
+    ],
+)
+def test_banked_gold_capability_fails_closed_on_malformed_terminal_evidence(
+    field: str, value: object
+) -> None:
+    completed = _completed_bank_goal()
+    completed[field] = value
+    previous = {**completed, "mkt_phase": "bank"}
+
+    assert (
+        _banked_gold(
+            previous,
+            completed,
+            _ep("bank_gold → running", 100.0),
+            bank_reward_accum=100.0,
+        )
+        is None
+    )
+
+
 def _completed_craft(goal_id: int = 17, needed: int = 5) -> dict:
     start_count = 5 - needed
     return {
