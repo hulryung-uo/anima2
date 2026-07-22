@@ -11,6 +11,7 @@ from .recovery import RecoverDeath
 from .smelt import MineAndSmelt, MineSmeltDeliver
 from .social import Greet, SpeakPending
 from .survival import Survive
+from .woodwork import ProcessLogs
 
 __all__ = [
     "Goal",
@@ -30,6 +31,7 @@ __all__ = [
     "Mine",
     "MineAndSmelt",
     "MineSmeltDeliver",
+    "ProcessLogs",
     "RecoverDeath",
     "SpeakPending",
     "Survive",
