@@ -17,6 +17,7 @@ from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
 from .skills.carpentry import BuyBoards, BuySaw, CarpenterCraft, SellFurniture
+from .skills.tinkering import BuyIron, BuyTinkerTool, SellTongs, TinkerTongs
 from .skills.craft import DAGGER_GRAPHIC, SMITH_TOOL_GRAPHICS, CraftDaggers
 from .skills.harvest import AXE_GRAPHICS
 from .skills.market import (
@@ -1254,6 +1255,79 @@ _BUY_SAW = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+# --- tinker capabilities (Bricks 7-10) — the same config-attr/factory shape as
+# the carpenter. `craft_tongs` is the craft analog of `craft_daggers` (Tongs from
+# iron, via the no-material-submenu tinkering gump); `sell_tongs`/`buy_iron`/
+# `buy_tinker_tool` reuse the sell/material-buy/tool-buy machinery with the tinker
+# skill classes' own config; `bank_gold` reuses the profession-agnostic gold leaf
+# funcs verbatim. All four vendor legs use the ONE `vendor_spot` Tinker NPC
+# (SBTinker buys tongs and sells iron + tinker's tools).
+
+_CRAFT_TONGS = CapabilityBinding(
+    capability_id="craft_tongs",
+    profession="tinker",
+    skill_type=TinkerTongs,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_craft_ready_for(TinkerTongs),
+    achieved=_craft_achieved_for(TinkerTongs),
+    progress=_craft_progress,
+    can_yield=_craft_can_yield,
+    default_deadline_ticks=300,
+)
+
+_SELL_TONGS = CapabilityBinding(
+    capability_id="sell_tongs",
+    profession="tinker",
+    skill_type=SellTongs,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_sell_ready(
+        SellTongs.sold_graphic, SellTongs.sell_threshold, SellTongs.vendor_spot_key
+    ),
+    achieved=_sell_achieved,
+    progress=_sell_progress,
+    can_yield=_sell_can_yield,
+    default_deadline_ticks=180,
+)
+
+_TINKER_BANK_GOLD = CapabilityBinding(
+    capability_id="bank_gold",
+    profession="tinker",
+    skill_type=BankGold,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_bank_ready,
+    achieved=_bank_achieved,
+    progress=_bank_progress,
+    can_yield=_bank_can_yield,
+    default_deadline_ticks=120,
+)
+
+_BUY_IRON = CapabilityBinding(
+    capability_id="buy_iron",
+    profession="tinker",
+    skill_type=BuyIron,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_buy_ready_for(BuyIron),
+    achieved=_buy_achieved,
+    progress=_buy_progress,
+    can_yield=_buy_can_yield,
+    default_deadline_ticks=180,
+)
+
+_BUY_TINKER_TOOL = CapabilityBinding(
+    capability_id="buy_tinker_tool",
+    profession="tinker",
+    skill_type=BuyTinkerTool,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_toolbuy_ready(
+        BuyTinkerTool.owned_tool_graphics, BuyTinkerTool.tool_price_estimate,
+        BuyTinkerTool.vendor_spot_key,
+    ),
+    achieved=_make_toolbuy_achieved(BuyTinkerTool.owned_tool_graphics),
+    progress=_toolbuy_progress,
+    can_yield=_toolbuy_can_yield,
+    default_deadline_ticks=180,
+)
+
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
     {
         (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
@@ -1270,6 +1344,11 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         (_CARPENTER_BANK_GOLD.profession, _CARPENTER_BANK_GOLD.capability_id): _CARPENTER_BANK_GOLD,
         (_BUY_BOARDS.profession, _BUY_BOARDS.capability_id): _BUY_BOARDS,
         (_BUY_SAW.profession, _BUY_SAW.capability_id): _BUY_SAW,
+        (_CRAFT_TONGS.profession, _CRAFT_TONGS.capability_id): _CRAFT_TONGS,
+        (_SELL_TONGS.profession, _SELL_TONGS.capability_id): _SELL_TONGS,
+        (_TINKER_BANK_GOLD.profession, _TINKER_BANK_GOLD.capability_id): _TINKER_BANK_GOLD,
+        (_BUY_IRON.profession, _BUY_IRON.capability_id): _BUY_IRON,
+        (_BUY_TINKER_TOOL.profession, _BUY_TINKER_TOOL.capability_id): _BUY_TINKER_TOOL,
     }
 )
 

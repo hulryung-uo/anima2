@@ -533,4 +533,23 @@ PROFESSIONS: dict[str, Profession] = {
         work_skill=Hunt,
         combat_disposition="aggressive",
     ),
+    # The lumber->carpenter->tinker chain's third link (Bricks 7-10,
+    # docs/LUMBER-CARPENTER-TINKER.md): forge iron into small metal goods (Tongs),
+    # sell them to the Tinker NPC, bank the gold, and self-provision iron + a
+    # replacement tinker's tool — five capabilities (`skills/tinkering.py`), all
+    # thin config subclasses of the generalized craft/market machinery. Capability-
+    # driven only (no standalone village work_skill), like the carpenter: the
+    # planner reads the five tinker bindings straight from `CAPABILITIES`. Tinkering
+    # 80 clears Tongs' 35-skill floor with headroom (and GoldRing's 65 for a later
+    # brick); a durable `TinkerTools 999` avoids a mid-run tool break (buy_tinker_tool
+    # is the fallback if it still breaks). No forge/anvil/structures (the tinker
+    # tool crafts anywhere) and no resource-node workplace (the tinker buys/gets
+    # iron, it doesn't harvest — a free-iron supply is a later brick).
+    "tinker": Profession(
+        key="tinker",
+        persona_name="Pim",
+        skills={"Tinkering": 80},
+        items=["TinkerTools 999"],
+        work_skill=None,
+    ),
 }
