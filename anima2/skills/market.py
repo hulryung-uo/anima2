@@ -241,6 +241,22 @@ TOOL_BUY_AMOUNT = 1
 TOOL_BUY_CONFIRM_TIMEOUT = 10
 
 
+def _bank_reserve(memory) -> int:
+    """The `bank_gold` working-capital reserve to retain, clamped to a
+    non-negative int. The single read point for `bank_reserve` shared by the
+    BankGold FSM (`skills/market.py`) and the capability policy
+    (`capabilities.py`), so all of them agree.
+
+    A negative or otherwise malformed `bank_reserve` (a stray non-int, a float,
+    a bool) is treated as 0 (no reserve): left unclamped, a negative value would
+    make `_bank_ready` always true (`gold > -50`, even at 0 gold) and inflate the
+    surplus past the pack, wedging the goal — it could never satisfy
+    `final_pack_gold == reserve`. Default 0 (unset) stays byte-identical to B7.
+    """
+    reserve = memory.get("bank_reserve", 0)
+    return reserve if type(reserve) is int and reserve > 0 else 0
+
+
 class BlacksmithMarket(Blacksmith):
     """Craft daggers, sell the surplus to a vendor, and bank the gold.
 
@@ -609,6 +625,20 @@ class BlacksmithMarket(Blacksmith):
         if held is not None:
             return SkillResult(Status.RUNNING, Drop(serial=held, container=box.serial), reward)
 
+        # Bank only the surplus above the optional working-capital reserve
+        # (default 0 == deposit everything, byte-identical to B7): stop once the
+        # pack is down to `reserve`, and lift only `pack_gold - reserve` from the
+        # last pile so exactly `reserve` stays behind. `_pack_gold_pile` returns
+        # the smallest-serial pile, matching `_pack_gold_manifest`'s own
+        # sorted-greedy split so the lift amounts line up with the frozen
+        # manifest the capability proof checks. With reserve 0 the pack drains to
+        # 0 pile-by-pile exactly as before.
+        reserve = _bank_reserve(ctx.memory)
+        surplus = self._pack_gold(ctx) - reserve
+        if surplus <= 0:
+            self._stash_reward(ctx, reward)
+            return None  # nothing left to bank above the reserve
+
         pile = self._pack_gold_pile(ctx)
         if pile is None:
             self._stash_reward(ctx, reward)
@@ -625,7 +655,11 @@ class BlacksmithMarket(Blacksmith):
             return None
         ctx.memory["bank_deposit_attempts"] = attempts + 1
         ctx.memory["bank_held"] = pile.serial
-        return SkillResult(Status.RUNNING, PickUp(serial=pile.serial, amount=pile.amount), reward)
+        return SkillResult(
+            Status.RUNNING,
+            PickUp(serial=pile.serial, amount=min(pile.amount, surplus)),
+            reward,
+        )
 
     # --- buy (mirror of sell, inverted: gold leaves, iron ingots arrive) ----------
 
@@ -1095,10 +1129,23 @@ class BlacksmithMarket(Blacksmith):
         return sum(i.amount for i in ctx.obs.items if i.graphic == DAGGER_GRAPHIC and i.container == bp.serial)
 
     def _pack_gold(self, ctx: SkillContext) -> int:
+        # Same well-formed-pile filter as `BankGold._pack_gold_manifest` and
+        # `_pack_gold_pile`, so all three agree on which piles count (a malformed
+        # pile the manifest wouldn't freeze can't inflate the surplus here). Every
+        # real ServUO gold pile is a positive-amount int-serial stack, so this is
+        # a defensive no-op in practice.
         bp = self._backpack(ctx)
         if bp is None:
             return 0
-        return sum(i.amount for i in ctx.obs.items if i.graphic == GOLD_GRAPHIC and i.container == bp.serial)
+        return sum(
+            i.amount
+            for i in ctx.obs.items
+            if i.graphic == GOLD_GRAPHIC
+            and i.container == bp.serial
+            and type(i.serial) is int
+            and type(i.amount) is int
+            and i.amount > 0
+        )
 
     def _pack_iron(self, ctx: SkillContext) -> int:
         """Iron ingots currently in the pack — summed across every pile-size
@@ -1129,10 +1176,24 @@ class BlacksmithMarket(Blacksmith):
         )
 
     def _pack_gold_pile(self, ctx: SkillContext):
+        # The smallest-serial gold pile, matching `BankGold._pack_gold_manifest`'s
+        # own `sorted()`-then-greedy split, so a reserve-bounded deposit lifts the
+        # exact per-pile amounts the frozen manifest records (whole piles first,
+        # partialing the last). Order is irrelevant when banking everything
+        # (reserve 0), so this is byte-identical there.
         bp = self._backpack(ctx)
         if bp is None:
             return None
-        return next((i for i in ctx.obs.items if i.graphic == GOLD_GRAPHIC and i.container == bp.serial), None)
+        piles = [
+            i
+            for i in ctx.obs.items
+            if i.graphic == GOLD_GRAPHIC
+            and i.container == bp.serial
+            and type(i.serial) is int
+            and type(i.amount) is int
+            and i.amount > 0
+        ]
+        return min(piles, key=lambda i: i.serial) if piles else None
 
     @staticmethod
     def _bankbox(ctx: SkillContext):
@@ -1376,20 +1437,38 @@ class BankGold(BlacksmithMarket):
     )
 
     def _pack_gold_manifest(self, ctx: SkillContext) -> tuple[tuple[int, int], ...]:
+        """The exact `(serial, amount)` piles this goal will BANK — the surplus
+        above the optional working-capital reserve (`ctx.memory["bank_reserve"]`,
+        default 0). Whole piles are banked greedily in serial order and the last
+        one is partialed so exactly `reserve` gold stays in the pack; the piles
+        total the surplus, so the capability's frozen-manifest proof binds to
+        what actually moves. With reserve 0 this is the whole pack, in the same
+        sorted order as before — byte-identical to B7.
+        """
         backpack = self._backpack(ctx)
         if backpack is None:
             return ()
-        return tuple(
-            sorted(
-                (item.serial, item.amount)
-                for item in ctx.obs.items
-                if item.graphic == GOLD_GRAPHIC
-                and item.container == backpack.serial
-                and type(item.serial) is int
-                and type(item.amount) is int
-                and item.amount > 0
-            )
+        piles = sorted(
+            (item.serial, item.amount)
+            for item in ctx.obs.items
+            if item.graphic == GOLD_GRAPHIC
+            and item.container == backpack.serial
+            and type(item.serial) is int
+            and type(item.amount) is int
+            and item.amount > 0
         )
+        surplus = sum(amount for _serial, amount in piles) - _bank_reserve(ctx.memory)
+        if surplus <= 0:
+            return ()
+        banked: list[tuple[int, int]] = []
+        remaining = surplus
+        for serial, amount in piles:
+            if remaining <= 0:
+                break
+            take = min(amount, remaining)
+            banked.append((serial, take))
+            remaining -= take
+        return tuple(banked)
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
         goal_id = ctx.goal_id
@@ -1415,6 +1494,10 @@ class BankGold(BlacksmithMarket):
         ctx.memory["cap_bank_start_piles"] = piles
         ctx.memory["cap_bank_expected_gold"] = expected
         ctx.memory["cap_bank_start_pack_gold"] = expected
+        # The FULL pack gold before banking (surplus + retained reserve), so the
+        # `pack_delta` proof measures gold that actually LEFT the pack — with
+        # reserve 0 this equals `expected`, so the delta math is unchanged.
+        ctx.memory["cap_bank_start_full_pack"] = self._pack_gold(ctx)
         ctx.memory["cap_bank_start_pos"] = (
             ctx.obs.player.pos.x,
             ctx.obs.player.pos.y,
@@ -1445,7 +1528,12 @@ class BankGold(BlacksmithMarket):
 
         pack_now = self._pack_gold(ctx)
         ctx.memory["cap_bank_final_pack_gold"] = pack_now
-        ctx.memory["cap_bank_pack_delta"] = max(0, expected - pack_now)
+        # Gold that actually LEFT the pack, measured against the full starting
+        # pack (surplus + reserve), so a retained reserve isn't miscounted as
+        # un-banked surplus. With reserve 0, `start_full == expected`, so this is
+        # exactly the prior `expected - pack_now`.
+        start_full = ctx.memory.get("cap_bank_start_full_pack", expected)
+        ctx.memory["cap_bank_pack_delta"] = max(0, start_full - pack_now)
         backpack = self._backpack(ctx)
         current = {
             item.serial: item.amount

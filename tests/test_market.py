@@ -50,6 +50,7 @@ from anima2.skills.market import (
     BuyIngots,
     BuyTool,
     SellDaggers,
+    _bank_reserve,
 )
 
 HAMMER = 0x13E3
@@ -1062,6 +1063,163 @@ def test_bank_return_walks_home_then_resumes_crafting():
     home = BlacksmithMarket().step(_ctx(items, memory=mem, pos=Position(0, 0, 0)))
     assert mem["mkt_phase"] == "craft"
     assert isinstance(home.action, Use) and home.action.serial == 0x40
+
+
+# --- bank working-capital reserve (opt-in; default 0 == whole-pile B7) -------------
+
+
+def test_bank_reserve_above_pack_gold_never_begins_a_bank_goal():
+    # Reserve larger than the pack gold -> no surplus -> the manifest is empty,
+    # the goal never begins, and nothing is banked.
+    skill = BankGold()
+    items = [_backpack(), _gold(0x800, amount=50), _bankbox(0x900)]
+    mem = {"banker_spot": BANKER, "bank_reserve": 88}
+    res = skill.step(_ctx(items, memory=mem, pos=Position(*BANKER, 0), goal_id=17))
+    assert res.action is None
+    assert "cap_bank_goal_id" not in mem
+    assert "cap_bank_start_piles" not in mem
+
+
+def test_bank_reserve_single_pile_partial_pickup_lifts_exactly_the_surplus():
+    skill = BankGold()
+    pos = Position(*BANKER, 0)
+    before = [_backpack(), _gold(0x800, amount=200), _bankbox(0x900)]
+    mem = {
+        "banker_spot": BANKER, "bs_stand": BANKER, "bank_reserve": 88,
+        "mkt_phase": "bank", "bank_stage": "settle", "bank_banker": BANKER_MOBILE,
+        "bank_settle": BANK_SETTLE_TICKS - 1,
+    }
+    lift = skill.step(_ctx(before, memory=mem, pos=pos, goal_id=17))
+
+    assert lift.action == PickUp(serial=0x800, amount=112)  # 200 - 88 reserve
+    assert mem["bank_held"] == 0x800
+    # The frozen manifest / start values bind to the BANKED surplus (112), while
+    # the full starting pack (200) is retained for the pack-delta proof.
+    assert mem["cap_bank_start_piles"] == ((0x800, 112),)
+    assert mem["cap_bank_expected_gold"] == 112
+    assert mem["cap_bank_start_pack_gold"] == 112
+    assert mem["cap_bank_start_full_pack"] == 200
+
+
+def test_bank_reserve_multi_pile_manifest_banks_whole_piles_then_partials_the_last():
+    skill = BankGold()
+    pos = Position(*BANKER, 0)
+    # total 110, reserve 30 -> surplus 80: whole 0x800 (60), partial 0x801 (20).
+    before = [_backpack(), _gold(0x800, amount=60), _gold(0x801, amount=50), _bankbox(0x900)]
+    mem = {
+        "banker_spot": BANKER, "bs_stand": BANKER, "bank_reserve": 30,
+        "mkt_phase": "bank", "bank_stage": "settle", "bank_banker": BANKER_MOBILE,
+        "bank_settle": BANK_SETTLE_TICKS - 1,
+    }
+    lift = skill.step(_ctx(before, memory=mem, pos=pos, goal_id=17))
+
+    assert mem["cap_bank_start_piles"] == ((0x800, 60), (0x801, 20))
+    assert mem["cap_bank_expected_gold"] == 80
+    assert mem["cap_bank_start_full_pack"] == 110
+    assert lift.action == PickUp(serial=0x800, amount=60)  # smallest serial, whole
+
+
+def test_bank_reserve_partials_the_last_pile_to_leave_exactly_the_reserve():
+    # The whole first pile is already banked; only 0x801 (50) remains with a
+    # reserve of 30 -> lift exactly 20, leaving the 30 reserve behind.
+    skill = BankGold()
+    pos = Position(*BANKER, 0)
+    items = [_backpack(), _gold(0x801, amount=50), _bankbox(0x900), _gold(0xA00, amount=60, bp=0x900)]
+    mem = {
+        "banker_spot": BANKER, "bs_stand": BANKER, "bank_reserve": 30,
+        "mkt_phase": "bank", "bank_stage": "deposit", "bank_banker": BANKER_MOBILE,
+        "bank_box_start": 0,
+        "cap_bank_goal_id": 17, "cap_bank_route": (BANKER,),
+        "cap_bank_start_piles": ((0x800, 60), (0x801, 20)),
+        "cap_bank_expected_gold": 80, "cap_bank_start_pack_gold": 80,
+        "cap_bank_start_full_pack": 110,
+        "cap_bank_lifted_items": ((0x800, 60),),
+        "cap_bank_dropped_items": ((0x800, 60, 0x900),),
+    }
+    lift = skill.step(_ctx(items, memory=mem, pos=pos, goal_id=17))
+
+    assert lift.action == PickUp(serial=0x801, amount=20)  # 50 - 30 reserve
+
+
+def test_bank_reserve_zero_is_byte_identical_whole_pile_deposit():
+    # The explicit reserve-0 case must lift the whole pile, exactly as B7.
+    skill = BankGold()
+    pos = Position(*BANKER, 0)
+    before = [_backpack(), _gold(0x800, amount=150), _bankbox(0x900)]
+    mem = {
+        "banker_spot": BANKER, "bs_stand": BANKER, "bank_reserve": 0,
+        "mkt_phase": "bank", "bank_stage": "settle", "bank_banker": BANKER_MOBILE,
+        "bank_settle": BANK_SETTLE_TICKS - 1,
+    }
+    lift = skill.step(_ctx(before, memory=mem, pos=pos, goal_id=17))
+
+    assert lift.action == PickUp(serial=0x800, amount=150)  # whole pile
+    assert mem["cap_bank_start_piles"] == ((0x800, 150),)
+    assert mem["cap_bank_expected_gold"] == 150
+    assert mem["cap_bank_start_full_pack"] == 150
+
+
+def test_bank_reserve_helper_clamps_negative_and_nonint_to_zero():
+    # The single shared read point: negative, float, bool, str, or missing all
+    # clamp to 0 (no reserve); only a positive int passes through.
+    assert _bank_reserve({}) == 0
+    assert _bank_reserve({"bank_reserve": 0}) == 0
+    assert _bank_reserve({"bank_reserve": -50}) == 0
+    assert _bank_reserve({"bank_reserve": 88}) == 88
+    assert _bank_reserve({"bank_reserve": 1.5}) == 0
+    assert _bank_reserve({"bank_reserve": True}) == 0
+    assert _bank_reserve({"bank_reserve": "88"}) == 0
+
+
+def test_bank_reserve_equal_to_pack_gold_banks_nothing_through_the_fsm():
+    # Surplus exactly 0 (reserve == pack gold) drives the `<= 0` branch through
+    # `_pack_gold_manifest`/`_begin_goal`, not just readiness: the manifest is
+    # empty, the goal never begins, and nothing is banked.
+    skill = BankGold()
+    items = [_backpack(), _gold(0x800, amount=88), _bankbox(0x900)]
+    mem = {"banker_spot": BANKER, "bank_reserve": 88}
+    res = skill.step(_ctx(items, memory=mem, pos=Position(*BANKER, 0), goal_id=17))
+    assert res.action is None
+    assert "cap_bank_goal_id" not in mem
+    assert "cap_bank_start_piles" not in mem
+
+
+def test_bank_reserve_whole_pile_boundary_retains_the_last_pile_intact():
+    # total 200, reserve 100 -> surplus 100 == the first pile exactly; the second
+    # pile is fully retained and no pile is partialed.
+    skill = BankGold()
+    pos = Position(*BANKER, 0)
+    before = [_backpack(), _gold(0x800, amount=100), _gold(0x801, amount=100), _bankbox(0x900)]
+    mem = {
+        "banker_spot": BANKER, "bs_stand": BANKER, "bank_reserve": 100,
+        "mkt_phase": "bank", "bank_stage": "settle", "bank_banker": BANKER_MOBILE,
+        "bank_settle": BANK_SETTLE_TICKS - 1,
+    }
+    lift = skill.step(_ctx(before, memory=mem, pos=pos, goal_id=17))
+
+    assert mem["cap_bank_start_piles"] == ((0x800, 100),)  # only the first pile
+    assert mem["cap_bank_expected_gold"] == 100
+    assert mem["cap_bank_start_full_pack"] == 200
+    assert lift.action == PickUp(serial=0x800, amount=100)  # whole, never partialed
+
+
+def test_bank_negative_reserve_is_clamped_to_zero_and_banks_the_whole_pile():
+    # A negative reserve must clamp to 0 (bank normally) rather than compute a
+    # surplus larger than the pack and wedge the goal.
+    skill = BankGold()
+    pos = Position(*BANKER, 0)
+    before = [_backpack(), _gold(0x800, amount=150), _bankbox(0x900)]
+    mem = {
+        "banker_spot": BANKER, "bs_stand": BANKER, "bank_reserve": -50,
+        "mkt_phase": "bank", "bank_stage": "settle", "bank_banker": BANKER_MOBILE,
+        "bank_settle": BANK_SETTLE_TICKS - 1,
+    }
+    lift = skill.step(_ctx(before, memory=mem, pos=pos, goal_id=17))
+
+    assert lift.action == PickUp(serial=0x800, amount=150)  # whole pile, not >pack
+    assert mem["cap_bank_start_piles"] == ((0x800, 150),)
+    assert mem["cap_bank_expected_gold"] == 150
+    assert mem["cap_bank_start_full_pack"] == 150
 
 
 # --- multi-leg routes (a `[Add`-narrow workplace like TRADE_SMITH_SPOT can't

@@ -664,6 +664,64 @@ all 16 flags passing twice on fresh accounts, with a `buy_ingots` regression run
 confirming the shared resolver left iron buying intact. 1106 offline tests pass.
 
 Both finite crafting inputs — iron and the tool — now replenish through normal
-vendor play; the craft→sell→bank→buy loop no longer needs any GM re-gift. What
-remains for the capstone is the multi-hour integration proof (the loop actually
-self-sustaining across many cycles) plus sections C/D/E.
+vendor play; the craft→sell→bank→buy loop no longer needs any GM re-gift.
+
+### Composition findings (loop integration)
+
+Live-tracing the *composed* capability loop (deterministic `CapabilityCognition`
+with `client=None`, which picks the first ready capability in registry order)
+surfaced what a self-sustaining loop actually needs beyond the individual
+capabilities:
+
+- **The village loop already self-sustains on the miner's free iron.** A 200-tick
+  capability-goal village ran craft→sell→bank profitably and GM-free (2 full
+  cycles; the blacksmith reached out+1324). Free iron makes 5 daggers worth +50g;
+  the buy capabilities are *resilience for supply gaps and tool breaks*, not the
+  primary supply.
+- **A solo blacksmith buying its own iron cannot self-sustain — economics.** A
+  dagger sells for 10g but its 3 iron cost 15g (`SBBlacksmith.cs`), a 5g/dagger
+  loss; a 15-iron batch costs 75g and its 5 daggers sell for 50g (−25g/cycle). No
+  reserve rescues this — the loop always depletes. Only free (mined) iron closes
+  it.
+- **Banking drains working capital.** `bank_gold` banked 100% of gold, so in a
+  real supply gap the smith had nothing to buy iron/tools with. Fix: an opt-in
+  memory `bank_reserve` (default 0 = unchanged B7; the loop sets it to
+  `WORKING_CAPITAL_RESERVE` = one iron batch + one tool) so banking retains
+  working capital and only banks the surplus.
+- **Selection order is resolved by sizing the reserve.** Registry order banks
+  before it buys, but `WORKING_CAPITAL_RESERVE` is set to exactly one iron batch +
+  one tool (`15×5 + 1×13 == 88`), so banking down to the reserve leaves *precisely*
+  enough to afford both a `buy_ingots` refill (75) and a `buy_smith_tool`
+  replacement (13). No registry reorder was needed.
+- **Craft re-fire works** (village-proven: `banked_gold@127 → crafted_daggers@168`);
+  a solo probe only stalled it by omitting the profession's forge/anvil structures.
+
+### Composition — closed and live-verified
+
+The working-capital `bank_reserve` (opt-in, memory-configurable, default 0 =
+byte-identical to B7) closes the gap. `bank_gold` now banks only the surplus above
+the reserve, retaining working capital in the pack; the four confirmed review nits
+(negative-reserve clamp via a shared `_bank_reserve` helper, gold-scan filter
+consistency, boundary tests) are hardened. B7 is untouched at reserve 0.
+
+Live-verified against ServUO (deterministic `CapabilityCognition`, `client=None`):
+
+- **The composed loop self-cycles.** With `bank_reserve=88` and free pre-mined
+  iron, 11 capability goals succeeded in 160 ticks: craft→sell→**bank(retained
+  88)**→…→**buy_ingots(bought 15 iron from the reserve)**→craft→sell — the loop
+  composes and sustains itself, GM-free.
+- **It recovers from a tool break, GM-free.** Mid-loop, a GM connection *deletes*
+  the smith's tool (a failure injection, never a re-gift) and closes. With no GM
+  help the smith banks to its 88 reserve, buys a replacement tongs
+  (`buy_smith_tool`, gold 88→75, tools 0→1), and resumes crafting — proven twice
+  on fresh accounts.
+- **Regression-safe.** Both B7 bank live gates pass unchanged on the hardened
+  code (reserve 0: pack→0); a reserve=88 live bank retained exactly 88 and banked
+  the 112 surplus; an adversarial 14-agent review found no surviving blocker/major.
+  1119 offline tests, Ruff clean.
+
+So the craft→sell→bank→buy loop is a self-sustaining, tool-break-resilient economy
+on free iron with zero routine GM intervention. What remains for the full capstone
+is the multi-hour village run at scale (the mechanism is proven; endurance is not),
+the supply-gap `buy_ingots` bridge in the *village* (proven in the solo harness),
+and sections C (self-provisioning), D (liveness/recovery watchdog), E (learning).

@@ -588,7 +588,10 @@ def _completed_bank_ctx(
     goal_id: int = 17,
     start_bank_gold: int = 250,
     piles: tuple[tuple[int, int], ...] = ((4, 100),),
+    reserve: int = 0,
 ) -> SkillContext:
+    # `piles` are the BANKED surplus; `reserve` (default 0 == B7) is retained in
+    # the pack, so the final pack gold equals the reserve, not 0.
     expected = sum(amount for _serial, amount in piles)
     ctx = _ctx(bank_gold=start_bank_gold + expected, goal_id=goal_id)
     ctx.memory.update(
@@ -602,6 +605,7 @@ def _completed_bank_ctx(
             "cap_bank_start_piles": piles,
             "cap_bank_expected_gold": expected,
             "cap_bank_start_pack_gold": expected,
+            "cap_bank_start_full_pack": expected + reserve,
             "cap_bank_start_bank_gold": start_bank_gold,
             "cap_bank_box_serial": 3,
             "cap_bank_lifted_items": piles,
@@ -611,12 +615,14 @@ def _completed_bank_ctx(
             "cap_bank_pack_delta": expected,
             "cap_bank_bank_delta": expected,
             "cap_bank_confirmed": expected,
-            "cap_bank_final_pack_gold": 0,
+            "cap_bank_final_pack_gold": reserve,
             "cap_bank_start_piles_removed": expected,
             "cap_bank_start_piles_cleared": True,
             "mkt_phase": "craft",
         }
     )
+    if reserve:
+        ctx.memory["bank_reserve"] = reserve
     return ctx
 
 
@@ -655,6 +661,75 @@ def test_bank_completion_rejects_under_over_and_one_sided_delta_evidence(
     ctx = _completed_bank_ctx()
     ctx.memory[field] = value
 
+    assert not binding.achieved(ctx)
+
+
+def test_bank_reserve_gates_readiness_on_surplus_above_the_reserve() -> None:
+    goal = capability_goal("blacksmith", "bank_gold")
+
+    # Pack gold at or below the reserve -> no surplus -> not ready.
+    at_reserve = _ctx(goal, gold=88)
+    at_reserve.memory["bank_reserve"] = 88
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, at_reserve) is None
+
+    below_reserve = _ctx(goal, gold=50)
+    below_reserve.memory["bank_reserve"] = 88
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, below_reserve) is None
+
+    # A surplus above the reserve -> ready.
+    above_reserve = _ctx(goal, gold=200)
+    above_reserve.memory["bank_reserve"] = 88
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, above_reserve) is not None
+
+
+def test_bank_reserve_completion_binds_deltas_to_the_surplus_and_retains_the_reserve() -> None:
+    binding = CAPABILITIES[("blacksmith", "bank_gold")]
+    # 200 pack gold, reserve 88 -> bank the 112 surplus, retain 88.
+    ctx = _completed_bank_ctx(piles=((4, 112),), reserve=88)
+
+    assert binding.achieved(ctx)
+    assert binding.progress(ctx) == 1.0
+    assert binding.can_yield(ctx)
+
+    # The retained reserve is not surplus: the final pack gold must equal it
+    # exactly — neither 0 (over-banked) nor anything else.
+    ctx.memory["cap_bank_final_pack_gold"] = 0
+    assert not binding.achieved(ctx)
+    ctx.memory["cap_bank_final_pack_gold"] = 88
+    assert binding.achieved(ctx)
+
+    # Every delta binds to the banked surplus (112), never the full 200.
+    for field in ("cap_bank_pack_delta", "cap_bank_bank_delta", "cap_bank_confirmed"):
+        original = ctx.memory[field]
+        ctx.memory[field] = 200
+        assert not binding.achieved(ctx)
+        ctx.memory[field] = original
+    assert binding.achieved(ctx)
+
+
+def test_bank_negative_reserve_is_clamped_and_never_makes_readiness_always_true() -> None:
+    goal = capability_goal("blacksmith", "bank_gold")
+
+    # 0 gold with a negative reserve must NOT be ready (clamped to 0 -> 0 > 0).
+    broke = _ctx(goal, gold=0)
+    broke.memory["bank_reserve"] = -50
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, broke) is None
+
+    # Any positive gold with a negative reserve is ready (clamped to 0).
+    has_gold = _ctx(goal, gold=10)
+    has_gold.memory["bank_reserve"] = -50
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, has_gold) is not None
+
+
+def test_bank_negative_reserve_clamps_achieved_final_pack_to_zero() -> None:
+    binding = CAPABILITIES[("blacksmith", "bank_gold")]
+    # A whole-pack completion (final pack gold 0) with a negative reserve stays
+    # achieved — the reserve clamps to 0, so the required final pack gold is 0.
+    ctx = _completed_bank_ctx()
+    ctx.memory["bank_reserve"] = -50
+
+    assert binding.achieved(ctx)
+    ctx.memory["cap_bank_final_pack_gold"] = 50
     assert not binding.achieved(ctx)
 
 

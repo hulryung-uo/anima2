@@ -24,6 +24,7 @@ from .skills.market import (
     BuyIngots,
     BuyTool,
     SellDaggers,
+    _bank_reserve,
 )
 from .skills.smelt import INGOT_GRAPHICS
 
@@ -198,7 +199,12 @@ def _bank_ready(ctx: SkillContext) -> bool:
     return bool(
         _valid_spot(ctx.memory.get("banker_spot"))
         and _backpack_serial(ctx) is not None
-        and _pack_gold(ctx) > 0
+        # Bank only when there is a SURPLUS above the optional working-capital
+        # reserve (default 0 == the whole pile, byte-identical to B7). The reserve
+        # keeps enough pack gold to buy iron/tools in a supply gap, so a solo
+        # capability loop doesn't bank itself broke and stall — see
+        # `WORKING_CAPITAL_RESERVE` and `skills/market.py::BankGold`.
+        and _pack_gold(ctx) > _bank_reserve(ctx.memory)
         and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
         and _bank_idle(ctx)
     )
@@ -219,6 +225,10 @@ def _bank_can_yield(ctx: SkillContext) -> bool:
 
 def _bank_achieved(ctx: SkillContext) -> bool:
     goal_id = ctx.goal_id
+    # The retained working-capital reserve (default 0 == the whole pile banked,
+    # byte-identical to B7). `expected`/the deltas are all about the SURPLUS that
+    # moved, not the reserve left behind.
+    reserve = _bank_reserve(ctx.memory)
     expected = ctx.memory.get("cap_bank_expected_gold")
     start_pack = ctx.memory.get("cap_bank_start_pack_gold")
     start_bank = ctx.memory.get("cap_bank_start_bank_gold")
@@ -281,7 +291,7 @@ def _bank_achieved(ctx: SkillContext) -> bool:
         and ctx.memory.get("cap_bank_pack_delta") == expected
         and ctx.memory.get("cap_bank_bank_delta") == expected
         and ctx.memory.get("cap_bank_confirmed") == expected
-        and ctx.memory.get("cap_bank_final_pack_gold") == 0
+        and ctx.memory.get("cap_bank_final_pack_gold") == reserve
         and ctx.memory.get("cap_bank_start_piles_removed") == expected
         and ctx.memory.get("cap_bank_start_piles_cleared") is True
         and _bank_can_yield(ctx)
@@ -779,6 +789,15 @@ _BUY_INGOTS = CapabilityBinding(
 # `skills/market.py::BlacksmithMarket._tool_offer`), identical discipline to
 # ``_IRON_UNIT_PRICE``.
 _TONGS_PRICE_ESTIMATE = 13
+
+# Suggested working-capital reserve for `bank_gold`'s opt-in `bank_reserve`: keep
+# back enough pack gold to afford ONE iron replenishment batch AND ONE tool
+# replacement (15*5 + 1*13 == 88), so a solo capability loop that banks its
+# surplus can still fund the buy_ingots/buy_smith_tool fallbacks that bridge a
+# supply gap instead of banking itself broke and stalling. Nothing sets
+# `bank_reserve` by default (it stays 0 — byte-identical to B7); the loop/gate
+# opts in by writing `memory["bank_reserve"] = WORKING_CAPITAL_RESERVE`.
+WORKING_CAPITAL_RESERVE = BUY_AMOUNT * _IRON_UNIT_PRICE + TOOL_BUY_AMOUNT * _TONGS_PRICE_ESTIMATE
 
 _TOOLBUY_TRANSACTION_KEYS = (
     "toolbuy_leg",
