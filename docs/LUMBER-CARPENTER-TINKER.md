@@ -85,6 +85,40 @@ Ordered bricks, each independently live-verifiable like the blacksmith milestone
 **Sequencing rationale:** Phase A ships a fully self-sustaining lumberjack using only reuse + the single new ProcessLogs gesture, and resolves the three cheapest-to-test unknowns (#2, #3, and first read on #5) before anything depends on them. Phase B isolates the highest-risk unknown (#1, gump indices) into a standalone calibration brick before the craft loop. Phase C only wires the trade pair once both halves work solo. Phase D is last because the tinker is economically hardest and structurally depends on an ingot supply — and its final brick (tool delivery) is what lets the whole village drop its vendor-tool purchases and become closed.
 ---
 
+## Economics reality (live-verified + ServUO-source research)
+
+The three professions do NOT profit equally at NPC prices on this T2A shard
+(`BaseVendor.UseVendorEconomy == Core.AOS && !Siege == FALSE`, so vendors pay the
+raw `GenericSellInfo` price — no 0.75× economy repricing; only weapons/armor get
+an exceptional ×1.25). Two of the three genuinely "live well"; one is a structural
+NPC-economy loser:
+
+- **Lumberjack — profitable & self-sufficient.** Free logs (chopped from trees) →
+  boards, sold raw @2g. Every board is +2g on a free input. Lives well.
+- **Tinker — profitable & self-sufficient STANDALONE (live-proven,
+  `scratchpad/tinker_selfsuf.py`, [PASS]).** Iron bought @5g → Tongs sold @7g =
+  **+2g per iron** (the vendor pays MORE for the finished tongs than the raw iron
+  it sells — a genuine value-add). Starting BELOW the reorder line it banks its
+  surplus above an 88g working-capital reserve, BUYS its own iron, and keeps
+  forging — the loop runs indefinitely with no GM re-gift. On free/mined iron it's
+  +7g per iron. Tongs is the best gold-per-iron item; only Tongs (+2) and Lockpick
+  (+1) profit even on bought iron. Lives well.
+- **Carpenter — mechanically works, but structurally value-NEGATIVE at NPC prices
+  (ServUO source research).** A Board sells RAW @2g; NO carpentry item beats that
+  per board. The Throne is 24g / 19 boards = 1.26 g/board (−14g vs. selling the
+  boards raw); the least-bad craftable (Exceptional QuarterStaff) is still only
+  1.83 g/board (−1g). So (a) the carpenter CANNOT self-provision — buying boards
+  @3g to make a 24g throne LOSES 33g/throne and bankrupts it — and (b) even on
+  FREE (lumberjack-delivered) boards it earns LESS than selling those boards raw.
+  The carpenter can bank gold only on free boards, and is economically dominated
+  by just being a second board-seller. This is a property of the ServUO NPC
+  economy (crafted goods have no NPC value-add; real carpentry value comes from
+  player-to-player sales, which an autonomous agent on a test shard has none of),
+  not a fixable item choice. **Consequence:** Brick 6 (deliver boards → craft
+  thrones) would build a value-DESTROYING pipeline; it is deliberately NOT built.
+  Open question for the human: keep the carpenter as a (suboptimal) furniture
+  crafter, or let it sell boards raw for real profit.
+
 ## Live calibration findings (verified against the shard)
 
 **Brick 1 mechanic (log→board) — VERIFIED:** `Use(axe)` → `pending_target` → `TargetObject(log_pile 0x1BDD)` converts the WHOLE pile 1:1 to Boards (0x1BD7) at 0 skill. 20 logs → 20 boards in one gesture. (`scratchpad/board_probe.py`.)
