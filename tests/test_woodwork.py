@@ -176,3 +176,198 @@ def test_diagnose_reports_missing_axe_then_missing_logs():
     )
     assert skill.diagnose(_ctx([_backpack(), _axe()])) == "no logs in the pack to process"
     assert skill.diagnose(_ctx([_backpack(), _axe(), _logs(0x400, amount=5)])) is None
+
+
+# --- Brick 2: the lumberjack capability skills (generalized market machinery) ------
+
+from anima2.contract import (  # noqa: E402
+    BuyItems,
+    MobileView,
+    PopupEntry,
+    PopupMenu,
+    SellItems,
+    ShopBuy,
+    ShopBuyEntry,
+    ShopSell,
+    ShopSellItem,
+)
+from anima2.skills.market import SELL_CLILOC  # noqa: E402
+from anima2.skills.woodwork import (  # noqa: E402
+    HATCHET_GRAPHIC,
+    BuyHatchet,
+    ProcessLogsGoal,
+    SellBoards,
+)
+
+CARPENTER = (10, 0)
+WEAPONSMITH = (0, 10)
+VENDOR_SERIAL = 0xAAA1
+VENDOR_MOBILE = 0xBBB1
+BOARD_SERIAL = 0x700
+TOOL_CONTAINER = 0xCCC1
+HATCHET_OFFER_SERIAL = 0xDD44
+
+
+def _mobile(serial, x, y):
+    return MobileView(serial=serial, name="", pos=Position(x, y, 0), body=0x190,
+                      notoriety=1, hits=10, hits_max=10, distance=0)
+
+
+def _popup(serial, clilocs):
+    return PopupMenu(serial=serial, entries=[PopupEntry(index=i, cliloc=c) for i, c in enumerate(clilocs)])
+
+
+def _mctx(items, *, memory, pos, goal_id, mobiles=(), popup=None, shop_sell=None, shop_buy=None):
+    obs = Observation(player=PlayerView(serial=1, pos=pos), items=list(items),
+                      mobiles=list(mobiles), popup=popup, shop_sell=shop_sell, shop_buy=shop_buy)
+    return SkillContext(obs=obs, persona=Persona(name="Bjorn"), memory=memory, goal_id=goal_id)
+
+
+# --- sell_boards: sells boards (not daggers) via the generalized sold_graphic -----
+
+
+def test_sell_boards_is_configured_for_boards_at_the_sell_vendor():
+    assert SellBoards.sold_graphic == BOARD_GRAPHIC
+    assert SellBoards.sell_threshold == 20
+    assert SellBoards.vendor_spot_key == "vendor_spot"  # the Carpenter (sell vendor)
+
+
+def test_sell_boards_offers_boards_from_the_shop_sell_window():
+    # The vendor's SELL list carries boards (+ an unrelated item); SellBoards must
+    # offer only the boards, by `self.sold_graphic`, and record goal evidence.
+    vendor = _mobile(VENDOR_MOBILE, *CARPENTER)
+    sell = ShopSell(vendor=VENDOR_SERIAL, items=[
+        ShopSellItem(serial=BOARD_SERIAL, graphic=BOARD_GRAPHIC, hue=0, amount=20, price=2, name="board"),
+        ShopSellItem(serial=0x40, graphic=0x0F52, hue=0, amount=1, price=10, name="dagger"),
+    ])
+    mem = {"vendor_spot": CARPENTER, "bs_stand": (0, 0)}
+    before = [_backpack(), _boards(BOARD_SERIAL, amount=20)]
+    skill = SellBoards()
+
+    skill.step(_mctx(before, memory=mem, pos=Position(*CARPENTER, 0), mobiles=[vendor], goal_id=17))  # request
+    popup = _popup(VENDOR_MOBILE, [SELL_CLILOC])
+    skill.step(_mctx(before, memory=mem, pos=Position(*CARPENTER, 0), mobiles=[vendor], popup=popup, goal_id=17))
+    offer = skill.step(_mctx(before, memory=mem, pos=Position(*CARPENTER, 0), mobiles=[vendor], shop_sell=sell, goal_id=17))
+
+    assert isinstance(offer.action, SellItems)
+    assert offer.action.items == [(BOARD_SERIAL, 20)]  # boards only, never the dagger
+    assert mem["cap_sell_sent_goal_id"] == 17
+    assert mem["cap_sell_expected_gold"] == 20 * 2
+    assert mem["cap_sell_offered_items"] == ((BOARD_SERIAL, 20, 2),)
+
+
+# --- buy_hatchet: buys a hatchet from a SEPARATE tool vendor -----------------------
+
+
+def _tool_buy_window(hatchet_amount=20):
+    # The live WeaponSmith sells EIGHT distinct axes whose graphic is in
+    # AXE_GRAPHICS (a saw distractor too). buy_hatchet must resolve ONLY the
+    # single scalar `offer_graphic` (0x0F44), never the AXE_GRAPHICS set.
+    return ShopBuy(vendor=VENDOR_SERIAL, container=TOOL_CONTAINER, entries=[
+        ShopBuyEntry(price=15, name="saw", serial=0xDD00, graphic=0x1034, amount=1),
+        ShopBuyEntry(price=27, name="axe", serial=0xDD43, graphic=0x0F43, amount=20),
+        ShopBuyEntry(price=25, name="hatchet", serial=HATCHET_OFFER_SERIAL,
+                     graphic=HATCHET_GRAPHIC, amount=hatchet_amount),
+        ShopBuyEntry(price=52, name="battle axe", serial=0xDD4B, graphic=0x0F4B, amount=20),
+        ShopBuyEntry(price=33, name="war axe", serial=0xDDFB, graphic=0x13FB, amount=20),
+    ])
+
+
+def test_buy_hatchet_is_configured_for_a_separate_tool_vendor():
+    assert BuyHatchet.owned_tool_graphics == AXE_GRAPHICS
+    assert BuyHatchet.offer_graphic == HATCHET_GRAPHIC
+    assert BuyHatchet.offer_graphic == 0x0F44  # a SCALAR, not the AXE_GRAPHICS set
+    assert BuyHatchet.vendor_spot_key == "tool_vendor_spot"  # the WeaponSmith, not the Carpenter
+    assert BuyHatchet.tool_price_estimate == 25
+
+
+def test_buy_hatchet_reads_the_tool_vendor_spot_route():
+    # `_begin_goal` must freeze the WeaponSmith route from `tool_vendor_spot`,
+    # never the Carpenter `vendor_spot`.
+    skill = BuyHatchet()
+    items = [_backpack(), _item(0x900, 0x0EED, container=BACKPACK, amount=100)]  # gold, no axe
+    mem = {"vendor_spot": CARPENTER, "tool_vendor_spot": WEAPONSMITH}
+    skill.step(_mctx(items, memory=mem, pos=Position(0, 0, 0), goal_id=17))
+    assert mem["cap_toolbuy_route"] == (WEAPONSMITH,)
+
+
+def test_buy_hatchet_buys_the_hatchet_offer_by_graphic():
+    vendor = _mobile(VENDOR_MOBILE, *WEAPONSMITH)
+    mem = {
+        "tool_vendor_spot": WEAPONSMITH, "bs_stand": (0, 0), "mkt_phase": "toolbuy",
+        "toolbuy_stage": "window", "toolbuy_vendor": VENDOR_MOBILE,
+        "cap_toolbuy_goal_id": 17, "cap_toolbuy_route": (WEAPONSMITH,),
+        "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+    }
+    items = [_backpack(), _item(0x900, 0x0EED, container=BACKPACK, amount=100)]  # gold, no axe
+    res = BuyHatchet().step(
+        _mctx(items, memory=mem, pos=Position(*WEAPONSMITH, 0), mobiles=[vendor],
+              shop_buy=_tool_buy_window(), goal_id=17)
+    )
+    assert isinstance(res.action, BuyItems)
+    # Exactly the 0x0F44 hatchet, resolved by the scalar offer_graphic among the
+    # window's FIVE entries (saw + 3 other axes + the hatchet) — never another axe.
+    assert res.action.items == [(HATCHET_OFFER_SERIAL, 1)]
+    assert mem["cap_toolbuy_offer"] == (HATCHET_OFFER_SERIAL, 1, 25)
+
+
+def test_buy_hatchet_trigger_counts_axes_not_smith_tools():
+    # `_pack_tools` for BuyHatchet counts AXE_GRAPHICS: an axe present means the
+    # trigger (no tool) is NOT met.
+    skill = BuyHatchet()
+    with_axe = _ctx([_backpack(), _axe()])
+    without_axe = _ctx([_backpack()])
+    assert skill._pack_tools(with_axe) == 1
+    assert skill._pack_tools(without_axe) == 0
+
+
+# --- process_logs: the produce capability (goal-scoped log->board conversion) -----
+
+
+def test_process_logs_goal_without_logs_never_begins():
+    skill = ProcessLogsGoal()
+    mem = {}
+    res = skill.step(_mctx([_backpack(), _axe()], memory=mem, pos=Position(100, 100, 0), goal_id=17))
+    assert res.action is None
+    assert "cap_process_goal_id" not in mem  # no logs -> no goal frozen
+
+
+def test_process_logs_goal_freezes_the_total_log_amount_as_needed():
+    skill = ProcessLogsGoal()
+    mem = {}
+    skill.step(_mctx([_backpack(), _axe(), _logs(0x400, amount=18)], memory=mem,
+                     pos=Position(100, 100, 0), goal_id=17))
+    assert mem["cap_process_goal_id"] == 17
+    assert mem["cap_process_start_logs"] == 18
+    assert mem["cap_process_needed"] == 18
+
+
+def _cursor_ctx(items, mem, goal_id):
+    return SkillContext(
+        obs=Observation(player=PlayerView(serial=1, pos=Position(100, 100, 0)),
+                        items=list(items), pending_target=_cursor()),
+        persona=Persona(name="Bjorn"), memory=mem, goal_id=goal_id)
+
+
+def test_process_logs_goal_converts_then_marks_finished():
+    skill = ProcessLogsGoal()
+    mem = {}
+    axe = _axe()
+
+    # Tick 1: begin (freeze 20) + Use(axe).
+    use = skill.step(_mctx([_backpack(), axe, _logs(0x400, amount=20)], memory=mem,
+                           pos=Position(100, 100, 0), goal_id=17))
+    assert isinstance(use.action, Use) and use.action.serial == AXE_SERIAL
+    assert mem["cap_process_needed"] == 20
+
+    # Tick 2: the axe opened a target cursor -> TargetObject(log).
+    target = skill.step(_cursor_ctx([_backpack(), axe, _logs(0x400, amount=20)], mem, 17))
+    assert isinstance(target.action, TargetObject) and target.action.serial == 0x400
+
+    # Tick 3: conversion landed — 20 boards, no logs, no cursor -> finished + evidence.
+    done = skill.step(_mctx([_backpack(), axe, _boards(0x500, amount=20)], memory=mem,
+                            pos=Position(100, 100, 0), goal_id=17))
+    assert done.action is None
+    assert mem["cap_process_finished_goal_id"] == 17
+    assert mem["cap_process_board_delta"] == 20
+    assert mem["cap_process_logs_remaining"] == 0

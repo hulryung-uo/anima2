@@ -22,6 +22,7 @@ from __future__ import annotations
 from ..contract import TargetObject, Use
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import AXE_GRAPHICS, BACKPACK_LAYER
+from .market import BuyToolCapability, SellItemCapability
 
 # ServUO `Scripts/Items/Resource/Log.cs`: `Log() : base(0x1BDD)` — a pack log pile.
 LOG_GRAPHIC = 0x1BDD
@@ -133,4 +134,130 @@ class ProcessLogs(Skill):
         return sum(
             i.amount for i in ctx.obs.items
             if i.graphic in BOARD_GRAPHICS and i.container == bp.serial
+        )
+
+
+# The WeaponSmith's for-sale Hatchet (ServUO `Scripts/VendorInfo/SBWeaponSmith.cs`:
+# `GenericBuyInfo(typeof(Hatchet), 25, 20, 0x0F44, 0)`) — a member of
+# `harvest.AXE_GRAPHICS`, resolved off the enriched `ShopBuyEntry` by this graphic.
+HATCHET_GRAPHIC = 0x0F44
+
+
+class SellBoards(SellItemCapability):
+    """Lumberjack config: sell boards (0x1BD7) to the `vendor_spot` Carpenter NPC
+    (SBCarpenter buys Board @2g). Free logs -> boards -> gold is the lumberjack's
+    income. Only `sold_graphic`/`sell_threshold` differ from `SellDaggers`; the
+    provenance machinery is `SellItemCapability`'s, unchanged.
+    """
+
+    name = "sell_boards"
+    description = "Sell observed backpack boards to the configured carpenter vendor and return."
+    #: Boards sold to the carpenter — a single art id, not a 4-variant stack set.
+    sold_graphic = BOARD_GRAPHIC
+    #: A full sell batch of boards (free input, so a generous threshold is fine).
+    sell_threshold = 20
+    # vendor_spot_key = "vendor_spot" (inherited): the lumberjack's `vendor_spot`
+    # IS the Carpenter — the sell vendor — while buy_hatchet uses a separate key.
+
+
+class BuyHatchet(BuyToolCapability):
+    """Lumberjack config: buy a replacement Hatchet (0x0F44) from the
+    `tool_vendor_spot` WeaponSmith NPC when no axe is in the pack.
+
+    The lumberjack uses TWO vendors (unlike the one-NPC blacksmith): the Carpenter
+    for selling (`vendor_spot`) and the WeaponSmith for hatchets (`tool_vendor_spot`).
+    Only the tool config differs from `BuyTool`; the buy machinery is
+    `BuyToolCapability`'s, unchanged.
+    """
+
+    name = "buy_hatchet"
+    description = "Buy one replacement hatchet from the configured tool vendor and return."
+    #: The trigger is "no AXE_GRAPHICS in the pack" — the SET (any axe counts as a
+    #: working tool). Distinct from `offer_graphic`: the WeaponSmith sells EIGHT
+    #: distinct axes whose art is in AXE_GRAPHICS, so the offer must be resolved by
+    #: the single scalar `offer_graphic` (0x0F44), never the set (which would match
+    #: 8 entries and fail `_offer_by_graphic`'s exactly-one guard).
+    owned_tool_graphics = AXE_GRAPHICS
+    #: The exact for-sale Hatchet art the WeaponSmith stocks — the cheapest axe
+    #: (live-confirmed 0x0F44 @ 25g). `_offer_by_graphic(buy, self.offer_graphic)`
+    #: matches this single graphic among the vendor's 8 axes.
+    offer_graphic = HATCHET_GRAPHIC
+    #: This shard's live-confirmed Hatchet price (25g); the readiness affordability
+    #: estimate only — the buy reads the live entry price.
+    tool_price_estimate = 25
+    #: The lumberjack's tool vendor is a SEPARATE WeaponSmith NPC, not the sell
+    #: (Carpenter) vendor — so buy_hatchet reads its own memory key.
+    vendor_spot_key = "tool_vendor_spot"
+
+
+class ProcessLogsGoal(ProcessLogs):
+    """Capability hands: convert the pack's frozen logs into boards for one goal.
+
+    The produce analog of `craft_daggers` for the lumberjack — goal-scoped. At
+    admission it freezes the pack's total log amount (N); it then drives the
+    `ProcessLogs` convert gesture (`Use(axe)` -> `TargetObject(log pile)`) pile by
+    pile until all N logs have become N boards (1:1), and marks the goal finished.
+    Completion (`_process_achieved`, `capabilities.py`) requires exactly N boards
+    to have arrived and 0 logs to remain, scoped to the same ``goal_id``.
+    """
+
+    name = "process_logs"
+    description = "Convert the pack's logs into boards for one verified goal."
+
+    def _begin_goal(self, ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int:
+            return False
+        if ctx.memory.get("cap_process_goal_id") == goal_id:
+            return True
+        if self._backpack(ctx) is None:
+            return False
+        start_logs = self._pack_logs_amount(ctx)
+        if start_logs <= 0:
+            return False
+        ctx.memory["cap_process_goal_id"] = goal_id
+        ctx.memory["cap_process_start_logs"] = start_logs
+        ctx.memory["cap_process_start_boards"] = self._pack_boards(ctx)
+        ctx.memory["cap_process_needed"] = start_logs
+        for key in (
+            "cap_process_board_delta",
+            "cap_process_logs_remaining",
+            "cap_process_finished_goal_id",
+        ):
+            ctx.memory.pop(key, None)
+        return True
+
+    def _observe_evidence(self, ctx: SkillContext) -> None:
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_process_goal_id") != goal_id:
+            return
+        start_boards = ctx.memory.get("cap_process_start_boards")
+        if type(start_boards) is not int:
+            return
+        ctx.memory["cap_process_board_delta"] = max(0, self._pack_boards(ctx) - start_boards)
+        ctx.memory["cap_process_logs_remaining"] = self._pack_logs_amount(ctx)
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self._begin_goal(ctx):
+            return SkillResult(Status.RUNNING)
+        self._observe_evidence(ctx)
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_process_finished_goal_id") == goal_id:
+            return SkillResult(Status.RUNNING)
+        # All logs converted (none left) and no cursor open -> the batch is done.
+        if self._pack_log(ctx) is None and ctx.obs.pending_target is None:
+            ctx.memory["cap_process_finished_goal_id"] = goal_id
+            self._observe_evidence(ctx)
+            return SkillResult(Status.RUNNING)
+        # Otherwise run the convert gesture (Use axe -> target log), goal-scoped.
+        # `ProcessLogs.step` returns the confirmed-board reward for this tick.
+        return super().step(ctx)
+
+    def _pack_logs_amount(self, ctx: SkillContext) -> int:
+        bp = self._backpack(ctx)
+        if bp is None:
+            return 0
+        return sum(
+            i.amount for i in ctx.obs.items
+            if i.graphic == LOG_GRAPHIC and i.container == bp.serial
         )

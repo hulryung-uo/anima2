@@ -97,3 +97,11 @@ Ordered bricks, each independently live-verifiable like the blacksmith milestone
 - **Throne** = Furniture(**8**) → item button TBD (needs a Furniture-items dump), 19 Boards, sells 24g.
 - MAKE_LAST button = **21** (same fixed id as blacksmithy `_button(6,2)`); exit/cancel = 0.
 - Button formula confirmed identical to blacksmithy: `1 + type + index*7`.
+
+**Brick 7 tinkering gump — CALIBRATED (categories):** Tool: **TinkerTools (0x1EB8)** opens the tinkering CraftGump (title 1044007). Category buttons = `1 + index*7`: Jewelry=**1**, Wooden Items=8, **Tools=15** (Saw/Hatchet/DovetailSaw/Froe/SmithHammer/Tongs/Pickaxe — the village tool-supply crafts), Parts=22, **Utensils=29** (Spoon/Fork/Knife — 1 iron, 0-skill smoke test), Misc=36, Assemblies=43, Traps=50. Item buttons within a category = `2 + index*7`. Material = IronIngot (jewelry/tools) or Board (wooden items).
+
+**Lumberjack vendors:** SELL boards @ **Carpenter** NPC (SBCarpenter, Board@2g, Log@1g, Throne@24g; SELLS Board@3g, Saw@15g). BUY Hatchet (0xF44) @ **WeaponSmith** NPC (SBWeaponSmith, @25g) — a SEPARATE vendor. So professions need per-capability vendor spots (sell-vendor ≠ tool-vendor).
+
+**Throne (carpenter profit item):** Furniture category = button 8; Throne = item cliloc 1044305, 19 Boards, sells 24g. Its exact item button (2 + throne_index*7) to be calibrated when building the carpenter craft (Brick 4) — BarrelStaves (Other=1→item=2, 5 boards) is the verified 0-skill smoke-test item.
+
+**Brick 2 (lumberjack self-sustaining) — mechanics all live-confirmed:** ProcessLogs (logs→boards) ✓; sell boards @ Carpenter NPC 2g via context-menu Sell ✓; buy Hatchet @ WeaponSmith NPC (0xF44 @ 25g, one of 8 axes it sells — match the SCALAR 0xF44) ✓; bank reuse. Generalization: `sold_graphic`/`owned_tool_graphics`/`offer_graphic`/`vendor_spot_key` class attrs + leaf-func factories, blacksmith byte-identical. 4 capabilities: process_logs, sell_boards, bank_gold, buy_hatchet (build in progress).

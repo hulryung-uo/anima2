@@ -10,6 +10,7 @@ from anima2.capabilities import (
     CapabilityPolicy,
     capability_goal,
     issue_capability_planner_lease,
+    ready_capability_ids,
     resolve_capability,
 )
 from anima2.contract import (
@@ -217,6 +218,10 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("blacksmith", "craft_daggers"),
         ("blacksmith", "buy_ingots"),
         ("blacksmith", "buy_smith_tool"),
+        ("lumberjack", "process_logs"),
+        ("lumberjack", "sell_boards"),
+        ("lumberjack", "bank_gold"),
+        ("lumberjack", "buy_hatchet"),
     ]
     assert len(keys) == len(set(keys))
     assert not isinstance(CAPABILITIES, list)
@@ -363,43 +368,39 @@ def test_capability_planner_opt_out_preserves_the_legacy_skill_order():
 
 
 def test_registry_and_profession_planners_expose_the_same_closed_capability_set():
-    planner_keys: list[tuple[str, str]] = []
-    smith_goal = capability_goal("blacksmith", "bank_gold")
-    resolved = resolve_capability(
-        smith_goal,
-        "blacksmith",
-        GoalSource.COGNITION,
-        _ctx(smith_goal, gold=250),
-    )
-    assert resolved is not None
+    from anima2.profession import CapabilityBoundSkill
 
+    # Exactly the professions with installed capabilities can build a capability
+    # planner; the rest fail closed.
+    capability_professions = {
+        profession for profession, _capability in CAPABILITIES
+    }
+    assert capability_professions == {"blacksmith", "lumberjack"}
+
+    planner_keys: list[tuple[str, str]] = []
     for profession in PROFESSIONS.values():
-        if profession.key != "blacksmith":
+        if profession.key not in capability_professions:
             with pytest.raises(ValueError, match="no installed capabilities"):
                 profession.planner(capability_goals=True)
             continue
 
         planner = profession.planner(capability_goals=True)
-        sell_skills = [skill for skill in planner.skills if _contains_sell_daggers(skill)]
-        bank_skills = [skill for skill in planner.skills if _contains_bank_gold(skill)]
-        craft_skills = [skill for skill in planner.skills if _contains_craft_daggers(skill)]
-        buy_skills = [skill for skill in planner.skills if _contains_buy_ingots(skill)]
-        tool_skills = [skill for skill in planner.skills if _contains_buy_tool(skill)]
-        planner_keys.extend((profession.key, "sell_daggers") for _ in sell_skills)
-        planner_keys.extend((profession.key, "bank_gold") for _ in bank_skills)
-        planner_keys.extend((profession.key, "craft_daggers") for _ in craft_skills)
-        planner_keys.extend((profession.key, "buy_ingots") for _ in buy_skills)
-        planner_keys.extend((profession.key, "buy_smith_tool") for _ in tool_skills)
-        assert len(sell_skills) == 1
-        assert len(bank_skills) == 1
-        assert len(craft_skills) == 1
-        assert len(buy_skills) == 1
-        assert len(tool_skills) == 1
-        assert type(sell_skills[0].inner) is SellDaggers
-        assert type(bank_skills[0].inner) is resolved.binding.skill_type
-        assert type(craft_skills[0].inner) is CraftDaggers
-        assert type(buy_skills[0].inner) is BuyIngots
-        assert type(tool_skills[0].inner) is BuyTool
+        # The planner's bound capability skills, in order, must be exactly this
+        # profession's registry bindings (same order), each an untouched instance
+        # of its own binding's skill_type.
+        expected = [
+            (prof, capability, binding.skill_type)
+            for (prof, capability), binding in CAPABILITIES.items()
+            if prof == profession.key
+        ]
+        bound = [
+            skill for skill in planner.skills if isinstance(skill, CapabilityBoundSkill)
+        ]
+        assert len(bound) == len(expected)
+        for skill, (prof, capability, skill_type) in zip(bound, expected, strict=True):
+            assert type(skill.inner) is skill_type
+            assert vars(skill.inner) == {}
+            planner_keys.append((prof, capability))
         names = {skill.name for skill in planner.skills}
         assert "capability_complete" in names
         assert "capability_wait" in names
@@ -2261,3 +2262,161 @@ def test_hidden_bank_after_uncertain_drop_reopens_instead_of_retrying_forever() 
     assert second.action == PopupRequest(serial=9)
     assert ctx.memory["cap_bank_reopen_started"] is True
     assert ctx.memory["cap_bank_release_pending"] == (4, 2, 0, 50)
+
+
+# --- lumberjack capabilities (Brick 2): the generalized market machinery for a new
+# profession + items — process_logs / sell_boards / bank_gold / buy_hatchet -------
+
+from anima2.skills.woodwork import (  # noqa: E402
+    BOARD_GRAPHIC as _BOARD_GRAPHIC,
+    LOG_GRAPHIC as _LOG_GRAPHIC,
+    BuyHatchet as _BuyHatchet,
+    ProcessLogsGoal as _ProcessLogsGoal,
+    SellBoards as _SellBoards,
+)
+
+_HATCHET = 0x0F43  # a pack hatchet (an AXE_GRAPHICS member)
+
+
+def _lumber_ctx(
+    goal: Goal | None = None,
+    *,
+    gold: int = 0,
+    boards: int = 0,
+    logs: int = 0,
+    axe: bool = False,
+    goal_id: int | None = None,
+    goal_policy: CapabilityPolicy | None = None,
+) -> SkillContext:
+    player = PlayerView(serial=1, pos=Position(100, 100, 0), hits=100, hits_max=100)
+    backpack = ItemView(serial=2, graphic=0x0E75, amount=1, pos=player.pos,
+                        container=player.serial, layer=0x15, distance=0)
+    bank_box = ItemView(serial=3, graphic=0x0E7C, amount=1, pos=player.pos,
+                        container=player.serial, layer=0x1D, distance=0)
+    items = [backpack, bank_box]
+    if gold:
+        items.append(ItemView(serial=4, graphic=0x0EED, amount=gold, pos=player.pos,
+                              container=backpack.serial, layer=0, distance=0))
+    if boards:
+        items.append(ItemView(serial=5, graphic=_BOARD_GRAPHIC, amount=boards, pos=player.pos,
+                              container=backpack.serial, layer=0, distance=0))
+    if logs:
+        items.append(ItemView(serial=6, graphic=_LOG_GRAPHIC, amount=logs, pos=player.pos,
+                              container=backpack.serial, layer=0, distance=0))
+    if axe:
+        items.append(ItemView(serial=7, graphic=_HATCHET, amount=1, pos=player.pos,
+                              container=backpack.serial, layer=0, distance=0))
+    # Two vendors (Carpenter=vendor_spot, WeaponSmith=tool_vendor_spot) + banker.
+    memory = {
+        "vendor_spot": (100, 100),
+        "tool_vendor_spot": (100, 100),
+        "banker_spot": (100, 100),
+    }
+    return SkillContext(
+        obs=Observation(player=player, items=items),
+        persona=Persona(name="Bjorn"),
+        goal=goal,
+        memory=memory,
+        goal_id=goal_id,
+        goal_policy=goal_policy,
+    )
+
+
+def test_lumberjack_manifest_includes_all_four_capabilities_in_registry_order():
+    planner = PROFESSIONS["lumberjack"].planner(capability_goals=True)
+    assert len(planner.skills) == 8 + 4
+    names = [skill.name for skill in planner.skills]
+    assert names == [
+        "survive", "recover_death", "speak_pending", "goto", "capability_complete",
+        "process_logs", "sell_boards", "bank_gold", "buy_hatchet",
+        "capability_wait", "greet", "wander",
+    ]
+    assert planner.capability_lease is not None
+    assert planner.capability_ids == frozenset(
+        {"process_logs", "sell_boards", "bank_gold", "buy_hatchet"}
+    )
+
+
+def test_lumberjack_sell_boards_ready_only_at_threshold_from_the_carpenter():
+    goal = capability_goal("lumberjack", "sell_boards")
+    # 20+ boards + a carpenter (vendor_spot) route -> ready.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, boards=20)) is not None
+    # Below the 20-board threshold -> not ready.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, boards=19)) is None
+    # No carpenter route -> not ready.
+    no_vendor = _lumber_ctx(goal, boards=20)
+    no_vendor.memory.pop("vendor_spot")
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, no_vendor) is None
+
+
+def test_lumberjack_buy_hatchet_ready_only_without_an_axe_at_the_tool_vendor():
+    goal = capability_goal("lumberjack", "buy_hatchet")
+    # No axe + affordable + a WeaponSmith (tool_vendor_spot) route -> ready.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, gold=100)) is not None
+    # An axe present -> nothing to replace.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, gold=100, axe=True)) is None
+    # Can't afford a hatchet (25g estimate).
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, gold=24)) is None
+    # No tool vendor route -> not ready (even though a Carpenter vendor_spot exists).
+    no_tool_vendor = _lumber_ctx(goal, gold=100)
+    no_tool_vendor.memory.pop("tool_vendor_spot")
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, no_tool_vendor) is None
+
+
+def test_lumberjack_process_logs_ready_only_with_logs_and_an_axe():
+    goal = capability_goal("lumberjack", "process_logs")
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, logs=18, axe=True)) is not None
+    # No logs -> nothing to process.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, logs=0, axe=True)) is None
+    # No axe -> can't convert.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, logs=18, axe=False)) is None
+
+
+def test_lumberjack_process_completion_binds_boards_to_the_frozen_logs():
+    binding = CAPABILITIES[("lumberjack", "process_logs")]
+    ctx = _lumber_ctx(boards=18, goal_id=17)
+    ctx.memory.update({
+        "cap_process_goal_id": 17,
+        "cap_process_finished_goal_id": 17,
+        "cap_process_needed": 18,
+        "cap_process_board_delta": 18,
+        "cap_process_logs_remaining": 0,
+    })
+    assert binding.achieved(ctx)
+    assert binding.progress(ctx) == 1.0
+
+    # Short conversion (fewer boards than the frozen logs) fails.
+    ctx.memory["cap_process_board_delta"] = 17
+    assert not binding.achieved(ctx)
+    ctx.memory["cap_process_board_delta"] = 18
+    # Logs still remaining (not all converted) fails.
+    ctx.memory["cap_process_logs_remaining"] = 1
+    assert not binding.achieved(ctx)
+    ctx.memory["cap_process_logs_remaining"] = 0
+    # A stale goal_id can't complete it.
+    ctx.goal_id = 18
+    assert not binding.achieved(ctx)
+
+
+def test_lumberjack_ready_capability_ids_surfaces_its_own_closed_set():
+    # A lumberjack with logs+axe, 20 boards, and gold: process/sell/bank ready in
+    # registry order (buy_hatchet excluded — an axe is present). The cognition-
+    # facing list is scoped to the profession's own bindings.
+    ctx = _lumber_ctx(gold=100, boards=20, logs=18, axe=True)
+    ids = ready_capability_ids("lumberjack", ctx)
+    assert ids == ("process_logs", "sell_boards", "bank_gold")
+    # The list is scoped to lumberjack bindings only — no blacksmith ids appear.
+    assert "sell_daggers" not in ids
+    assert "buy_ingots" not in ids
+    assert "craft_daggers" not in ids
+
+
+def test_lumberjack_bank_gold_reuses_the_blacksmith_leaf_funcs():
+    goal = capability_goal("lumberjack", "bank_gold")
+    # Reuses the profession-agnostic bank machinery: ready with pack gold + a banker.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, gold=250)) is not None
+    from anima2.skills.market import BankGold
+    assert CAPABILITIES[("lumberjack", "bank_gold")].skill_type is BankGold
+    assert CAPABILITIES[("lumberjack", "sell_boards")].skill_type is _SellBoards
+    assert CAPABILITIES[("lumberjack", "buy_hatchet")].skill_type is _BuyHatchet
+    assert CAPABILITIES[("lumberjack", "process_logs")].skill_type is _ProcessLogsGoal

@@ -289,6 +289,23 @@ class BlacksmithMarket(Blacksmith):
     #: trying again on its own.
     giveup_cooldown_ticks: int = 30
 
+    # --- per-capability config (generalize sell/buy_tool to a new profession +
+    # item without forking the machinery — carpenter/tinker reuse these). The
+    # defaults are the blacksmith's, so every blacksmith path resolves exactly
+    # what it did before (byte-identical); a lumberjack skill overrides them.
+    #: The pack/vendor item a sell capability trades (blacksmith: daggers).
+    sold_graphic: int = DAGGER_GRAPHIC
+    #: Which `ctx.memory` key holds this capability's vendor route. The
+    #: blacksmith uses one "Blacksmith" NPC for sell+buy (`vendor_spot`); a
+    #: profession with a separate tool vendor points buy_tool at another key.
+    vendor_spot_key: str = "vendor_spot"
+    #: The tools a buy_tool capability treats as "already have a working tool"
+    #: (blacksmith: hammer/tongs). Its trigger is "none of these in the pack".
+    owned_tool_graphics: frozenset[int] = SMITH_TOOL_GRAPHICS
+    #: The exact for-sale tool art a buy_tool capability buys (blacksmith: tongs
+    #: 0x0FBB) — resolved off the enriched `ShopBuyEntry` by graphic.
+    offer_graphic: int = SMITH_TONGS_GRAPHIC
+
     def step(self, ctx: SkillContext) -> SkillResult:
         vendor = ctx.memory.get("vendor_spot")
         banker = ctx.memory.get("banker_spot")
@@ -417,7 +434,7 @@ class BlacksmithMarket(Blacksmith):
         start = ctx.memory.get("sell_gold_start")
         if start is None:
             start = ctx.memory["sell_gold_start"] = gold_now
-            ctx.memory["sell_daggers_start"] = self._pack_daggers(ctx)
+            ctx.memory["sell_daggers_start"] = self._pack_sold(ctx)
         paid = ctx.memory.get("sell_paid", 0.0)
         confirmed_gain = max(0, gold_now - start)
         reward = confirmed_gain - paid
@@ -480,23 +497,23 @@ class BlacksmithMarket(Blacksmith):
                     self._stash_reward(ctx, reward)
                     return None  # the list never arrived — give up this trip
                 return SkillResult(Status.RUNNING, None, reward)
-            daggers = [i for i in sell.items if i.graphic == DAGGER_GRAPHIC]
-            if not daggers:
-                # The vendor's list doesn't recognize any dagger in the pack
+            offered = [i for i in sell.items if i.graphic == self.sold_graphic]
+            if not offered:
+                # The vendor's list doesn't recognize the sold item in the pack
                 # (nothing to sell, or a mismatch) — bail rather than loop forever.
                 self._stash_reward(ctx, reward)
                 return None
             ctx.memory["sell_stage"] = "confirm"
             return SkillResult(
                 Status.RUNNING,
-                SellItems(vendor=sell.vendor, items=[(i.serial, i.amount) for i in daggers]),
+                SellItems(vendor=sell.vendor, items=[(i.serial, i.amount) for i in offered]),
                 reward,
             )
 
         # stage == "confirm" — already sent SellItems; wait for the pack to
-        # confirm it (daggers gone), or give up after a bounded wait rather
-        # than freezing the MAKE loop over a rejected/short sale.
-        if self._pack_daggers(ctx) < ctx.memory["sell_daggers_start"]:
+        # confirm it (the sold items gone), or give up after a bounded wait
+        # rather than freezing the MAKE loop over a rejected/short sale.
+        if self._pack_sold(ctx) < ctx.memory["sell_daggers_start"]:
             self._stash_reward(ctx, reward)
             return None
         wait = ctx.memory.get("sell_confirm_wait", 0) + 1
@@ -841,11 +858,12 @@ class BlacksmithMarket(Blacksmith):
 
     def _tool_offer_for(self, buy, action: BuyItems) -> tuple[int, int, int] | None:
         """The tool-buy analogue of `_buy_offer_for`: reconstruct `(serial,
-        amount, unit_price)` from the still-open window's tongs entry. `None`
-        unless the action names exactly that tongs serial for `min(TOOL_BUY_AMOUNT,
-        entry.amount)` (one tool) at the entry's own positive price.
+        amount, unit_price)` from the still-open window's tool entry (resolved by
+        `self.offer_graphic`). `None` unless the action names exactly that tool
+        serial for `min(TOOL_BUY_AMOUNT, entry.amount)` (one tool) at the entry's
+        own positive price.
         """
-        entry = self._tool_offer(buy)
+        entry = self._offer_by_graphic(buy, self.offer_graphic)
         if entry is None or len(action.items) != 1:
             return None
         serial, amount = action.items[0]
@@ -928,9 +946,9 @@ class BlacksmithMarket(Blacksmith):
                     self._stash_reward(ctx, reward)
                     return None  # the window never arrived — give up this trip
                 return SkillResult(Status.RUNNING, None, reward)
-            entry = self._tool_offer(buy)
+            entry = self._offer_by_graphic(buy, self.offer_graphic)
             if entry is None:
-                # No single resolvable tongs offer — bail rather than mis-buy.
+                # No single resolvable tool offer — bail rather than mis-buy.
                 self._stash_reward(ctx, reward)
                 return None
             amount = min(TOOL_BUY_AMOUNT, entry.amount)
@@ -1128,6 +1146,17 @@ class BlacksmithMarket(Blacksmith):
             return 0
         return sum(i.amount for i in ctx.obs.items if i.graphic == DAGGER_GRAPHIC and i.container == bp.serial)
 
+    def _pack_sold(self, ctx: SkillContext) -> int:
+        """Pack amount of the capability's configured sold item (`self.sold_graphic`
+        — daggers for the blacksmith, boards for the lumberjack). The sell
+        machinery's start/confirm/give-up counts. For the blacksmith default
+        (`sold_graphic == DAGGER_GRAPHIC`) this equals `_pack_daggers` exactly.
+        """
+        bp = self._backpack(ctx)
+        if bp is None:
+            return 0
+        return sum(i.amount for i in ctx.obs.items if i.graphic == self.sold_graphic and i.container == bp.serial)
+
     def _pack_gold(self, ctx: SkillContext) -> int:
         # Same well-formed-pile filter as `BankGold._pack_gold_manifest` and
         # `_pack_gold_pile`, so all three agree on which piles count (a malformed
@@ -1160,11 +1189,12 @@ class BlacksmithMarket(Blacksmith):
         return sum(i.amount for i in ctx.obs.items if i.graphic in INGOT_GRAPHICS and i.container == bp.serial)
 
     def _pack_tools(self, ctx: SkillContext) -> int:
-        """COUNT of smith tools in the pack (each tool is a distinct, non-stacking
-        item, so this counts items, not amounts). The confirmed-arrival signal
-        `_toolbuy_step` rewards on and the `buy_smith_tool` capability verifies a
-        0->1 delta against — consistent with `capabilities._owned_smith_tool`,
-        which finds a single such tool in the backpack.
+        """COUNT of the capability's owned-tool graphics in the pack (each tool is
+        a distinct, non-stacking item, so this counts items, not amounts). The
+        confirmed-arrival signal `_toolbuy_step` rewards on and the buy_tool
+        capability verifies a 0->1 delta against — consistent with
+        `capabilities._owned_tool(ctx, graphics)`. Uses `self.owned_tool_graphics`
+        (blacksmith: SMITH_TOOL_GRAPHICS; lumberjack: AXE_GRAPHICS).
         """
         bp = self._backpack(ctx)
         if bp is None:
@@ -1172,7 +1202,7 @@ class BlacksmithMarket(Blacksmith):
         return sum(
             1
             for i in ctx.obs.items
-            if i.graphic in SMITH_TOOL_GRAPHICS and i.container == bp.serial
+            if i.graphic in self.owned_tool_graphics and i.container == bp.serial
         )
 
     def _pack_gold_pile(self, ctx: SkillContext):
@@ -1216,18 +1246,22 @@ class BlacksmithMarket(Blacksmith):
         return sum(i.amount for i in ctx.obs.items if i.graphic == GOLD_GRAPHIC and i.container == box.serial)
 
 
-class SellDaggers(BlacksmithMarket):
-    """Operation-specific vendor hands: sell daggers, never craft or bank.
+class SellItemCapability(BlacksmithMarket):
+    """Operation-specific vendor hands: sell one configured pack item, never craft
+    or bank. The generalized base for `SellDaggers` (blacksmith) and `SellBoards`
+    (lumberjack) — subclasses only set `sold_graphic`/`sell_threshold`/
+    `vendor_spot_key`/`name`/`description`; all the provenance logic below reads
+    those class attrs, so nothing forks per item.
 
     The capability keeps observation evidence scoped to the active goal frame.
     Merely opening a vendor window, sending ``SellItems``, or observing a gold
     change is insufficient on its own: completion requires the exact offered
-    dagger quantity to disappear, at least its quoted value to arrive, and the
-    smith to return to the safe idle phase for the same ``goal_id``.
+    item quantity to disappear, at least its quoted value to arrive, and the
+    worker to return to the safe idle phase for the same ``goal_id``. (The
+    ``cap_sell_*``/``sell_daggers_start`` memory keys keep their legacy names —
+    per-agent single-profession means no collision — while now counting
+    ``self.sold_graphic``.)
     """
-
-    name = "sell_daggers"
-    description = "Sell observed backpack daggers to the configured vendor and return."
 
     _CLEANUP_KEYS = (
         "sell_gold_start",
@@ -1250,7 +1284,7 @@ class SellDaggers(BlacksmithMarket):
         if ctx.memory.get("cap_sell_goal_id") == goal_id:
             return True
 
-        vendor = ctx.memory.get("vendor_spot")
+        vendor = ctx.memory.get(self.vendor_spot_key)
         try:
             route = tuple(self._route(vendor))
         except (IndexError, TypeError, ValueError):
@@ -1260,7 +1294,7 @@ class SellDaggers(BlacksmithMarket):
 
         ctx.memory["cap_sell_goal_id"] = goal_id
         ctx.memory["cap_sell_route"] = route
-        ctx.memory["cap_sell_start_daggers"] = self._pack_daggers(ctx)
+        ctx.memory["cap_sell_start_daggers"] = self._pack_sold(ctx)
         ctx.memory["cap_sell_start_gold"] = self._pack_gold(ctx)
         for key in (
             "cap_sell_sent_goal_id",
@@ -1286,7 +1320,7 @@ class SellDaggers(BlacksmithMarket):
         if type(start_daggers) is not int or type(start_gold) is not int:
             return
         ctx.memory["cap_sell_dagger_delta"] = max(
-            0, start_daggers - self._pack_daggers(ctx)
+            0, start_daggers - self._pack_sold(ctx)
         )
         ctx.memory["cap_sell_gold_delta"] = max(
             0, self._pack_gold(ctx) - start_gold
@@ -1342,7 +1376,7 @@ class SellDaggers(BlacksmithMarket):
                         for serial, amount, price in (
                             (item.serial, item.amount, item.price)
                             for item in (obs.shop_sell.items if obs.shop_sell else [])
-                            if item.graphic == DAGGER_GRAPHIC
+                            if item.graphic == self.sold_graphic
                         )
                     }
                     sent_daggers = sum(
@@ -1366,7 +1400,7 @@ class SellDaggers(BlacksmithMarket):
                         ctx.memory["cap_sell_expected_gold"] = expected_gold
                         ctx.memory["cap_sell_offered_items"] = offered_items
                 return self._payout(ctx, result)
-            ctx.memory["sell_giveup_daggers"] = self._pack_daggers(ctx)
+            ctx.memory["sell_giveup_daggers"] = self._pack_sold(ctx)
             ctx.memory["sell_giveup_tick"] = tick
             for key in self._CLEANUP_KEYS:
                 ctx.memory.pop(key, None)
@@ -1391,6 +1425,16 @@ class SellDaggers(BlacksmithMarket):
         # Deliberately do not fall through to Blacksmith.step(): completion is
         # evaluated from the next Observation before any hammer/bank action.
         return self._payout(ctx, SkillResult(Status.RUNNING))
+
+
+class SellDaggers(SellItemCapability):
+    """Blacksmith config: sell daggers (0x0F52) to the `vendor_spot` Blacksmith
+    NPC. Inherits every default (`sold_graphic=DAGGER_GRAPHIC`, `sell_threshold=5`,
+    `vendor_spot_key="vendor_spot"`), so it is byte-identical to the B5 skill.
+    """
+
+    name = "sell_daggers"
+    description = "Sell observed backpack daggers to the configured vendor and return."
 
 
 class BankGold(BlacksmithMarket):
@@ -1905,26 +1949,28 @@ class BuyIngots(BlacksmithMarket):
         return self._payout(ctx, SkillResult(Status.RUNNING))
 
 
-class BuyTool(BlacksmithMarket):
-    """Operation-specific vendor hands: buy one replacement smithing tool.
+class BuyToolCapability(BlacksmithMarket):
+    """Operation-specific vendor hands: buy one replacement NON-stacking tool.
 
-    The tool-replacement half of B8 — the near-exact mirror of ``BuyIngots`` for
-    a NON-stacking tool bought one at a time. A smith's hammer/tongs wears out
-    over a long run and breaks; today that silently stalls crafting (the craft
-    capability goes unready with no working tool and no way to reacquire one).
-    This buys a fresh tongs with earned gold, closing the last finite-supply GM
-    dependency in the craft loop.
+    The generalized base for `BuyTool` (blacksmith, buys tongs) and `BuyHatchet`
+    (lumberjack, buys a hatchet) — subclasses only set `owned_tool_graphics`
+    (the trigger: none of these in the pack), `offer_graphic` (the exact for-sale
+    tool bought), `tool_price_estimate`, `vendor_spot_key`, `name`/`description`.
+
+    The near-exact mirror of ``BuyIngots`` for a tool bought one at a time. A
+    worker's tool wears out over a long run and breaks; today that silently
+    stalls production (its craft/process capability goes unready with no working
+    tool). This buys a fresh one with earned gold, closing a finite-supply GM
+    dependency.
 
     The capability keeps observation evidence scoped to the active goal frame.
-    Completion requires the exact tongs offer observed, exactly the quoted cost
-    to leave the pack, and a smith tool to ARRIVE where there was none (a 0->1
-    tool-count delta — verified by count, since tools don't stack), the UI to
-    clear, and a safe return for the same ``goal_id``. Only the tongs offer is
-    ever bought — never the vendor's shields, armour, weapons, or iron.
+    Completion requires the exact tool offer observed, exactly the quoted cost to
+    leave the pack, and a tool to ARRIVE where there was none (a 0->1 tool-count
+    delta — verified by count, since tools don't stack), the UI to clear, and a
+    safe return for the same ``goal_id``. Only the configured tool offer is ever
+    bought — never the vendor's other stock. (The ``cap_toolbuy_*`` memory keys
+    keep their legacy names.)
     """
-
-    name = "buy_smith_tool"
-    description = "Buy one replacement smithing tool from the configured vendor and return."
 
     _CLEANUP_KEYS = (
         "toolbuy_tools_start",
@@ -1947,7 +1993,7 @@ class BuyTool(BlacksmithMarket):
         if ctx.memory.get("cap_toolbuy_goal_id") == goal_id:
             return True
 
-        vendor = ctx.memory.get("vendor_spot")
+        vendor = ctx.memory.get(self.vendor_spot_key)
         try:
             route = tuple(self._route(vendor))
         except (IndexError, TypeError, ValueError):
@@ -2042,6 +2088,20 @@ class BuyTool(BlacksmithMarket):
         # Deliberately do not fall through to Blacksmith.step(): completion is
         # evaluated from the next Observation before any hammer action can run.
         return self._payout(ctx, SkillResult(Status.RUNNING))
+
+
+class BuyTool(BuyToolCapability):
+    """Blacksmith config: buy a replacement tongs (0x0FBB) from the `vendor_spot`
+    Blacksmith NPC when no smith tool is in the pack. Inherits every default
+    (`owned_tool_graphics=SMITH_TOOL_GRAPHICS`, `offer_graphic=SMITH_TONGS_GRAPHIC`,
+    `vendor_spot_key="vendor_spot"`), so it is byte-identical to the B8 skill.
+    """
+
+    name = "buy_smith_tool"
+    description = "Buy one replacement smithing tool from the configured vendor and return."
+    #: This shard's tongs price (SBBlacksmith.cs GenericBuyInfo) — the readiness
+    #: affordability estimate only; the buy reads the live entry price.
+    tool_price_estimate: int = 13
 
 
 #: Sentinel `_popup_click` returns when the open popup has no entry matching
