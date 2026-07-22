@@ -1,14 +1,21 @@
-"""Live B5 gate: closed cognition sells exact staged daggers and nothing else.
+"""Live B8 gate: closed cognition buys a fixed iron batch and nothing else.
 
-The GM fixture is closed before the production Agent exists.  The model client
-first returns a schema-invalid request, then the exact ``sell_daggers`` id.
-Passing requires the live packet sequence PopupRequest -> PopupSelect(Sell) ->
-SellItems, the staged dagger serials disappearing, the quoted gold arriving,
-one sealed cognition frame succeeding, and no craft/bank action being emitted.
+The exact mirror of ``live_sell_goal.py`` inverted — gold LEAVES the pack, iron
+ingots ARRIVE. The GM fixture is closed before the production Agent exists.  The
+model client first returns a schema-invalid request, then the exact
+``buy_ingots`` id.  Passing requires the live packet sequence PopupRequest ->
+PopupSelect(Buy) -> BuyItems, only the vendor's iron-ingot offer being bought
+(never its armour/weapons/tongs), the quoted gold leaving the pack while exactly
+the bought iron arrives, one sealed cognition frame succeeding, and no
+craft/sell/bank action being emitted.
+
+Only ``buy_ingots`` is staged ready: the smith starts with 0 iron and 0 daggers
+(so craft and sell can't fire), a known 200 gold, and a vendor route but no
+banker route (so bank can't fire) — buying is the one thing left to do.
 
 Usage::
 
-    python -m anima2.live_sell_goal --suffix b5manual
+    python -m anima2.live_buy_goal --suffix b8manual
 """
 
 from __future__ import annotations
@@ -48,10 +55,21 @@ from .profession import (
 from .skills.base import Goal, Skill, SkillContext
 from .skills.craft import DAGGER_GRAPHIC, SMITH_TOOL_GRAPHICS
 from .skills.harvest import BACKPACK_LAYER
-from .skills.market import GOLD_GRAPHIC, SELL_CLILOC, SellDaggers
+from .skills.market import (
+    BUY_AMOUNT,
+    BUY_CLILOC,
+    GOLD_GRAPHIC,
+    IRON_INGOT_GRAPHIC,
+    BuyIngots,
+)
+from .skills.smelt import INGOT_GRAPHICS
 
 _PROFESSION = "blacksmith"
-_CAPABILITY = "sell_daggers"
+_CAPABILITY = "buy_ingots"
+# Provenance-clean starting gold: comfortably above the 15 x 5 == 75 gold the
+# fixed iron batch costs on this shard, so the buy is affordable and the exact
+# post-buy balance (200 - quoted_cost) is a decisive delta check.
+_STARTING_GOLD = 200
 
 
 @dataclass(frozen=True)
@@ -102,9 +120,9 @@ class _SelectionTracer:
 class _SequencedClient:
     def __init__(self) -> None:
         self.responses = [
-            '{"schema":1,"decision":"capability","capability":"sell_daggers",'
-            '"action":"sell"}',
-            '{"schema":1,"decision":"capability","capability":"sell_daggers"}',
+            '{"schema":1,"decision":"capability","capability":"buy_ingots",'
+            '"action":"buy"}',
+            '{"schema":1,"decision":"capability","capability":"buy_ingots"}',
             '{"schema":1,"decision":"idle"}',
         ]
         self.calls: list[tuple[str, str]] = []
@@ -141,7 +159,22 @@ def _pack_amount(obs: Observation, graphic: int) -> int:
     return sum(item.amount for item in _pack_items(obs, graphic))
 
 
-def _sell_select(record: _ActionRecord, vendor: int) -> bool:
+def _pack_iron(obs: Observation) -> int:
+    """Iron ingots in the pack, summed across every `INGOT_GRAPHICS` pile-size
+    variant (a bought stack can merge into any of them), unlike the vendor's
+    single for-sale display graphic `IRON_INGOT_GRAPHIC`.
+    """
+    backpack = _backpack(obs)
+    if backpack is None:
+        return 0
+    return sum(
+        item.amount
+        for item in obs.items
+        if item.graphic in INGOT_GRAPHICS and item.container == backpack
+    )
+
+
+def _buy_select(record: _ActionRecord, vendor: int) -> bool:
     action = record.action
     popup = record.observation.popup
     return bool(
@@ -150,14 +183,14 @@ def _sell_select(record: _ActionRecord, vendor: int) -> bool:
         and popup is not None
         and popup.serial == vendor
         and any(
-            entry.index == action.index and entry.cliloc == SELL_CLILOC
+            entry.index == action.index and entry.cliloc == BUY_CLILOC
             for entry in popup.entries
         )
     )
 
 
 def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
-    account = args.account or f"animab5{args.suffix}"
+    account = args.account or f"animab8{args.suffix}"
     password = args.password or account
     smith_x, smith_y = TRADE_SMITH_SPOT
     vendor_x, vendor_y = VENDOR_SPOT[-1]
@@ -184,20 +217,22 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
                 items=["SmithHammer 999"],
             )
             staged = [ipc.observe() for _ in range(3)][-1]
+            # Start from a provenance-clean pack: delete any staged/starter gold,
+            # daggers, and iron so only sell/craft's own preconditions are unmet
+            # and the gold balance is exactly known.
             removed = all(
                 gm.command_on("[Delete", item.serial)
-                for graphic in (GOLD_GRAPHIC, DAGGER_GRAPHIC)
+                for graphic in (GOLD_GRAPHIC, DAGGER_GRAPHIC, *INGOT_GRAPHICS)
                 for item in _pack_items(staged, graphic)
             )
-            added = all(
-                gm.command_on("[AddToPack Dagger", serial) for _ in range(5)
-            )
+            added = gm.command_on(f"[AddToPack Gold {_STARTING_GOLD}", serial)
             vendor = gm.stage_npc(
                 "Blacksmith", vendor_x, vendor_y, gz, exclude=serial
             )
             print(
-                f"GM staged B5 smith; subject=0x{serial:X} pos=({gx},{gy},{gz}) "
-                f"daggers=5 vendor={getattr(vendor, 'serial', None)}; closing GM"
+                f"GM staged B8 smith; subject=0x{serial:X} pos=({gx},{gy},{gz}) "
+                f"gold={_STARTING_GOLD} iron=0 daggers=0 "
+                f"vendor={getattr(vendor, 'serial', None)}; closing GM"
             )
 
         gm_closed = not gm.body.connected
@@ -206,8 +241,6 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             body.observe()
         assert body.last_obs is not None
         baseline = body.last_obs
-        baseline_daggers = _pack_items(baseline, DAGGER_GRAPHIC)
-        baseline_serials = {item.serial for item in baseline_daggers}
         baseline_tools = [
             item
             for graphic in SMITH_TOOL_GRAPHICS
@@ -230,6 +263,9 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             profession=_PROFESSION,
             goal_policy=CapabilityPolicy(_PROFESSION),
         )
+        # A vendor route but deliberately no banker_spot or craft_spot, so bank
+        # (needs banker_spot), craft (needs craft_spot + 15 ingots), and sell
+        # (needs 5 daggers) are all unready — only buy_ingots can be selected.
         agent.memory["vendor_spot"] = VENDOR_SPOT
 
         negative_offset = len(body.actions)
@@ -264,7 +300,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             if tick % args.snapshot_every == 0:
                 assert body.last_obs is not None
                 print(
-                    f"tick={tick:03d} daggers={_pack_amount(body.last_obs, DAGGER_GRAPHIC)} "
+                    f"tick={tick:03d} iron={_pack_iron(body.last_obs)} "
                     f"gold={_pack_amount(body.last_obs, GOLD_GRAPHIC)} "
                     f"phase={agent.memory.get('mkt_phase', 'craft')!r}"
                 )
@@ -281,42 +317,49 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         selects = [
             i
             for i, record in enumerate(actions)
-            if vendor_serial is not None and _sell_select(record, vendor_serial)
+            if vendor_serial is not None and _buy_select(record, vendor_serial)
         ]
-        offers = [
+        buys = [
             (i, record)
             for i, record in enumerate(actions)
-            if isinstance(record.action, SellItems)
+            if isinstance(record.action, BuyItems)
             and record.action.vendor == vendor_serial
         ]
-        offered_serials = {
-            item_serial
-            for _index, record in offers
-            for item_serial, _amount in record.action.items
-        }
-        quoted_gold = sum(
-            item.price * amount
-            for _index, record in offers
+        bought = sum(
+            amount
+            for _index, record in buys
+            for _item_serial, amount in record.action.items
+        )
+        quoted_cost = sum(
+            entry.price * amount
+            for _index, record in buys
             for item_serial, amount in record.action.items
-            for item in (record.observation.shop_sell.items if record.observation.shop_sell else [])
-            if item.serial == item_serial and item.graphic == DAGGER_GRAPHIC
+            for entry in (record.observation.shop_buy.entries if record.observation.shop_buy else [])
+            if entry.serial == item_serial and entry.graphic == IRON_INGOT_GRAPHIC
         )
         exact_order = bool(
             requests
             and selects
-            and offers
-            and requests[0] < selects[0] < offers[0][0]
+            and buys
+            and requests[0] < selects[0] < buys[0][0]
         )
-        exact_offer = bool(
-            len(offers) == 1
-            and offers[0][1].observation.shop_sell is not None
-            and offers[0][1].observation.shop_sell.vendor == vendor_serial
-            and offers[0][1].action.items
-            == [
-                (item.serial, item.amount)
-                for item in offers[0][1].observation.shop_sell.items
-                if item.graphic == DAGGER_GRAPHIC
-            ]
+        buy_record = buys[0][1] if len(buys) == 1 else None
+        buy_shop = buy_record.observation.shop_buy if buy_record is not None else None
+        iron_entry = (
+            next(
+                (entry for entry in buy_shop.entries if entry.graphic == IRON_INGOT_GRAPHIC),
+                None,
+            )
+            if buy_shop is not None
+            else None
+        )
+        only_iron_bought = bool(
+            buy_record is not None
+            and buy_shop is not None
+            and buy_shop.vendor == vendor_serial
+            and iron_entry is not None
+            and buy_record.action.items
+            == [(iron_entry.serial, min(BUY_AMOUNT, iron_entry.amount))]
         )
         target_frames = [
             frame
@@ -338,7 +381,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             and target_frame.deadline_tick is not None
             and target_frame.deadline_tick - target_frame.created_tick == 180
         )
-        transaction_indices = {*requests, *selects, *(i for i, _record in offers)}
+        transaction_indices = {*requests, *selects, *(i for i, _record in buys)}
         all_transaction_indices = {
             index
             for index, record in enumerate(actions)
@@ -369,7 +412,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             and all(
                 owner.goal_id == target_goal_id
                 and isinstance(owner.skill, CapabilityBoundSkill)
-                and type(owner.skill.inner) is SellDaggers
+                and type(owner.skill.inner) is BuyIngots
                 for owner in owners
             )
         )
@@ -378,10 +421,10 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             "schema_ready": ipc.ready.get("schema_version") == SUPPORTED_SCHEMA_VERSION,
             "gm_fixture_staged": bool(removed and added and vendor is not None),
             "gm_connection_closed_before_agent": gm_closed,
-            "live_baseline_exact_daggers_and_zero_gold": bool(
-                len(baseline_serials) == 5
-                and _pack_amount(baseline, DAGGER_GRAPHIC) == 5
-                and _pack_amount(baseline, GOLD_GRAPHIC) == 0
+            "live_baseline_zero_iron_known_gold": bool(
+                _pack_iron(baseline) == 0
+                and _pack_amount(baseline, DAGGER_GRAPHIC) == 0
+                and _pack_amount(baseline, GOLD_GRAPHIC) == _STARTING_GOLD
                 and baseline_tools
             ),
             "invalid_reply_rejected_without_action": bool(
@@ -389,39 +432,39 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             ),
             "closed_prompt_exposes_only_ready_id": bool(
                 len(client.calls) == 3
-                and all("sell_daggers" in user for _system, user in client.calls[:2])
+                and all("buy_ingots" in user for _system, user in client.calls[:2])
                 and all("bank_gold" not in user for _system, user in client.calls[:2])
-                and all("SellDaggers" not in user for _system, user in client.calls[:2])
+                and all("sell_daggers" not in user for _system, user in client.calls[:2])
+                and all("BuyIngots" not in user for _system, user in client.calls[:2])
             ),
             "canonical_goal_enqueued_once": bool(
                 target_goal_id is not None and len(target_frames) == 1 and canonical_frame
             ),
-            "exact_popup_select_sell_order": exact_order,
+            "exact_popup_select_buy_order": exact_order,
             "transaction_actions_once": bool(
-                len(requests) == len(selects) == len(offers) == 1
+                len(requests) == len(selects) == len(buys) == 1
             ),
-            "only_staged_daggers_offered": bool(
-                exact_offer and offered_serials == baseline_serials
-            ),
+            "only_iron_bought": only_iron_bought,
             "registry_owned_transaction": registry_owned,
             "no_extra_capability_actions": not unexpected_actions,
-            "live_sale_delta_matches_quote": bool(
-                quoted_gold > 0
-                and _pack_amount(final_obs, DAGGER_GRAPHIC) == 0
-                and _pack_amount(final_obs, GOLD_GRAPHIC) == quoted_gold
+            "live_buy_delta_matches_quote": bool(
+                quoted_cost > 0
+                and bought > 0
+                and _pack_iron(final_obs) == bought
+                and _pack_amount(final_obs, GOLD_GRAPHIC) == _STARTING_GOLD - quoted_cost
             ),
             "transaction_returned_idle": bool(
                 agent.memory.get("mkt_phase", "craft") == "craft"
                 and all(
                     key not in agent.memory
                     for key in (
-                        "sell_leg",
-                        "sell_stage",
-                        "sell_vendor",
-                        "sell_popup_wait",
-                        "sell_ask_wait",
-                        "sell_confirm_wait",
-                        "sell_return_leg",
+                        "buy_leg",
+                        "buy_stage",
+                        "buy_vendor",
+                        "buy_popup_wait",
+                        "buy_ask_wait",
+                        "buy_confirm_wait",
+                        "buy_return_leg",
                     )
                 )
             ),
@@ -431,9 +474,9 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             "same_goal_not_replayed": len(target_frames) == 1,
         }
         detail = (
-            f"serial={serial} vendor={vendor_serial} daggers=5->"
-            f"{_pack_amount(final_obs, DAGGER_GRAPHIC)} gold=0->"
-            f"{_pack_amount(final_obs, GOLD_GRAPHIC)} quote={quoted_gold} "
+            f"serial={serial} vendor={vendor_serial} iron=0->"
+            f"{_pack_iron(final_obs)} gold={_STARTING_GOLD}->"
+            f"{_pack_amount(final_obs, GOLD_GRAPHIC)} quote={quoted_cost} bought={bought} "
             f"goal_id={target_goal_id} ticks={agent.ticks} cognition={len(client.calls)}"
         )
         return flags, detail
@@ -460,9 +503,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         flags, detail = _run(args)
     except Exception as exc:
-        print(f"[FLAG] B5 SELL GOAL GATE FAILED: {type(exc).__name__}: {exc}")
+        print(f"[FLAG] B8 BUY GOAL GATE FAILED: {type(exc).__name__}: {exc}")
         return 1
-    return 0 if print_gate_verdict(flags, label="B5 SELL GOAL GATE", detail=detail) else 1
+    return 0 if print_gate_verdict(flags, label="B8 BUY GOAL GATE", detail=detail) else 1
 
 
 if __name__ == "__main__":

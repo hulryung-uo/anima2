@@ -223,17 +223,35 @@ class GumpView:
 
 @dataclass
 class ShopBuyEntry:
-    """One line of a vendor's BUY window: `(price, name)` in packet order —
-    anima-core matches these to the vendor's for-sale container items by index
-    (mirrors `anima_core::world::ShopBuy.entries`; see `json.rs::shop_buy_json`).
+    """One line of a vendor's BUY window: `price` + `name` in packet order, plus
+    the concrete for-sale item the price refers to — `serial` (address a
+    `BuyItems` request to it), `graphic` (identify the offer, e.g. iron ingot
+    `0x1BF2`), `amount` (how many the vendor stocks), and `hue`. anima-core pairs
+    each wire price to its container item by 0x3C arrival order and ships the
+    item fields here, so the brain matches an offer by graphic and buys by serial
+    without reconstructing the index correspondence (symmetric with
+    `ShopSellItem`). The item fields are `0` when no matching container item is
+    known yet. Mirrors `anima_core::world::ShopBuyEntry`; see
+    `anima-contract-json::shop_buy_json`.
     """
 
     price: int
     name: str = ""
+    serial: int = 0
+    graphic: int = 0
+    amount: int = 0
+    hue: int = 0
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ShopBuyEntry:
-        return cls(price=d.get("price", 0), name=d.get("name", ""))
+        return cls(
+            price=d.get("price", 0),
+            name=d.get("name", ""),
+            serial=d.get("serial", 0),
+            graphic=d.get("graphic", 0),
+            amount=d.get("amount", 0),
+            hue=d.get("hue", 0),
+        )
 
 
 @dataclass

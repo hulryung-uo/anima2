@@ -168,7 +168,7 @@ def test_runtime_builder_uses_exact_closed_components() -> None:
     assert type(policy) is CapabilityPolicy
     assert planner.capability_profession == "blacksmith"
     assert planner.capability_ids == frozenset(
-        {"sell_daggers", "bank_gold", "craft_daggers"}
+        {"sell_daggers", "bank_gold", "craft_daggers", "buy_ingots"}
     )
     assert planner.capability_lease is not None
 

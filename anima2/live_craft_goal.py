@@ -23,7 +23,7 @@ from .cognition import ThreadedCognition
 from .contract import Action, GumpResponse, Observation, Use
 from .control import GmControl
 from .goals import GoalOutcome, GoalSource
-from .ipc_body import ResilientIpcBody
+from .ipc_body import ResilientIpcBody, SUPPORTED_SCHEMA_VERSION
 from .live_common import (
     GM_RELOGIN_COOLDOWN_S,
     fresh_suffix,
@@ -387,7 +387,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         )
 
         flags = {
-            "schema_v8_ready": ipc.ready.get("schema_version") == 8,
+            "schema_ready": ipc.ready.get("schema_version") == SUPPORTED_SCHEMA_VERSION,
             "gm_fixture_staged": bool(removed and added and forge and anvil),
             "gm_connection_closed_before_agent": gm_closed,
             "live_baseline_exact_owned_resources": bool(

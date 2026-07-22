@@ -40,7 +40,7 @@ from .contract import Action, Observation, Position, TargetObject, Use
 from .control import GmControl
 from .curriculum import CurriculumController
 from .goals import GoalOutcome
-from .ipc_body import ResilientIpcBody
+from .ipc_body import ResilientIpcBody, SUPPORTED_SCHEMA_VERSION
 from .live_common import (
     GM_RELOGIN_COOLDOWN_S,
     fresh_suffix,
@@ -398,7 +398,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             )
 
         flags = {
-            "schema_v8_ready": ipc.ready.get("schema_version") == 8,
+            "schema_ready": ipc.ready.get("schema_version") == SUPPORTED_SCHEMA_VERSION,
             "gm_fixture_staged": forge_staged,
             "gm_connection_closed_before_agent": gm_closed_before_agent,
             "live_baseline_has_tool_ore_and_forge": bool(

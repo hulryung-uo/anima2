@@ -44,7 +44,7 @@ from .contract import (
 from .cognition import ThreadedCognition
 from .control import GmControl
 from .goals import GoalOutcome, GoalSource
-from .ipc_body import ResilientIpcBody
+from .ipc_body import ResilientIpcBody, SUPPORTED_SCHEMA_VERSION
 from .live_common import (
     GM_RELOGIN_COOLDOWN_S,
     fresh_suffix,
@@ -571,7 +571,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         ]
 
         flags = {
-            "schema_v8_ready": ipc.ready.get("schema_version") == 8,
+            "schema_ready": ipc.ready.get("schema_version") == SUPPORTED_SCHEMA_VERSION,
             "gm_fixture_staged": bool(
                 starting_gold_deleted and fixture_gold_added and banker is not None
             ),

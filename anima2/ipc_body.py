@@ -11,7 +11,7 @@ Wire protocol (one JSON object per line), defined by `anima-net/src/bin/agent.rs
   → {"cmd":"pump","ms":N}        ← {"ok":true,"applied":N}
   → {"cmd":"quit"}               ← {"ok":true,"bye":true}
 First line emitted by the bridge:
-{"event":"ready","schema_version":8,"player":{...}}.
+{"event":"ready","schema_version":16,"player":{...}}.
 """
 
 from __future__ import annotations
@@ -32,7 +32,17 @@ import fcntl
 
 from .contract import Action, Observation
 
-SUPPORTED_SCHEMA_VERSION = 8
+# The anima-net bridge contract version this brain targets. anima-client
+# advanced 8→16 (additive ClassicUO-protocol features: legacy menus/dialogs/
+# ASCII+unicode prompts, dye/hue pickers, tip windows, server URL confirms,
+# character list/selection/creation, server pathfinding, death transitions,
+# drag acks, full mobile attribute updates, character profiles, authorized
+# logout, smooth boat movement). Every 8→16 change is additive to the
+# observation JSON — the fields this brain reads (player/mobiles/items/skills/
+# shop_buy/shop_sell/popup/pending_target/gumps/corpse/trades/buffs/waypoints)
+# keep their exact schema-8 shapes — plus the enriched `shop_buy` entry
+# (serial/graphic/amount/hue) B8 relies on. Bump in lockstep with the bridge.
+SUPPORTED_SCHEMA_VERSION = 16
 
 
 def default_bridge_path() -> Path:

@@ -17,7 +17,7 @@ from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
 from .skills.craft import DAGGER_GRAPHIC, MIN_INGOTS, SMITH_TOOL_GRAPHICS, CraftDaggers
-from .skills.market import BankGold, SellDaggers
+from .skills.market import BUY_AMOUNT, BankGold, BuyIngots, SellDaggers
 from .skills.smelt import INGOT_GRAPHICS
 
 _BACKPACK_LAYER = 0x15
@@ -610,11 +610,158 @@ _CRAFT_DAGGERS = CapabilityBinding(
     default_deadline_ticks=300,
 )
 
+
+# --- buy_ingots (B8) — the self-provisioning keystone -------------------------
+#
+# The exact mirror of ``sell_daggers`` inverted: gold LEAVES the pack, iron
+# ingots ARRIVE. Replenishing finite crafting metal with earned gold closes the
+# supply loop so craft->sell->bank runs indefinitely without a GM re-gifting
+# ingots.
+
+# Reorder trigger: below one full sale batch's worth of ingots. A five-dagger
+# `craft_daggers` batch needs ``MIN_INGOTS * 5`` == 15 ingots (each dagger costs
+# ``MIN_INGOTS`` == 3 — see `_craft_ready`), so at or above 15 the smith can
+# still craft a whole batch from stock and nothing needs buying; below it the
+# next batch would starve mid-run, which is exactly when a replenishment trip is
+# worthwhile. ``BUY_AMOUNT`` (also 15) refills from empty back over this line.
+_BUY_REORDER_INGOTS = MIN_INGOTS * 5
+# This ServUO shard's iron-ingot unit price (``Scripts/VendorInfo/
+# SBBlacksmith.cs``: ``GenericBuyInfo(typeof(IronIngot), 5, 16, 0x1BF2, 0)``),
+# used ONLY as the readiness affordability estimate. The actual purchase reads
+# the live price from the matching ``ShopBuyEntry`` and never hardcodes it (see
+# `skills/market.py::BlacksmithMarket._iron_offer`). The order is also clamped to
+# the vendor's live stock, so it never costs more than this estimate implies; if
+# the live price is higher than the estimate, a buy simply fails server-side for
+# want of gold and the goal times out — an optimistic estimate never overspends.
+_IRON_UNIT_PRICE = 5
+
+_BUY_TRANSACTION_KEYS = (
+    "buy_leg",
+    "buy_stage",
+    "buy_vendor",
+    "buy_find_wait",
+    "buy_popup_wait",
+    "buy_popup_total",
+    "buy_ask_wait",
+    "buy_confirm_wait",
+    "buy_return_leg",
+)
+
+
+def _buy_can_yield(ctx: SkillContext) -> bool:
+    obs = ctx.obs
+    ui_clear = bool(
+        obs.popup is None and obs.shop_buy is None and obs.shop_sell is None
+    )
+    finished = bool(
+        type(ctx.goal_id) is int
+        and ctx.memory.get("cap_buy_finished_goal_id") == ctx.goal_id
+    )
+    return bool(
+        ctx.memory.get("mkt_phase", "craft") == "craft"
+        and all(ctx.memory.get(key) is None for key in _BUY_TRANSACTION_KEYS)
+        and ctx.memory.get("bank_held") is None
+        and ctx.memory.get("cap_bank_release_pending") is None
+        and obs.pending_target is None
+        and not obs.gumps
+        and (ui_clear or finished)
+    )
+
+
+def _buy_ready(ctx: SkillContext) -> bool:
+    return bool(
+        _valid_spot(ctx.memory.get("vendor_spot"))
+        and _backpack_serial(ctx) is not None
+        and _pack_ingots(ctx) < _BUY_REORDER_INGOTS
+        and _pack_gold(ctx) >= BUY_AMOUNT * _IRON_UNIT_PRICE
+        and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+        and _buy_can_yield(ctx)
+    )
+
+
+def _buy_achieved(ctx: SkillContext) -> bool:
+    goal_id = ctx.goal_id
+    bought = ctx.memory.get("cap_buy_bought_ingots")
+    expected_cost = ctx.memory.get("cap_buy_expected_cost")
+    ingot_delta = ctx.memory.get("cap_buy_ingot_delta")
+    gold_delta = ctx.memory.get("cap_buy_gold_delta")
+    offer = ctx.memory.get("cap_buy_offer")
+    offer_valid = bool(
+        isinstance(offer, tuple)
+        and len(offer) == 3
+        and all(type(value) is int and value > 0 for value in offer)
+    )
+    return bool(
+        type(goal_id) is int
+        and ctx.memory.get("cap_buy_goal_id") == goal_id
+        and ctx.memory.get("cap_buy_sent_goal_id") == goal_id
+        and ctx.memory.get("cap_buy_finished_goal_id") == goal_id
+        and ctx.memory.get("cap_buy_returned_goal_id") == goal_id
+        and type(bought) is int
+        and bought > 0
+        and type(expected_cost) is int
+        and expected_cost > 0
+        and offer_valid
+        # offer == (iron_serial, amount, unit_price): the exact observed vendor
+        # offer must account for the amount actually bought at the quoted price
+        # (`bought` is the batch clamped to the vendor's live stock, so it can be
+        # below BUY_AMOUNT — the proof binds to what was ordered, not a constant).
+        and offer[1] == bought
+        and offer[1] * offer[2] == expected_cost
+        # At least the bought amount of iron arrived in the pack, and exactly
+        # the quoted cost — never a coin more — left it. A short arrival (fewer
+        # ingots than ordered) or a mismatched spend fails these checks.
+        and type(ingot_delta) is int
+        and ingot_delta >= bought
+        and type(gold_delta) is int
+        and gold_delta == expected_cost
+        and ctx.obs.popup is None
+        and ctx.obs.shop_buy is None
+        and ctx.obs.shop_sell is None
+        and _buy_can_yield(ctx)
+    )
+
+
+def _buy_progress(ctx: SkillContext) -> float:
+    if ctx.memory.get("cap_buy_goal_id") != ctx.goal_id:
+        return 0.0
+    bought = ctx.memory.get("cap_buy_bought_ingots")
+    expected_cost = ctx.memory.get("cap_buy_expected_cost")
+    if (
+        type(bought) is not int
+        or bought <= 0
+        or type(expected_cost) is not int
+        or expected_cost <= 0
+    ):
+        return 0.0
+    ingot_delta = ctx.memory.get("cap_buy_ingot_delta", 0)
+    gold_delta = ctx.memory.get("cap_buy_gold_delta", 0)
+    if type(ingot_delta) is not int or type(gold_delta) is not int:
+        return 0.0
+    return max(
+        0.0,
+        min(1.0, min(ingot_delta / bought, gold_delta / expected_cost)),
+    )
+
+
+_BUY_INGOTS = CapabilityBinding(
+    capability_id="buy_ingots",
+    profession="blacksmith",
+    skill_type=BuyIngots,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_buy_ready,
+    achieved=_buy_achieved,
+    progress=_buy_progress,
+    can_yield=_buy_can_yield,
+    default_deadline_ticks=180,
+)
+
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
     {
         (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
         (_BANK_GOLD.profession, _BANK_GOLD.capability_id): _BANK_GOLD,
         (_CRAFT_DAGGERS.profession, _CRAFT_DAGGERS.capability_id): _CRAFT_DAGGERS,
+        (_BUY_INGOTS.profession, _BUY_INGOTS.capability_id): _BUY_INGOTS,
     }
 )
 

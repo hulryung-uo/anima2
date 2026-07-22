@@ -603,3 +603,48 @@ accepted.
 B7 closes repeat banking, but iron and smith-tool supply remain finite. B8
 should add separately verified acquisition/replacement capabilities and their
 recovery policy without broadening model-selected execution authority.
+
+### B8 — verified acquisition: buy iron ingots ✅
+
+`blacksmith/buy_ingots` is the self-provisioning keystone: the exact mirror of
+`sell_daggers` inverted — gold LEAVES the pack, iron ingots ARRIVE — so the
+craft→sell→bank loop replenishes its own finite crafting metal with earned gold
+instead of stalling for a GM to re-gift ingots. It is a fourth immutable
+`CapabilityBinding` (registry order sell/bank/craft/buy); cognition may only
+select it, never choose amounts, serials, or items.
+
+Readiness fires only when replenishment is both needed and affordable: a valid
+vendor route, pack iron below one full sale batch's worth (`MIN_INGOTS*5 == 15`,
+the reorder point — below it the next craft would starve mid-run), and pack gold
+sufficient for the fixed `BUY_AMOUNT == 15` batch at the shard's iron unit price.
+The affordability pre-check uses a constant price estimate (the offer window is
+not open yet); the purchase itself reads the live price from the matching
+`ShopBuyEntry` and never hardcodes it. Completion is goal-scoped like the sell
+side: the exact observed vendor offer `(iron_serial, amount, unit_price)`, the
+amount ordered clamped to live stock, exactly `amount*unit_price` gold leaving
+the pack (never a coin more), at least that many iron ingots arriving, the UI
+cleared, and a return to the safe stand — all for the same `goal_id`. Only iron
+(graphic `0x1BF2`) is ever bought — never the vendor's shields, armour, weapons,
+or tongs.
+
+This milestone required enriching the body contract's BUY window. The SELL
+window (`ShopSellItem`) already shipped per-item `serial/graphic/amount/price`,
+but the BUY window (`ShopBuyEntry`) carried only `(price, name)` — so the brain
+could not identify an offer or address a `BuyItems` request to a concrete serial.
+anima-core now pairs each 0x74 price with its for-sale container item and ships
+`serial/graphic/amount/hue` inline (the 0x3C `VendorBuyContent` sends items
+reversed but encodes each item's correct buy-list index+1 in its `x`, per ServUO
+`Packets.cs`; anima-core sorts by that `x` to recover the order), making the BUY
+window symmetric with SELL — the brain matches iron by graphic and buys by
+serial. The contract advanced 8→16 over the same period (additive ClassicUO
+protocol coverage); the brain moved to schema 16 in lockstep.
+
+Offline: 1071 tests pass, Ruff clean. The isolated live gate staged a smith with
+0 iron and exactly 200 gold (no daggers, no banker/craft spot, so only
+`buy_ingots` is ready), a live `Blacksmith` vendor, and a schema-invalid-then-
+`buy_ingots` cognition client. Production `ThreadedCognition(CapabilityCognition)`
+created one sealed goal whose exact actions were `PopupRequest →
+PopupSelect(Buy) → BuyItems(iron only)`, ending at `iron=15, gold=125` — exactly
+75 gold (15×5, the live-quoted price) spent, 15 iron arrived, one SUCCESS frame.
+All 16 flags passed twice on fresh accounts. iron and smith-tool *replacement*
+(a broken hammer/tongs) is the natural B8 follow-up on the same boundary.

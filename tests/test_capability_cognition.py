@@ -141,8 +141,11 @@ _IDLE_REPLY = '{"schema":1,"decision":"idle"}'
 
 
 def test_ready_capability_ids_returns_only_observation_ready_profession_ids() -> None:
-    assert ready_capability_ids("blacksmith", _ctx()) == ("bank_gold",)
+    # Default `_ctx()` has 100 pack gold and 0 ingots at the vendor route, so
+    # both banking the gold and buying a replenishment batch of iron are ready.
+    assert ready_capability_ids("blacksmith", _ctx()) == ("bank_gold", "buy_ingots")
     assert ready_capability_ids("miner", _ctx()) == ()
+    # 1 gold banks but can't afford the fixed buy batch (BUY_AMOUNT * 5 == 75).
     assert ready_capability_ids("blacksmith", _ctx(pack_gold=1)) == ("bank_gold",)
     assert ready_capability_ids(
         "blacksmith", _ctx(pack_gold=40, bank_gold=100)
@@ -150,18 +153,25 @@ def test_ready_capability_ids_returns_only_observation_ready_profession_ids() ->
     assert ready_capability_ids(
         "blacksmith", _ctx(pack_gold=0, bank_gold=100)
     ) == ()
-    assert ready_capability_ids("blacksmith", _ctx(banker_spot=None)) == ()
+    # No banker route means no bank, but the vendor route + 100 gold + 0 ingots
+    # still make a buy ready — replenishment doesn't depend on the banker.
+    assert ready_capability_ids("blacksmith", _ctx(banker_spot=None)) == ("buy_ingots",)
     assert ready_capability_ids("blacksmith", _ctx(), GoalSource.SKILL) == ()
 
 
 def test_ready_capability_ids_exposes_real_registry_ordered_choice() -> None:
+    # Daggers to sell, gold to bank, and 0 ingots to replenish — all three
+    # vendor/banker operations are ready, in registry order.
     assert ready_capability_ids("blacksmith", _ctx(daggers=5)) == (
         "sell_daggers",
         "bank_gold",
+        "buy_ingots",
     )
+    # With no gold, only the sale is ready (nothing to bank, can't afford a buy).
     assert ready_capability_ids(
         "blacksmith", _ctx(pack_gold=0, daggers=5)
     ) == ("sell_daggers",)
+    # Without a vendor route neither the sale nor the buy is ready.
     assert ready_capability_ids(
         "blacksmith", _ctx(daggers=5, vendor_spot=None)
     ) == ("bank_gold",)
@@ -205,9 +215,12 @@ def test_registry_order_prefers_sale_then_bank_then_craft() -> None:
         smith_tool=True,
         craft_spot=(100, 100),
     )
+    # 3 ingots is below the reorder point, so a buy is ready too — and it sorts
+    # last, after the bank and craft ids, per registry order.
     assert ready_capability_ids("blacksmith", ctx) == (
         "bank_gold",
         "craft_daggers",
+        "buy_ingots",
     )
 
 
@@ -346,9 +359,11 @@ def test_oversize_response_is_rejected_even_if_its_json_suffix_is_valid() -> Non
     [
         _ctx(pack_gold=0),
         _ctx(pack_gold=0, bank_gold=100),
-        _ctx(banker_spot=None),
+        # No routes at all: no banker (no bank) and no vendor (no sell/buy),
+        # even though the pack still holds affordable gold and low ingots.
+        _ctx(banker_spot=None, vendor_spot=None),
     ],
-    ids=["no-pack-gold", "existing-bank-only", "no-banker-route"],
+    ids=["no-pack-gold", "existing-bank-only", "no-routes"],
 )
 def test_no_ready_capability_skips_the_client(ctx: SkillContext) -> None:
     client = StubLLMClient(_CAPABILITY_REPLY)
@@ -366,7 +381,9 @@ def test_ready_predicate_exception_fails_closed() -> None:
 
     object.__setattr__(binding, "ready", _broken)
     try:
-        assert ready_capability_ids("blacksmith", _ctx()) == ()
+        # The broken capability is excluded (fails closed); the sibling
+        # capabilities that are genuinely ready in this context are unaffected.
+        assert "bank_gold" not in ready_capability_ids("blacksmith", _ctx())
     finally:
         object.__setattr__(binding, "ready", original)
 

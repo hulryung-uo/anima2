@@ -38,7 +38,7 @@ from .contract import (
 )
 from .control import GmControl
 from .geometry import chebyshev
-from .ipc_body import IpcBody, ResilientIpcBody
+from .ipc_body import IpcBody, ResilientIpcBody, SUPPORTED_SCHEMA_VERSION
 from .live_common import (
     GM_RELOGIN_COOLDOWN_S,
     fresh_suffix,
@@ -386,7 +386,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             )
 
         flags = {
-            "schema_v8_ready": ipc.ready.get("schema_version") == 8,
+            "schema_ready": ipc.ready.get("schema_version") == SUPPORTED_SCHEMA_VERSION,
             "healer_staged_three_tiles_away": (
                 healer_serial is not None
                 and chebyshev(death_pos, Position(healer_x, healer_y, staged_z)) == HEALER_OFFSET

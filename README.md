@@ -59,10 +59,20 @@ freezes the exact pack piles and the settled bank baseline, owns the matching
 pickup/drop actions, and succeeds only after equal pack and bank deltas plus a
 safe return. The production village now repeats sale → bank → craft instead of
 stopping after the first bank balance, and Chronicle records each goal once.
+B8 adds `blacksmith/buy_ingots` — the self-provisioning keystone: the sell side
+inverted (gold leaves, iron ingots arrive), so the loop replenishes its own
+finite crafting metal with earned gold instead of stalling for a GM to re-gift
+ingots. It buys only iron (never the vendor's other stock), spends exactly the
+live-quoted price, and is ready only when iron is below one sale batch and the
+gold is there to afford it. This required making the body contract's BUY window
+carry per-item `serial/graphic/amount` (symmetric with the SELL window, so the
+brain matches an offer by graphic and buys by serial); the contract advanced to
+schema 16 (additive ClassicUO coverage) and the brain moved in lockstep.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 1035 tests green, ruff clean. The Python
+threading) — live-verified.** **Autonomy B8 (verified iron acquisition) —
+live-verified.** 1071 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -107,7 +117,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 1035 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 1071 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -146,6 +156,7 @@ python -m anima2.live_waypoint_recovery # A4: discover healer E5, resurrect, rec
 python -m anima2.live_goal_stack # B1: interrupt, deadline, cognition isolation, resume same Goal
 python -m anima2.live_bank_goal  # B3: invalid-goal differential + exact 100-gold bank transaction
 python -m anima2.live_repeat_bank_goal # B7: second deposit over an existing bank balance
+python -m anima2.live_buy_goal    # B8: buy iron from a vendor — exact quoted spend, iron arrives, only iron
 ```
 
 ## Family

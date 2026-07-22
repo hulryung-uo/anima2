@@ -22,7 +22,7 @@ def main():
     emit(
         {
             "event": "ready",
-            "schema_version": 8,
+            "schema_version": 16,
             "player": {
                 "serial": 1,
                 "name": "Fake",

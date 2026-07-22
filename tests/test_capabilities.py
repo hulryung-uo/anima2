@@ -28,7 +28,7 @@ from anima2.planner import Planner
 from anima2.profession import PROFESSIONS
 from anima2.skills import SpeakPending
 from anima2.skills.base import Goal, Skill, SkillContext, SkillResult, Status
-from anima2.skills.market import BankGold, SellDaggers
+from anima2.skills.market import BankGold, BuyIngots, SellDaggers
 from anima2.skills.craft import DAGGER_GRAPHIC, CraftDaggers
 from anima2.skills.smelt import INGOT_GRAPHICS
 
@@ -185,6 +185,17 @@ def _contains_craft_daggers(skill: Skill) -> bool:
     return False
 
 
+def _contains_buy_ingots(skill: Skill) -> bool:
+    current: object = skill
+    seen: set[int] = set()
+    while isinstance(current, Skill) and id(current) not in seen:
+        if isinstance(current, BuyIngots):
+            return True
+        seen.add(id(current))
+        current = getattr(current, "inner", None)
+    return False
+
+
 def test_capability_registry_is_unique_and_deeply_immutable():
     bindings = _registry_bindings()
     keys = [(binding.profession, binding.capability_id) for binding in bindings]
@@ -193,6 +204,7 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("blacksmith", "sell_daggers"),
         ("blacksmith", "bank_gold"),
         ("blacksmith", "craft_daggers"),
+        ("blacksmith", "buy_ingots"),
     ]
     assert len(keys) == len(set(keys))
     assert not isinstance(CAPABILITIES, list)
@@ -334,6 +346,7 @@ def test_capability_planner_opt_out_preserves_the_legacy_skill_order():
         assert not any(_contains_bank_gold(skill) for skill in opted_out.skills)
         assert not any(_contains_sell_daggers(skill) for skill in opted_out.skills)
         assert not any(_contains_craft_daggers(skill) for skill in opted_out.skills)
+        assert not any(_contains_buy_ingots(skill) for skill in opted_out.skills)
 
 
 def test_registry_and_profession_planners_expose_the_same_closed_capability_set():
@@ -357,15 +370,19 @@ def test_registry_and_profession_planners_expose_the_same_closed_capability_set(
         sell_skills = [skill for skill in planner.skills if _contains_sell_daggers(skill)]
         bank_skills = [skill for skill in planner.skills if _contains_bank_gold(skill)]
         craft_skills = [skill for skill in planner.skills if _contains_craft_daggers(skill)]
+        buy_skills = [skill for skill in planner.skills if _contains_buy_ingots(skill)]
         planner_keys.extend((profession.key, "sell_daggers") for _ in sell_skills)
         planner_keys.extend((profession.key, "bank_gold") for _ in bank_skills)
         planner_keys.extend((profession.key, "craft_daggers") for _ in craft_skills)
+        planner_keys.extend((profession.key, "buy_ingots") for _ in buy_skills)
         assert len(sell_skills) == 1
         assert len(bank_skills) == 1
         assert len(craft_skills) == 1
+        assert len(buy_skills) == 1
         assert type(sell_skills[0].inner) is SellDaggers
         assert type(bank_skills[0].inner) is resolved.binding.skill_type
         assert type(craft_skills[0].inner) is CraftDaggers
+        assert type(buy_skills[0].inner) is BuyIngots
         names = {skill.name for skill in planner.skills}
         assert "capability_complete" in names
         assert "capability_wait" in names
@@ -374,6 +391,34 @@ def test_registry_and_profession_planners_expose_the_same_closed_capability_set(
         (binding.profession, binding.capability_id) for binding in _registry_bindings()
     ]
     assert planner_keys == registry_keys
+
+
+def test_blacksmith_capability_manifest_includes_buy_ingots_in_registry_order():
+    # Adding the fourth blacksmith binding must keep the shipped skill manifest
+    # valid: 8 fixed scaffold skills + one bound skill per installed binding,
+    # with `buy_ingots` in registry order. `planner(capability_goals=True)`
+    # runs `issue_capability_planner_lease`, which rejects any manifest that
+    # doesn't match `_valid_capability_skill_manifest` exactly — so a successful
+    # build with a non-None lease is itself the manifest-validity proof.
+    planner = PROFESSIONS["blacksmith"].planner(capability_goals=True)
+
+    assert len(planner.skills) == 8 + 4
+    assert [skill.name for skill in planner.skills] == [
+        "survive",
+        "recover_death",
+        "speak_pending",
+        "goto",
+        "capability_complete",
+        "sell_daggers",
+        "bank_gold",
+        "craft_daggers",
+        "buy_ingots",
+        "capability_wait",
+        "greet",
+        "wander",
+    ]
+    assert planner.capability_lease is not None
+    assert "buy_ingots" in planner.capability_ids
 
 
 def test_valid_blacksmith_bank_goal_selects_the_bound_bank_skill():
@@ -833,6 +878,190 @@ def test_sell_deadline_and_preemption_wait_for_vendor_transaction_yield() -> Non
     assert policy.deadline_can_expire(resolved.goal, ctx)
     assert policy.can_preempt(resolved.goal, ctx)
     assert not CAPABILITIES[("blacksmith", "sell_daggers")].achieved(ctx)
+
+
+# --- buy_ingots (B8): the sell side inverted — gold leaves, iron ingots arrive ----
+
+
+def _completed_buy_ctx(
+    *,
+    goal_id: int = 17,
+    amount: int = 15,
+    unit_price: int = 5,
+    iron_serial: int = 0xDD01,
+) -> SkillContext:
+    cost = amount * unit_price
+    ctx = _ctx(gold=200, ingots=amount, goal_id=goal_id)
+    ctx.memory.update(
+        {
+            "cap_buy_goal_id": goal_id,
+            "cap_buy_sent_goal_id": goal_id,
+            "cap_buy_finished_goal_id": goal_id,
+            "cap_buy_returned_goal_id": goal_id,
+            "cap_buy_bought_ingots": amount,
+            "cap_buy_expected_cost": cost,
+            "cap_buy_offer": (iron_serial, amount, unit_price),
+            "cap_buy_ingot_delta": amount,
+            "cap_buy_gold_delta": cost,
+            "mkt_phase": "craft",
+        }
+    )
+    return ctx
+
+
+def test_valid_blacksmith_buy_goal_selects_only_the_bound_buy_skill() -> None:
+    goal = capability_goal("blacksmith", "buy_ingots")
+    ready = _ctx(goal, gold=100, ingots=0)
+    resolved = resolve_capability(goal, "blacksmith", GoalSource.COGNITION, ready)
+    assert resolved is not None
+    planner = PROFESSIONS["blacksmith"].planner(capability_goals=True)
+
+    selected = planner.select(
+        _ctx(
+            resolved.goal,
+            gold=100,
+            ingots=0,
+            goal_id=17,
+            goal_policy=CapabilityPolicy("blacksmith"),
+        )
+    )
+
+    assert _contains_buy_ingots(selected)
+    assert not _contains_sell_daggers(selected)
+    assert not _contains_bank_gold(selected)
+    assert not _contains_craft_daggers(selected)
+
+
+def test_buy_goal_is_ready_only_below_reorder_and_when_affordable() -> None:
+    goal = capability_goal("blacksmith", "buy_ingots")
+
+    # Below the reorder point (15) and able to afford the fixed batch
+    # (BUY_AMOUNT * 5 == 75 gold) — ready.
+    assert (
+        resolve_capability(goal, "blacksmith", GoalSource.COGNITION, _ctx(goal, gold=100, ingots=0))
+        is not None
+    )
+    assert (
+        resolve_capability(goal, "blacksmith", GoalSource.COGNITION, _ctx(goal, gold=100, ingots=14))
+        is not None
+    )
+    # At or above the reorder point — a full craft batch still fits, nothing to buy.
+    assert (
+        resolve_capability(goal, "blacksmith", GoalSource.COGNITION, _ctx(goal, gold=100, ingots=15))
+        is None
+    )
+    # Below reorder but can't afford the fixed batch.
+    assert (
+        resolve_capability(goal, "blacksmith", GoalSource.COGNITION, _ctx(goal, gold=74, ingots=0))
+        is None
+    )
+
+
+def test_buy_goal_requires_a_vendor_route() -> None:
+    goal = capability_goal("blacksmith", "buy_ingots")
+    ctx = _ctx(goal, gold=100, ingots=0)
+    ctx.memory.pop("vendor_spot")
+
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, ctx) is None
+
+
+def test_preexisting_low_ingots_alone_neither_admits_nor_achieves_a_buy_goal() -> None:
+    goal = capability_goal("blacksmith", "buy_ingots")
+    # Low ingots but no gold: replenishment is needed yet unaffordable.
+    ctx = _ctx(goal, gold=0, ingots=0, goal_id=17)
+    binding = CAPABILITIES[("blacksmith", "buy_ingots")]
+
+    assert resolve_capability(goal, "blacksmith", GoalSource.COGNITION, ctx) is None
+    assert not binding.achieved(ctx)
+    assert binding.progress(ctx) == 0.0
+
+
+def test_buy_completion_evidence_is_exactly_goal_scoped() -> None:
+    binding = CAPABILITIES[("blacksmith", "buy_ingots")]
+    ctx = _completed_buy_ctx()
+
+    assert binding.achieved(ctx)
+    assert binding.progress(ctx) == 1.0
+    assert binding.can_yield(ctx)
+
+    ctx.goal_id = 18
+    assert not binding.achieved(ctx)
+    assert binding.progress(ctx) == 0.0
+    # Goal 18 has emitted nothing; stale goal-17 evidence cannot achieve it, but
+    # this clean pre-start state is still safe to cancel.
+    assert binding.can_yield(ctx)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cap_buy_sent_goal_id", None),
+        ("cap_buy_finished_goal_id", None),
+        ("cap_buy_returned_goal_id", None),
+        # Short arrival: fewer ingots than the batch bought.
+        ("cap_buy_ingot_delta", 14),
+        # No arrival at all (gold spent on nothing / a non-iron item).
+        ("cap_buy_ingot_delta", 0),
+        # Underspend and overspend must both fail the exact-cost check.
+        ("cap_buy_gold_delta", 74),
+        ("cap_buy_gold_delta", 76),
+        # No gold left the pack at all.
+        ("cap_buy_gold_delta", 0),
+        # The observed offer must account for the whole batch at the quote.
+        ("cap_buy_offer", (0xDD01, 10, 5)),
+        ("cap_buy_offer", (0xDD01, 15, 4)),
+        ("cap_buy_bought_ingots", 10),
+        ("cap_buy_expected_cost", 74),
+        # A live vendor UI or an in-flight transaction is never a yield point.
+        ("mkt_phase", "buy_return"),
+        ("buy_stage", "window"),
+    ],
+)
+def test_buy_completion_requires_exact_offer_spend_and_arrival(
+    field: str, value: object
+) -> None:
+    binding = CAPABILITIES[("blacksmith", "buy_ingots")]
+    ctx = _completed_buy_ctx()
+    ctx.memory[field] = value
+
+    assert not binding.achieved(ctx)
+
+
+def test_buy_completion_rejects_a_live_buy_window_even_with_full_evidence() -> None:
+    binding = CAPABILITIES[("blacksmith", "buy_ingots")]
+    ctx = _completed_buy_ctx()
+    ctx.obs.shop_buy = object()  # type: ignore[assignment]
+
+    assert not binding.achieved(ctx)
+
+
+def test_buy_deadline_and_preemption_wait_for_vendor_transaction_yield() -> None:
+    proposal = capability_goal("blacksmith", "buy_ingots")
+    policy = CapabilityPolicy("blacksmith")
+    resolved = resolve_capability(
+        proposal,
+        "blacksmith",
+        GoalSource.COGNITION,
+        _ctx(proposal, gold=100, ingots=0),
+    )
+    assert resolved is not None
+    ctx = _ctx(
+        resolved.goal,
+        gold=100,
+        ingots=0,
+        goal_id=17,
+        goal_policy=policy,
+    )
+    ctx.memory.update({"mkt_phase": "buy", "buy_stage": "window"})
+
+    assert not policy.deadline_can_expire(resolved.goal, ctx)
+    assert not policy.can_preempt(resolved.goal, ctx)
+
+    ctx.memory["mkt_phase"] = "craft"
+    ctx.memory.pop("buy_stage")
+
+    assert policy.deadline_can_expire(resolved.goal, ctx)
+    assert policy.can_preempt(resolved.goal, ctx)
 
 
 @pytest.mark.parametrize(

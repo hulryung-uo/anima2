@@ -30,7 +30,7 @@ from .agent import Agent
 from .contract import Action, Observation, Position, WalkTo
 from .control import GmControl
 from .goals import GoalFrame, GoalOutcome, GoalSource
-from .ipc_body import IpcBody, ResilientIpcBody
+from .ipc_body import IpcBody, ResilientIpcBody, SUPPORTED_SCHEMA_VERSION
 from .live_common import (
     GM_RELOGIN_COOLDOWN_S,
     fresh_suffix,
@@ -365,7 +365,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             print(f"[TRACE] memory={agent.memory}")
 
         flags = {
-            "schema_v8_ready": ipc.ready.get("schema_version") == 8,
+            "schema_ready": ipc.ready.get("schema_version") == SUPPORTED_SCHEMA_VERSION,
             "gm_connection_closed_before_agent": gm_closed_before_agent,
             "base_exact_walkto_issued": base_walk_issued,
             "base_real_movement_and_progress_observed": (
