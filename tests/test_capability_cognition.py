@@ -141,31 +141,41 @@ _IDLE_REPLY = '{"schema":1,"decision":"idle"}'
 
 
 def test_ready_capability_ids_returns_only_observation_ready_profession_ids() -> None:
-    # Default `_ctx()` has 100 pack gold and 0 ingots at the vendor route, so
-    # both banking the gold and buying a replenishment batch of iron are ready.
-    assert ready_capability_ids("blacksmith", _ctx()) == ("bank_gold", "buy_ingots")
+    # Default `_ctx()` has 100 pack gold, 0 ingots, and NO smith tool at the
+    # vendor route, so banking the gold, buying an iron batch, and buying a
+    # replacement tool are all ready.
+    assert ready_capability_ids("blacksmith", _ctx()) == (
+        "bank_gold",
+        "buy_ingots",
+        "buy_smith_tool",
+    )
     assert ready_capability_ids("miner", _ctx()) == ()
-    # 1 gold banks but can't afford the fixed buy batch (BUY_AMOUNT * 5 == 75).
+    # 1 gold banks but can't afford the iron batch (75) or a tool (13).
     assert ready_capability_ids("blacksmith", _ctx(pack_gold=1)) == ("bank_gold",)
+    # 40 gold can't afford the 75-gold iron batch, but can afford a 13-gold tool.
     assert ready_capability_ids(
         "blacksmith", _ctx(pack_gold=40, bank_gold=100)
-    ) == ("bank_gold",)
+    ) == ("bank_gold", "buy_smith_tool")
     assert ready_capability_ids(
         "blacksmith", _ctx(pack_gold=0, bank_gold=100)
     ) == ()
-    # No banker route means no bank, but the vendor route + 100 gold + 0 ingots
-    # still make a buy ready — replenishment doesn't depend on the banker.
-    assert ready_capability_ids("blacksmith", _ctx(banker_spot=None)) == ("buy_ingots",)
+    # No banker route means no bank, but the vendor route + 100 gold + 0 ingots +
+    # no tool still make both buys ready — acquisition doesn't need the banker.
+    assert ready_capability_ids("blacksmith", _ctx(banker_spot=None)) == (
+        "buy_ingots",
+        "buy_smith_tool",
+    )
     assert ready_capability_ids("blacksmith", _ctx(), GoalSource.SKILL) == ()
 
 
 def test_ready_capability_ids_exposes_real_registry_ordered_choice() -> None:
-    # Daggers to sell, gold to bank, and 0 ingots to replenish — all three
-    # vendor/banker operations are ready, in registry order.
+    # Daggers to sell, gold to bank, 0 ingots to replenish, and no smith tool —
+    # every vendor/banker operation is ready, in registry order.
     assert ready_capability_ids("blacksmith", _ctx(daggers=5)) == (
         "sell_daggers",
         "bank_gold",
         "buy_ingots",
+        "buy_smith_tool",
     )
     # With no gold, only the sale is ready (nothing to bank, can't afford a buy).
     assert ready_capability_ids(

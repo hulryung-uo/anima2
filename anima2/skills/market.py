@@ -118,7 +118,7 @@ from __future__ import annotations
 from ..contract import BuyItems, Drop, PickUp, PopupRequest, PopupSelect, Position, SellItems, Walk
 from ..geometry import chebyshev, direction_toward
 from .base import SkillContext, SkillResult, Status
-from .craft import DAGGER_GRAPHIC, MIN_INGOTS, Blacksmith
+from .craft import DAGGER_GRAPHIC, MIN_INGOTS, SMITH_TOOL_GRAPHICS, Blacksmith
 from .smelt import INGOT_GRAPHICS
 
 # ServUO `Scripts/Items/Consumables/Gold.cs`: `base(0xEED)` — the one graphic
@@ -223,6 +223,22 @@ BUY_REACH = 2
 # rise before giving up on this trip anyway — wedge-resistant, mirroring
 # `SELL_CONFIRM_TIMEOUT`: a rejected/short buy must not freeze the MAKE loop.
 BUY_CONFIRM_TIMEOUT = 10
+
+# The tool-replacement side of B8 — the near-exact mirror of the iron buy for a
+# NON-stacking tool bought one at a time. When the smith's hammer/tongs wears out
+# and breaks (a finite, GM-gifted supply today), crafting silently stalls; this
+# buys a fresh tool with earned gold, closing the last finite-supply dependency
+# in the craft loop. The one tongs art the vendor stocks for sale (ServUO
+# `Scripts/VendorInfo/SBBlacksmith.cs`: `GenericBuyInfo(typeof(Tongs), 13, 14,
+# 0x0FBB, 0)`) — a valid smithing tool (`craft.SMITH_TOOL_GRAPHICS` = {0x13E3,
+# 0x0FBB, 0x0FBC}, which `_owned_smith_tool` matches), resolved off the enriched
+# `ShopBuyEntry` by THIS graphic exactly like iron by 0x1BF2.
+SMITH_TONGS_GRAPHIC = 0x0FBB
+# One tool at a time — a tool never stacks, so a replenishment is a single item.
+TOOL_BUY_AMOUNT = 1
+# How many ticks to wait, once `BuyItems` has been sent, for a smith tool to
+# arrive in the pack before giving up — mirrors `BUY_CONFIRM_TIMEOUT`.
+TOOL_BUY_CONFIRM_TIMEOUT = 10
 
 
 class BlacksmithMarket(Blacksmith):
@@ -725,26 +741,26 @@ class BlacksmithMarket(Blacksmith):
         return SkillResult(Status.RUNNING, None, reward)
 
     @staticmethod
-    def _iron_offer(buy):
-        """The vendor's iron-ingot BUY offer — the single `ShopBuyEntry` whose
-        `graphic` is `IRON_INGOT_GRAPHIC`, or `None`.
+    def _offer_by_graphic(buy, graphic: int):
+        """The vendor's BUY offer for one exact item art — the single
+        `ShopBuyEntry` whose `graphic` is `graphic`, or `None`.
 
-        The BUY window is now symmetric with the SELL window: every entry carries
-        the concrete for-sale item's serial/graphic/amount/price inline (anima-
-        core pairs each wire price to its container item and ships the identity
-        here — see `contract.py::ShopBuyEntry`), so iron is matched by graphic and
+        The BUY window is symmetric with the SELL window: every entry carries the
+        concrete for-sale item's serial/graphic/amount/price inline (anima-core
+        pairs each wire price to its container item and ships the identity here —
+        see `contract.py::ShopBuyEntry`), so an offer is matched by graphic and
         bought by the entry's own serial, never by a fragile `obs.items` index.
-        Iron ingots are the ONLY `IRON_INGOT_GRAPHIC` offer the vendor stocks (its
-        armour/weapons/tongs all differ). Fails closed unless exactly one such
-        entry exists with a positive serial, price, and available amount, so a
-        malformed/half-filled window abandons the trip rather than mis-buying.
+        The vendor stocks exactly one entry per art (iron 0x1BF2, tongs 0x0FBB,
+        etc.), so this fails closed unless exactly one matching entry exists with
+        a positive serial, price, and available amount — a malformed/half-filled
+        window abandons the trip rather than mis-buying.
         """
         if buy is None:
             return None
-        iron = [entry for entry in buy.entries if entry.graphic == IRON_INGOT_GRAPHIC]
-        if len(iron) != 1:
+        matches = [entry for entry in buy.entries if entry.graphic == graphic]
+        if len(matches) != 1:
             return None
-        entry = iron[0]
+        entry = matches[0]
         if (
             type(entry.serial) is not int
             or entry.serial <= 0
@@ -755,6 +771,18 @@ class BlacksmithMarket(Blacksmith):
         ):
             return None
         return entry
+
+    @staticmethod
+    def _iron_offer(buy):
+        """The vendor's iron-ingot BUY offer (graphic `IRON_INGOT_GRAPHIC`), the
+        ONLY 0x1BF2 offer it stocks (its armour/weapons/tongs all differ)."""
+        return BlacksmithMarket._offer_by_graphic(buy, IRON_INGOT_GRAPHIC)
+
+    @staticmethod
+    def _tool_offer(buy):
+        """The vendor's tongs BUY offer (graphic `SMITH_TONGS_GRAPHIC`) — a valid
+        smithing tool the `buy_smith_tool` capability replaces a broken one with."""
+        return BlacksmithMarket._offer_by_graphic(buy, SMITH_TONGS_GRAPHIC)
 
     def _buy_offer_for(self, buy, action: BuyItems) -> tuple[int, int, int] | None:
         """Reconstruct the exact `(serial, amount, unit_price)` a `BuyItems`
@@ -776,6 +804,120 @@ class BlacksmithMarket(Blacksmith):
         ):
             return None
         return (serial, amount, entry.price)
+
+    def _tool_offer_for(self, buy, action: BuyItems) -> tuple[int, int, int] | None:
+        """The tool-buy analogue of `_buy_offer_for`: reconstruct `(serial,
+        amount, unit_price)` from the still-open window's tongs entry. `None`
+        unless the action names exactly that tongs serial for `min(TOOL_BUY_AMOUNT,
+        entry.amount)` (one tool) at the entry's own positive price.
+        """
+        entry = self._tool_offer(buy)
+        if entry is None or len(action.items) != 1:
+            return None
+        serial, amount = action.items[0]
+        if (
+            serial != entry.serial
+            or type(amount) is not int
+            or amount != min(TOOL_BUY_AMOUNT, entry.amount)
+        ):
+            return None
+        return (serial, amount, entry.price)
+
+    # --- buy_smith_tool (B8) — replace a broken tool, one non-stacking tool at a time -
+
+    def _toolbuy_step(self, ctx: SkillContext, route: list[tuple[int, int]]) -> SkillResult | None:
+        """One tool-buy tick, or `None` once the buy is confirmed (or given up on).
+
+        The exact mirror of `_buy_step` for a NON-stacking tool: same walk →
+        `find_vendor` → `popup`(Buy) → `window` → `confirm` state machine (its own
+        `toolbuy_*` memory namespace), but the `window` stage resolves the tongs
+        offer by `SMITH_TONGS_GRAPHIC`, orders exactly `TOOL_BUY_AMOUNT` (one),
+        and `confirm` waits for the pack's smith-tool COUNT to rise — a tool
+        arrives as a distinct item, not a stack, so arrival is a count delta, not
+        an amount sum. Reward pays only for a smith tool **confirmed gained**.
+        """
+        obs = ctx.obs
+        tools_now = self._pack_tools(ctx)
+        start = ctx.memory.get("toolbuy_tools_start")
+        if start is None:
+            start = ctx.memory["toolbuy_tools_start"] = tools_now
+            ctx.memory["toolbuy_gold_start"] = self._pack_gold(ctx)
+        paid = ctx.memory.get("toolbuy_paid", 0.0)
+        confirmed_gain = max(0, tools_now - start)
+        reward = confirmed_gain - paid
+        if reward > 0:
+            ctx.memory["toolbuy_paid"] = paid + reward
+        else:
+            reward = 0.0
+
+        step = self._walk_route(ctx, route, "toolbuy", BUY_REACH, reward)
+        if step is None:
+            return None  # a leg wedged — abandon the whole trip, walk home
+        if step is not self._ARRIVED:
+            return step  # still walking the route
+
+        stage = ctx.memory.get("toolbuy_stage", "find_vendor")
+
+        if stage == "find_vendor":
+            vendor_serial = self._find_market_mobile(ctx, route[-1], "toolbuy_find_wait")
+            if vendor_serial is None:
+                if ctx.memory.get("toolbuy_find_wait", 0) >= FIND_MOBILE_TIMEOUT:
+                    self._stash_reward(ctx, reward)
+                    return None  # no vendor ever showed up near the route's end
+                return SkillResult(Status.RUNNING, None, reward)
+            ctx.memory["toolbuy_vendor"] = vendor_serial
+            ctx.memory.pop("toolbuy_find_wait", None)
+            stage = ctx.memory["toolbuy_stage"] = "popup"
+
+        vendor_serial = ctx.memory.get("toolbuy_vendor")
+
+        if stage == "popup":
+            total = ctx.memory.get("toolbuy_popup_total", 0) + 1
+            ctx.memory["toolbuy_popup_total"] = total
+            if total > POPUP_TIMEOUT:
+                self._stash_reward(ctx, reward)
+                return None  # the menu never arrived at all — give up this trip
+            action = self._popup_click(ctx, vendor_serial, BUY_CLILOC, "toolbuy_popup_wait")
+            if action is _NO_ENTRY:
+                self._stash_reward(ctx, reward)
+                return None  # this vendor has no Buy entry (not a seller)
+            if isinstance(action, PopupSelect):
+                ctx.memory["toolbuy_stage"] = "window"
+            return SkillResult(Status.RUNNING, action, reward)
+
+        if stage == "window":
+            buy = obs.shop_buy
+            if buy is None:
+                wait = ctx.memory.get("toolbuy_ask_wait", 0) + 1
+                ctx.memory["toolbuy_ask_wait"] = wait
+                if wait >= ASK_RETRY:
+                    self._stash_reward(ctx, reward)
+                    return None  # the window never arrived — give up this trip
+                return SkillResult(Status.RUNNING, None, reward)
+            entry = self._tool_offer(buy)
+            if entry is None:
+                # No single resolvable tongs offer — bail rather than mis-buy.
+                self._stash_reward(ctx, reward)
+                return None
+            amount = min(TOOL_BUY_AMOUNT, entry.amount)
+            ctx.memory["toolbuy_stage"] = "confirm"
+            return SkillResult(
+                Status.RUNNING,
+                BuyItems(vendor=buy.vendor, items=[(entry.serial, amount)]),
+                reward,
+            )
+
+        # stage == "confirm" — already sent BuyItems; wait for the pack's smith-
+        # tool COUNT to rise (the tool landed), or give up after a bounded wait.
+        if self._pack_tools(ctx) > ctx.memory["toolbuy_tools_start"]:
+            self._stash_reward(ctx, reward)
+            return None
+        wait = ctx.memory.get("toolbuy_confirm_wait", 0) + 1
+        ctx.memory["toolbuy_confirm_wait"] = wait
+        if wait >= TOOL_BUY_CONFIRM_TIMEOUT:
+            self._stash_reward(ctx, reward)
+            return None
+        return SkillResult(Status.RUNNING, None, reward)
 
     # --- context-menu machinery (shared by sell/bank) -----------------------------
 
@@ -969,6 +1111,22 @@ class BlacksmithMarket(Blacksmith):
         if bp is None:
             return 0
         return sum(i.amount for i in ctx.obs.items if i.graphic in INGOT_GRAPHICS and i.container == bp.serial)
+
+    def _pack_tools(self, ctx: SkillContext) -> int:
+        """COUNT of smith tools in the pack (each tool is a distinct, non-stacking
+        item, so this counts items, not amounts). The confirmed-arrival signal
+        `_toolbuy_step` rewards on and the `buy_smith_tool` capability verifies a
+        0->1 delta against — consistent with `capabilities._owned_smith_tool`,
+        which finds a single such tool in the backpack.
+        """
+        bp = self._backpack(ctx)
+        if bp is None:
+            return 0
+        return sum(
+            1
+            for i in ctx.obs.items
+            if i.graphic in SMITH_TOOL_GRAPHICS and i.container == bp.serial
+        )
 
     def _pack_gold_pile(self, ctx: SkillContext):
         bp = self._backpack(ctx)
@@ -1652,6 +1810,145 @@ class BuyIngots(BlacksmithMarket):
                 and (obs.player.pos.x, obs.player.pos.y) == tuple(stand)
             ):
                 ctx.memory["cap_buy_returned_goal_id"] = goal_id
+            self._observe_evidence(ctx)
+
+        # Deliberately do not fall through to Blacksmith.step(): completion is
+        # evaluated from the next Observation before any hammer action can run.
+        return self._payout(ctx, SkillResult(Status.RUNNING))
+
+
+class BuyTool(BlacksmithMarket):
+    """Operation-specific vendor hands: buy one replacement smithing tool.
+
+    The tool-replacement half of B8 — the near-exact mirror of ``BuyIngots`` for
+    a NON-stacking tool bought one at a time. A smith's hammer/tongs wears out
+    over a long run and breaks; today that silently stalls crafting (the craft
+    capability goes unready with no working tool and no way to reacquire one).
+    This buys a fresh tongs with earned gold, closing the last finite-supply GM
+    dependency in the craft loop.
+
+    The capability keeps observation evidence scoped to the active goal frame.
+    Completion requires the exact tongs offer observed, exactly the quoted cost
+    to leave the pack, and a smith tool to ARRIVE where there was none (a 0->1
+    tool-count delta — verified by count, since tools don't stack), the UI to
+    clear, and a safe return for the same ``goal_id``. Only the tongs offer is
+    ever bought — never the vendor's shields, armour, weapons, or iron.
+    """
+
+    name = "buy_smith_tool"
+    description = "Buy one replacement smithing tool from the configured vendor and return."
+
+    _CLEANUP_KEYS = (
+        "toolbuy_tools_start",
+        "toolbuy_gold_start",
+        "toolbuy_paid",
+        "toolbuy_leg",
+        "toolbuy_stage",
+        "toolbuy_vendor",
+        "toolbuy_find_wait",
+        "toolbuy_popup_wait",
+        "toolbuy_popup_total",
+        "toolbuy_ask_wait",
+        "toolbuy_confirm_wait",
+    )
+
+    def _begin_goal(self, ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int:
+            return False
+        if ctx.memory.get("cap_toolbuy_goal_id") == goal_id:
+            return True
+
+        vendor = ctx.memory.get("vendor_spot")
+        try:
+            route = tuple(self._route(vendor))
+        except (IndexError, TypeError, ValueError):
+            return False
+        if not route:
+            return False
+
+        ctx.memory["cap_toolbuy_goal_id"] = goal_id
+        ctx.memory["cap_toolbuy_route"] = route
+        ctx.memory["cap_toolbuy_start_tools"] = self._pack_tools(ctx)
+        ctx.memory["cap_toolbuy_start_gold"] = self._pack_gold(ctx)
+        for key in (
+            "cap_toolbuy_sent_goal_id",
+            "cap_toolbuy_bought_tools",
+            "cap_toolbuy_expected_cost",
+            "cap_toolbuy_offer",
+            "cap_toolbuy_tool_delta",
+            "cap_toolbuy_gold_delta",
+            "cap_toolbuy_finished_goal_id",
+            "cap_toolbuy_returned_goal_id",
+        ):
+            ctx.memory.pop(key, None)
+        return True
+
+    def _observe_evidence(self, ctx: SkillContext) -> None:
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_toolbuy_sent_goal_id") != goal_id:
+            return
+        start_tools = ctx.memory.get("cap_toolbuy_start_tools")
+        start_gold = ctx.memory.get("cap_toolbuy_start_gold")
+        if type(start_tools) is not int or type(start_gold) is not int:
+            return
+        # A tool arrived (pack tool count rose), gold spent (pack gold fell) —
+        # both floored at 0 so a one-tick observation lag never records negative.
+        ctx.memory["cap_toolbuy_tool_delta"] = max(0, self._pack_tools(ctx) - start_tools)
+        ctx.memory["cap_toolbuy_gold_delta"] = max(0, start_gold - self._pack_gold(ctx))
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self._begin_goal(ctx):
+            return SkillResult(Status.RUNNING)
+        self._observe_evidence(ctx)
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_toolbuy_finished_goal_id") == goal_id:
+            return self._payout(ctx, SkillResult(Status.RUNNING))
+
+        obs = ctx.obs
+        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
+        route = [tuple(point) for point in ctx.memory["cap_toolbuy_route"]]
+        phase = ctx.memory.get("mkt_phase", "craft")
+        tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
+        if phase not in {"toolbuy", "toolbuy_return"}:
+            phase = ctx.memory["mkt_phase"] = "toolbuy"
+
+        if phase == "toolbuy":
+            result = self._toolbuy_step(ctx, route)
+            if result is not None:
+                if isinstance(result.action, BuyItems):
+                    # Snapshot the exact vendor offer this buy commits to — the
+                    # resolved tongs serial, the amount (one), and the live unit
+                    # price read from the matching `ShopBuyEntry` — straight from
+                    # the still-open window, never from any model text.
+                    offer = self._tool_offer_for(obs.shop_buy, result.action)
+                    if offer is not None:
+                        serial, amount, price = offer
+                        ctx.memory["cap_toolbuy_sent_goal_id"] = goal_id
+                        ctx.memory["cap_toolbuy_bought_tools"] = amount
+                        ctx.memory["cap_toolbuy_expected_cost"] = amount * price
+                        ctx.memory["cap_toolbuy_offer"] = (serial, amount, price)
+                return self._payout(ctx, result)
+            ctx.memory["toolbuy_giveup_tools"] = self._pack_tools(ctx)
+            ctx.memory["toolbuy_giveup_tick"] = tick
+            for key in self._CLEANUP_KEYS:
+                ctx.memory.pop(key, None)
+            phase = ctx.memory["mkt_phase"] = "toolbuy_return"
+
+        if phase == "toolbuy_return":
+            result = self._market_return_step(ctx, "toolbuy_return", route)
+            if result is not None:
+                return self._payout(ctx, result)
+            ctx.memory.pop("toolbuy_return_leg", None)
+            ctx.memory["mkt_phase"] = "craft"
+            ctx.memory["cap_toolbuy_finished_goal_id"] = goal_id
+            stand = ctx.memory.get("bs_stand")
+            if (
+                isinstance(stand, (tuple, list))
+                and len(stand) == 2
+                and (obs.player.pos.x, obs.player.pos.y) == tuple(stand)
+            ):
+                ctx.memory["cap_toolbuy_returned_goal_id"] = goal_id
             self._observe_evidence(ctx)
 
         # Deliberately do not fall through to Blacksmith.step(): completion is

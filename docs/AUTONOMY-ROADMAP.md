@@ -646,5 +646,24 @@ Offline: 1071 tests pass, Ruff clean. The isolated live gate staged a smith with
 created one sealed goal whose exact actions were `PopupRequest →
 PopupSelect(Buy) → BuyItems(iron only)`, ending at `iron=15, gold=125` — exactly
 75 gold (15×5, the live-quoted price) spent, 15 iron arrived, one SUCCESS frame.
-All 16 flags passed twice on fresh accounts. iron and smith-tool *replacement*
-(a broken hammer/tongs) is the natural B8 follow-up on the same boundary.
+All 16 flags passed twice on fresh accounts.
+
+The tool-*replacement* half then landed the same way: `blacksmith/buy_smith_tool`
+buys one replacement smithing tool (tongs, graphic `0x0FBB`) when the smith holds
+none — closing the last finite-supply GM dependency in the craft loop (a hammer
+wears out over a long run and silently stalls crafting). It shares the buy
+transaction machinery with `buy_ingots` via a graphic-parametrized offer resolver
+(`_offer_by_graphic`), and is ready only when `_owned_smith_tool` is None and the
+gold affords one tool. Completion is goal-scoped like the iron side but verifies a
+non-stacking tool by a count delta: started toolless (0 smith tools), exactly one
+arrived, a tool is present now, and exactly the quoted `1 × price` gold left the
+pack. Its live gate staged a toolless smith with 20 iron (so `buy_ingots` stays
+unready) and 100 gold; only `buy_smith_tool` was ready, and it ended at
+`tools=0→1, gold=100→87` — exactly 13 gold (the live-quoted tongs price) spent,
+all 16 flags passing twice on fresh accounts, with a `buy_ingots` regression run
+confirming the shared resolver left iron buying intact. 1106 offline tests pass.
+
+Both finite crafting inputs — iron and the tool — now replenish through normal
+vendor play; the craft→sell→bank→buy loop no longer needs any GM re-gift. What
+remains for the capstone is the multi-hour integration proof (the loop actually
+self-sustaining across many cycles) plus sections C/D/E.

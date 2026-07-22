@@ -1,21 +1,22 @@
-"""Live B8 gate: closed cognition buys a fixed iron batch and nothing else.
+"""Live B8 gate: closed cognition buys one replacement smith tool and nothing else.
 
-The exact mirror of ``live_sell_goal.py`` inverted — gold LEAVES the pack, iron
-ingots ARRIVE. The GM fixture is closed before the production Agent exists.  The
-model client first returns a schema-invalid request, then the exact
-``buy_ingots`` id.  Passing requires the live packet sequence PopupRequest ->
-PopupSelect(Buy) -> BuyItems, only the vendor's iron-ingot offer being bought
-(never its armour/weapons/tongs), the quoted gold leaving the pack while exactly
-the bought iron arrives, one sealed cognition frame succeeding, and no
-craft/sell/bank action being emitted.
+The near-exact mirror of ``live_buy_goal.py`` for a NON-stacking tool. The smith
+starts with **no working tool** (its hammer/tongs has broken) but plenty of iron,
+0 daggers, a known 100 gold, and a vendor route but no banker route — so sell (no
+daggers), bank (no banker), craft (no tool), and buy_ingots (already has 15+
+ingots) are all unready, and replacing the tool is the one thing left to do.
 
-Only ``buy_ingots`` is staged ready: the smith starts with 0 iron and 0 daggers
-(so craft and sell can't fire), a known 200 gold, and a vendor route but no
-banker route (so bank can't fire) — buying is the one thing left to do.
+The GM fixture is closed before the production Agent exists.  The model client
+first returns a schema-invalid request, then the exact ``buy_smith_tool`` id.
+Passing requires the live sequence PopupRequest -> PopupSelect(Buy) -> BuyItems,
+only the vendor's tongs offer being bought (never its iron/armour/weapons/shield),
+the quoted gold leaving the pack while exactly one smith tool ARRIVES (a 0->1
+count delta, since tools don't stack), one sealed cognition frame succeeding, and
+no craft/sell/bank action being emitted.
 
 Usage::
 
-    python -m anima2.live_buy_goal --suffix b8manual
+    python -m anima2.live_toolbuy_goal --suffix b8toolmanual
 """
 
 from __future__ import annotations
@@ -56,20 +57,23 @@ from .skills.base import Goal, Skill, SkillContext
 from .skills.craft import DAGGER_GRAPHIC, SMITH_TOOL_GRAPHICS
 from .skills.harvest import BACKPACK_LAYER
 from .skills.market import (
-    BUY_AMOUNT,
     BUY_CLILOC,
     GOLD_GRAPHIC,
-    IRON_INGOT_GRAPHIC,
-    BuyIngots,
+    SMITH_TONGS_GRAPHIC,
+    TOOL_BUY_AMOUNT,
+    BuyTool,
 )
 from .skills.smelt import INGOT_GRAPHICS
 
 _PROFESSION = "blacksmith"
-_CAPABILITY = "buy_ingots"
-# Provenance-clean starting gold: comfortably above the 15 x 5 == 75 gold the
-# fixed iron batch costs on this shard, so the buy is affordable and the exact
-# post-buy balance (200 - quoted_cost) is a decisive delta check.
-_STARTING_GOLD = 200
+_CAPABILITY = "buy_smith_tool"
+# Provenance-clean starting gold: above the 1 x 13 == 13 gold a tongs costs on
+# this shard, so the buy is affordable and the exact post-buy balance
+# (100 - quoted_cost) is a decisive delta check.
+_STARTING_GOLD = 100
+# Enough iron that buy_ingots is NOT ready (its reorder point is 15), so tool
+# replacement is the only acquisition the cognition can choose.
+_STAGED_IRON = 20
 
 
 @dataclass(frozen=True)
@@ -120,9 +124,9 @@ class _SelectionTracer:
 class _SequencedClient:
     def __init__(self) -> None:
         self.responses = [
-            '{"schema":1,"decision":"capability","capability":"buy_ingots",'
+            '{"schema":1,"decision":"capability","capability":"buy_smith_tool",'
             '"action":"buy"}',
-            '{"schema":1,"decision":"capability","capability":"buy_ingots"}',
+            '{"schema":1,"decision":"capability","capability":"buy_smith_tool"}',
             '{"schema":1,"decision":"idle"}',
         ]
         self.calls: list[tuple[str, str]] = []
@@ -160,10 +164,6 @@ def _pack_amount(obs: Observation, graphic: int) -> int:
 
 
 def _pack_iron(obs: Observation) -> int:
-    """Iron ingots in the pack, summed across every `INGOT_GRAPHICS` pile-size
-    variant (a bought stack can merge into any of them), unlike the vendor's
-    single for-sale display graphic `IRON_INGOT_GRAPHIC`.
-    """
     backpack = _backpack(obs)
     if backpack is None:
         return 0
@@ -171,6 +171,20 @@ def _pack_iron(obs: Observation) -> int:
         item.amount
         for item in obs.items
         if item.graphic in INGOT_GRAPHICS and item.container == backpack
+    )
+
+
+def _pack_tools(obs: Observation) -> int:
+    """COUNT of smith tools in the pack — each tool is a distinct, non-stacking
+    item, so a bought tool is a 0->1 count delta, not an amount sum.
+    """
+    backpack = _backpack(obs)
+    if backpack is None:
+        return 0
+    return sum(
+        1
+        for item in obs.items
+        if item.graphic in SMITH_TOOL_GRAPHICS and item.container == backpack
     )
 
 
@@ -190,7 +204,7 @@ def _buy_select(record: _ActionRecord, vendor: int) -> bool:
 
 
 def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
-    account = args.account or f"animab8{args.suffix}"
+    account = args.account or f"animab8t{args.suffix}"
     password = args.password or account
     smith_x, smith_y = TRADE_SMITH_SPOT
     vendor_x, vendor_y = VENDOR_SPOT[-1]
@@ -209,29 +223,38 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         with GmControl.spawn(args.host, args.port, bridge=args.bridge) as gm:
             gm.hide()
             wipe_area(gm, smith_x, smith_y, radius=10, z=20)
+            # Deliberately stage NO smith tool (omit `items`) — a broken/absent
+            # tool is precisely the buy_smith_tool trigger.
             gx, gy, gz = gm.stage(
                 serial,
                 smith_x,
                 smith_y,
                 skills={"Blacksmith": 35},
-                items=["SmithHammer 999"],
             )
             staged = [ipc.observe() for _ in range(3)][-1]
-            # Start from a provenance-clean pack: delete any staged/starter gold,
-            # daggers, and iron so only sell/craft's own preconditions are unmet
-            # and the gold balance is exactly known.
+            # Provenance-clean pack: a fresh ServUO character spawns with ~1000
+            # starter gold and a starter dagger (plus harmless clutter), so delete
+            # all pack gold and daggers FIRST — exactly like `live_buy_goal.py` —
+            # THEN add the iron (so buy_ingots stays unready, ingots >= 15) and the
+            # known gold balance. Deliberately do NOT delete smith tools: a fresh
+            # char has none, and `live_baseline_no_tool_known_gold` (tools == 0)
+            # must fail LOUD on an unexpected tool rather than silently mask it.
+            # (Iron is never deleted — it is only added, after the deletions.)
             removed = all(
                 gm.command_on("[Delete", item.serial)
-                for graphic in (GOLD_GRAPHIC, DAGGER_GRAPHIC, *INGOT_GRAPHICS)
+                for graphic in (GOLD_GRAPHIC, DAGGER_GRAPHIC)
                 for item in _pack_items(staged, graphic)
             )
-            added = gm.command_on(f"[AddToPack Gold {_STARTING_GOLD}", serial)
+            added = bool(
+                gm.command_on(f"[AddToPack IronIngot {_STAGED_IRON}", serial)
+                and gm.command_on(f"[AddToPack Gold {_STARTING_GOLD}", serial)
+            )
             vendor = gm.stage_npc(
                 "Blacksmith", vendor_x, vendor_y, gz, exclude=serial
             )
             print(
-                f"GM staged B8 smith; subject=0x{serial:X} pos=({gx},{gy},{gz}) "
-                f"gold={_STARTING_GOLD} iron=0 daggers=0 "
+                f"GM staged B8 tool-buy smith; subject=0x{serial:X} pos=({gx},{gy},{gz}) "
+                f"gold={_STARTING_GOLD} iron={_STAGED_IRON} tools=0 daggers=0 "
                 f"vendor={getattr(vendor, 'serial', None)}; closing GM"
             )
 
@@ -241,11 +264,6 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             body.observe()
         assert body.last_obs is not None
         baseline = body.last_obs
-        baseline_tools = [
-            item
-            for graphic in SMITH_TOOL_GRAPHICS
-            for item in _pack_items(baseline, graphic)
-        ]
         vendor_serial = vendor.serial if vendor is not None else None
 
         valid_goal = capability_goal(_PROFESSION, _CAPABILITY)
@@ -263,9 +281,9 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             profession=_PROFESSION,
             goal_policy=CapabilityPolicy(_PROFESSION),
         )
-        # A vendor route but deliberately no banker_spot or craft_spot, so bank
-        # (needs banker_spot), craft (needs craft_spot + 15 ingots), and sell
-        # (needs 5 daggers) are all unready — only buy_ingots can be selected.
+        # A vendor route but deliberately no banker_spot or craft_spot, so bank,
+        # craft, sell, and buy_ingots (already has 15+ ingots) are all unready —
+        # only buy_smith_tool can be selected.
         agent.memory["vendor_spot"] = VENDOR_SPOT
 
         negative_offset = len(body.actions)
@@ -300,7 +318,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             if tick % args.snapshot_every == 0:
                 assert body.last_obs is not None
                 print(
-                    f"tick={tick:03d} iron={_pack_iron(body.last_obs)} "
+                    f"tick={tick:03d} tools={_pack_tools(body.last_obs)} "
                     f"gold={_pack_amount(body.last_obs, GOLD_GRAPHIC)} "
                     f"phase={agent.memory.get('mkt_phase', 'craft')!r}"
                 )
@@ -335,7 +353,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             for _index, record in buys
             for item_serial, amount in record.action.items
             for entry in (record.observation.shop_buy.entries if record.observation.shop_buy else [])
-            if entry.serial == item_serial and entry.graphic == IRON_INGOT_GRAPHIC
+            if entry.serial == item_serial and entry.graphic == SMITH_TONGS_GRAPHIC
         )
         exact_order = bool(
             requests
@@ -345,21 +363,21 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         )
         buy_record = buys[0][1] if len(buys) == 1 else None
         buy_shop = buy_record.observation.shop_buy if buy_record is not None else None
-        iron_entry = (
+        tongs_entry = (
             next(
-                (entry for entry in buy_shop.entries if entry.graphic == IRON_INGOT_GRAPHIC),
+                (entry for entry in buy_shop.entries if entry.graphic == SMITH_TONGS_GRAPHIC),
                 None,
             )
             if buy_shop is not None
             else None
         )
-        only_iron_bought = bool(
+        only_tongs_bought = bool(
             buy_record is not None
             and buy_shop is not None
             and buy_shop.vendor == vendor_serial
-            and iron_entry is not None
+            and tongs_entry is not None
             and buy_record.action.items
-            == [(iron_entry.serial, min(BUY_AMOUNT, iron_entry.amount))]
+            == [(tongs_entry.serial, min(TOOL_BUY_AMOUNT, tongs_entry.amount))]
         )
         target_frames = [
             frame
@@ -412,7 +430,7 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             and all(
                 owner.goal_id == target_goal_id
                 and isinstance(owner.skill, CapabilityBoundSkill)
-                and type(owner.skill.inner) is BuyIngots
+                and type(owner.skill.inner) is BuyTool
                 for owner in owners
             )
         )
@@ -421,24 +439,22 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             "schema_ready": ipc.ready.get("schema_version") == SUPPORTED_SCHEMA_VERSION,
             "gm_fixture_staged": bool(removed and added and vendor is not None),
             "gm_connection_closed_before_agent": gm_closed,
-            "live_baseline_zero_iron_known_gold": bool(
-                _pack_iron(baseline) == 0
+            "live_baseline_no_tool_known_gold": bool(
+                _pack_tools(baseline) == 0
                 and _pack_amount(baseline, DAGGER_GRAPHIC) == 0
+                and _pack_iron(baseline) == _STAGED_IRON
                 and _pack_amount(baseline, GOLD_GRAPHIC) == _STARTING_GOLD
-                and baseline_tools
             ),
             "invalid_reply_rejected_without_action": bool(
                 invalid_rejected and not negative_actions
             ),
             "closed_prompt_exposes_only_ready_id": bool(
                 len(client.calls) == 3
-                and all("buy_ingots" in user for _system, user in client.calls[:2])
+                and all("buy_smith_tool" in user for _system, user in client.calls[:2])
                 and all("bank_gold" not in user for _system, user in client.calls[:2])
                 and all("sell_daggers" not in user for _system, user in client.calls[:2])
-                # The staged hammer keeps buy_smith_tool unready, so the sibling
-                # acquisition capability must never surface either.
-                and all("buy_smith_tool" not in user for _system, user in client.calls[:2])
-                and all("BuyIngots" not in user for _system, user in client.calls[:2])
+                and all("buy_ingots" not in user for _system, user in client.calls[:2])
+                and all("BuyTool" not in user for _system, user in client.calls[:2])
             ),
             "canonical_goal_enqueued_once": bool(
                 target_goal_id is not None and len(target_frames) == 1 and canonical_frame
@@ -447,13 +463,13 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             "transaction_actions_once": bool(
                 len(requests) == len(selects) == len(buys) == 1
             ),
-            "only_iron_bought": only_iron_bought,
+            "only_tongs_bought": only_tongs_bought,
             "registry_owned_transaction": registry_owned,
             "no_extra_capability_actions": not unexpected_actions,
-            "live_buy_delta_matches_quote": bool(
+            "live_toolbuy_delta_matches_quote": bool(
                 quoted_cost > 0
                 and bought > 0
-                and _pack_iron(final_obs) == bought
+                and _pack_tools(final_obs) == bought
                 and _pack_amount(final_obs, GOLD_GRAPHIC) == _STARTING_GOLD - quoted_cost
             ),
             "transaction_returned_idle": bool(
@@ -461,13 +477,13 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
                 and all(
                     key not in agent.memory
                     for key in (
-                        "buy_leg",
-                        "buy_stage",
-                        "buy_vendor",
-                        "buy_popup_wait",
-                        "buy_ask_wait",
-                        "buy_confirm_wait",
-                        "buy_return_leg",
+                        "toolbuy_leg",
+                        "toolbuy_stage",
+                        "toolbuy_vendor",
+                        "toolbuy_popup_wait",
+                        "toolbuy_ask_wait",
+                        "toolbuy_confirm_wait",
+                        "toolbuy_return_leg",
                     )
                 )
             ),
@@ -477,8 +493,8 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             "same_goal_not_replayed": len(target_frames) == 1,
         }
         detail = (
-            f"serial={serial} vendor={vendor_serial} iron=0->"
-            f"{_pack_iron(final_obs)} gold={_STARTING_GOLD}->"
+            f"serial={serial} vendor={vendor_serial} tools=0->"
+            f"{_pack_tools(final_obs)} gold={_STARTING_GOLD}->"
             f"{_pack_amount(final_obs, GOLD_GRAPHIC)} quote={quoted_cost} bought={bought} "
             f"goal_id={target_goal_id} ticks={agent.ticks} cognition={len(client.calls)}"
         )
@@ -506,9 +522,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         flags, detail = _run(args)
     except Exception as exc:
-        print(f"[FLAG] B8 BUY GOAL GATE FAILED: {type(exc).__name__}: {exc}")
+        print(f"[FLAG] B8 TOOL BUY GOAL GATE FAILED: {type(exc).__name__}: {exc}")
         return 1
-    return 0 if print_gate_verdict(flags, label="B8 BUY GOAL GATE", detail=detail) else 1
+    return 0 if print_gate_verdict(flags, label="B8 TOOL BUY GOAL GATE", detail=detail) else 1
 
 
 if __name__ == "__main__":

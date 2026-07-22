@@ -17,7 +17,14 @@ from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
 from .skills.craft import DAGGER_GRAPHIC, MIN_INGOTS, SMITH_TOOL_GRAPHICS, CraftDaggers
-from .skills.market import BUY_AMOUNT, BankGold, BuyIngots, SellDaggers
+from .skills.market import (
+    BUY_AMOUNT,
+    TOOL_BUY_AMOUNT,
+    BankGold,
+    BuyIngots,
+    BuyTool,
+    SellDaggers,
+)
 from .skills.smelt import INGOT_GRAPHICS
 
 _BACKPACK_LAYER = 0x15
@@ -756,12 +763,155 @@ _BUY_INGOTS = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+
+# --- buy_smith_tool (B8) — the tool-replacement half of the acquisition set ----
+#
+# The near-exact mirror of ``buy_ingots`` for a NON-stacking tool bought one at a
+# time. It fires exactly when the craft loop would otherwise stall for good: the
+# smith's hammer/tongs has broken and there is no working tool to craft with (so
+# ``craft_daggers`` is already unready), closing the last finite-supply GM
+# dependency by reacquiring a tool with earned gold.
+
+# This ServUO shard's tongs unit price (``Scripts/VendorInfo/SBBlacksmith.cs``:
+# ``GenericBuyInfo(typeof(Tongs), 13, 14, 0x0FBB, 0)``), used ONLY as the
+# readiness affordability estimate — the actual purchase reads the live price
+# from the matching ``ShopBuyEntry`` and never hardcodes it (see
+# `skills/market.py::BlacksmithMarket._tool_offer`), identical discipline to
+# ``_IRON_UNIT_PRICE``.
+_TONGS_PRICE_ESTIMATE = 13
+
+_TOOLBUY_TRANSACTION_KEYS = (
+    "toolbuy_leg",
+    "toolbuy_stage",
+    "toolbuy_vendor",
+    "toolbuy_find_wait",
+    "toolbuy_popup_wait",
+    "toolbuy_popup_total",
+    "toolbuy_ask_wait",
+    "toolbuy_confirm_wait",
+    "toolbuy_return_leg",
+)
+
+
+def _toolbuy_can_yield(ctx: SkillContext) -> bool:
+    obs = ctx.obs
+    ui_clear = bool(
+        obs.popup is None and obs.shop_buy is None and obs.shop_sell is None
+    )
+    finished = bool(
+        type(ctx.goal_id) is int
+        and ctx.memory.get("cap_toolbuy_finished_goal_id") == ctx.goal_id
+    )
+    return bool(
+        ctx.memory.get("mkt_phase", "craft") == "craft"
+        and all(ctx.memory.get(key) is None for key in _TOOLBUY_TRANSACTION_KEYS)
+        and ctx.memory.get("bank_held") is None
+        and ctx.memory.get("cap_bank_release_pending") is None
+        and obs.pending_target is None
+        and not obs.gumps
+        and (ui_clear or finished)
+    )
+
+
+def _toolbuy_ready(ctx: SkillContext) -> bool:
+    return bool(
+        _valid_spot(ctx.memory.get("vendor_spot"))
+        and _backpack_serial(ctx) is not None
+        # The trigger: no working smith tool. When this holds, craft_daggers is
+        # already unready, so a tool buy fires exactly when the loop would stall.
+        and _owned_smith_tool(ctx) is None
+        and _pack_gold(ctx) >= TOOL_BUY_AMOUNT * _TONGS_PRICE_ESTIMATE
+        and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+        and _toolbuy_can_yield(ctx)
+    )
+
+
+def _toolbuy_achieved(ctx: SkillContext) -> bool:
+    goal_id = ctx.goal_id
+    bought = ctx.memory.get("cap_toolbuy_bought_tools")
+    expected_cost = ctx.memory.get("cap_toolbuy_expected_cost")
+    tool_delta = ctx.memory.get("cap_toolbuy_tool_delta")
+    gold_delta = ctx.memory.get("cap_toolbuy_gold_delta")
+    start_tools = ctx.memory.get("cap_toolbuy_start_tools")
+    offer = ctx.memory.get("cap_toolbuy_offer")
+    offer_valid = bool(
+        isinstance(offer, tuple)
+        and len(offer) == 3
+        and all(type(value) is int and value > 0 for value in offer)
+    )
+    return bool(
+        type(goal_id) is int
+        and ctx.memory.get("cap_toolbuy_goal_id") == goal_id
+        and ctx.memory.get("cap_toolbuy_sent_goal_id") == goal_id
+        and ctx.memory.get("cap_toolbuy_finished_goal_id") == goal_id
+        and ctx.memory.get("cap_toolbuy_returned_goal_id") == goal_id
+        and type(bought) is int
+        and bought > 0
+        and type(expected_cost) is int
+        and expected_cost > 0
+        and offer_valid
+        # offer == (tongs_serial, amount, unit_price): the exact observed vendor
+        # offer must account for the one tool bought at the quoted price.
+        and offer[1] == bought
+        and offer[1] * offer[2] == expected_cost
+        # A smith tool ARRIVED where there was none: started toolless (0), and at
+        # least the bought count arrived; and exactly the quoted cost — never a
+        # coin more — left the pack. Tools don't stack, so arrival is a count
+        # delta, corroborated by a tool being present in the pack right now.
+        and start_tools == 0
+        and type(tool_delta) is int
+        and tool_delta >= bought
+        and type(gold_delta) is int
+        and gold_delta == expected_cost
+        and _owned_smith_tool(ctx) is not None
+        and ctx.obs.popup is None
+        and ctx.obs.shop_buy is None
+        and ctx.obs.shop_sell is None
+        and _toolbuy_can_yield(ctx)
+    )
+
+
+def _toolbuy_progress(ctx: SkillContext) -> float:
+    if ctx.memory.get("cap_toolbuy_goal_id") != ctx.goal_id:
+        return 0.0
+    bought = ctx.memory.get("cap_toolbuy_bought_tools")
+    expected_cost = ctx.memory.get("cap_toolbuy_expected_cost")
+    if (
+        type(bought) is not int
+        or bought <= 0
+        or type(expected_cost) is not int
+        or expected_cost <= 0
+    ):
+        return 0.0
+    tool_delta = ctx.memory.get("cap_toolbuy_tool_delta", 0)
+    gold_delta = ctx.memory.get("cap_toolbuy_gold_delta", 0)
+    if type(tool_delta) is not int or type(gold_delta) is not int:
+        return 0.0
+    return max(
+        0.0,
+        min(1.0, min(tool_delta / bought, gold_delta / expected_cost)),
+    )
+
+
+_BUY_SMITH_TOOL = CapabilityBinding(
+    capability_id="buy_smith_tool",
+    profession="blacksmith",
+    skill_type=BuyTool,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_toolbuy_ready,
+    achieved=_toolbuy_achieved,
+    progress=_toolbuy_progress,
+    can_yield=_toolbuy_can_yield,
+    default_deadline_ticks=180,
+)
+
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
     {
         (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
         (_BANK_GOLD.profession, _BANK_GOLD.capability_id): _BANK_GOLD,
         (_CRAFT_DAGGERS.profession, _CRAFT_DAGGERS.capability_id): _CRAFT_DAGGERS,
         (_BUY_INGOTS.profession, _BUY_INGOTS.capability_id): _BUY_INGOTS,
+        (_BUY_SMITH_TOOL.profession, _BUY_SMITH_TOOL.capability_id): _BUY_SMITH_TOOL,
     }
 )
 

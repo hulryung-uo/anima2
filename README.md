@@ -67,12 +67,16 @@ live-quoted price, and is ready only when iron is below one sale batch and the
 gold is there to afford it. This required making the body contract's BUY window
 carry per-item `serial/graphic/amount` (symmetric with the SELL window, so the
 brain matches an offer by graphic and buys by serial); the contract advanced to
-schema 16 (additive ClassicUO coverage) and the brain moved in lockstep.
+schema 16 (additive ClassicUO coverage) and the brain moved in lockstep. Its
+tool-replacement sibling `buy_smith_tool` closes the loop's last GM dependency —
+it buys one replacement tongs (via the same graphic-parametrized resolver) when
+the smith's hammer wears out, so both finite crafting inputs (iron and the tool)
+now replenish through normal vendor play.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** **Autonomy B8 (verified iron acquisition) —
-live-verified.** 1071 tests green, ruff clean. The Python
+threading) — live-verified.** **Autonomy B8 (verified iron + tool acquisition) —
+live-verified.** 1106 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -117,7 +121,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 1071 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 1106 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):
@@ -157,6 +161,7 @@ python -m anima2.live_goal_stack # B1: interrupt, deadline, cognition isolation,
 python -m anima2.live_bank_goal  # B3: invalid-goal differential + exact 100-gold bank transaction
 python -m anima2.live_repeat_bank_goal # B7: second deposit over an existing bank balance
 python -m anima2.live_buy_goal    # B8: buy iron from a vendor — exact quoted spend, iron arrives, only iron
+python -m anima2.live_toolbuy_goal # B8: buy a replacement smith tool (tongs) when the smith holds none
 ```
 
 ## Family

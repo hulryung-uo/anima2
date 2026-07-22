@@ -42,9 +42,13 @@ from anima2.skills.market import (
     POPUP_TIMEOUT,
     SELL_CLILOC,
     SELL_CONFIRM_TIMEOUT,
+    SMITH_TONGS_GRAPHIC,
+    TOOL_BUY_AMOUNT,
+    TOOL_BUY_CONFIRM_TIMEOUT,
     BankGold,
     BlacksmithMarket,
     BuyIngots,
+    BuyTool,
     SellDaggers,
 )
 
@@ -1210,16 +1214,17 @@ SHIELD_SERIAL = 0xDD00
 IRON_SERIAL = 0xDD01
 TONGS_SERIAL = 0xDD02
 SHIELD_GRAPHIC = 0x1B76  # a heater shield — the vendor's other stock, never bought
-TONGS_GRAPHIC = 0x0FB4
-IRON_STOCK = 16  # SBBlacksmith GenericBuyInfo stock amount — above BUY_AMOUNT
+IRON_STOCK = 16   # SBBlacksmith GenericBuyInfo stock amount — above BUY_AMOUNT
+TONGS_STOCK = 14  # SBBlacksmith GenericBuyInfo(typeof(Tongs), 13, 14, 0x0FBB, 0)
+TONGS_PRICE = 13
 
 
-def _buy_window(iron_amount=IRON_STOCK):
+def _buy_window(iron_amount=IRON_STOCK, tongs_amount=TONGS_STOCK):
     """The BUY window, symmetric with the SELL window: every `ShopBuyEntry`
-    carries the for-sale item's serial/graphic/amount/price inline, so the iron
-    offer is matched by graphic, never by an `obs.items` index. Iron is 5 gold
-    (SBBlacksmith's `GenericBuyInfo(typeof(IronIngot), 5, ...)`); the shield and
-    tongs are the vendor's other stock and must never be bought.
+    carries the for-sale item's serial/graphic/amount/price inline, so each offer
+    is matched by graphic, never by an `obs.items` index. Iron is 5 gold, tongs
+    (a valid smithing tool) 13 gold (SBBlacksmith's own `GenericBuyInfo`s); the
+    shield is the vendor's other stock and must never be bought.
     """
     return ShopBuy(
         vendor=VENDOR_SERIAL,
@@ -1229,8 +1234,8 @@ def _buy_window(iron_amount=IRON_STOCK):
                          graphic=SHIELD_GRAPHIC, amount=1),
             ShopBuyEntry(price=5, name="iron ingot", serial=IRON_SERIAL,
                          graphic=IRON_INGOT_GRAPHIC, amount=iron_amount),
-            ShopBuyEntry(price=8, name="tongs", serial=TONGS_SERIAL,
-                         graphic=TONGS_GRAPHIC, amount=1),
+            ShopBuyEntry(price=TONGS_PRICE, name="tongs", serial=TONGS_SERIAL,
+                         graphic=SMITH_TONGS_GRAPHIC, amount=tongs_amount),
         ],
     )
 
@@ -1260,8 +1265,8 @@ def test_buy_resolve_bails_when_the_window_has_no_iron_offer():
         entries=[
             ShopBuyEntry(price=50, name="shield", serial=SHIELD_SERIAL,
                          graphic=SHIELD_GRAPHIC, amount=1),
-            ShopBuyEntry(price=8, name="tongs", serial=TONGS_SERIAL,
-                         graphic=TONGS_GRAPHIC, amount=1),
+            ShopBuyEntry(price=TONGS_PRICE, name="tongs", serial=TONGS_SERIAL,
+                         graphic=SMITH_TONGS_GRAPHIC, amount=TONGS_STOCK),
         ],
     )
     assert BlacksmithMarket._iron_offer(buy) is None
@@ -1516,3 +1521,272 @@ def test_buy_capability_new_goal_resets_prior_goal_evidence():
     assert "cap_buy_finished_goal_id" not in mem
     assert "cap_buy_offer" not in mem
     assert "cap_buy_bought_ingots" not in mem
+
+
+# --- buy_smith_tool (B8): buy one replacement smithing tool (non-stacking) --------
+
+
+def _tongs_pack(serial=0xA10):
+    return _item(serial, SMITH_TONGS_GRAPHIC, container=BACKPACK, amount=1)
+
+
+# --- toolbuy: tongs-serial + live-price resolution from the buy window -------------
+
+
+def test_toolbuy_resolves_the_tongs_offer_by_graphic_and_reads_its_serial_price():
+    entry = BlacksmithMarket._tool_offer(_buy_window())
+    assert entry is not None
+    assert entry.serial == TONGS_SERIAL
+    assert entry.price == TONGS_PRICE
+    assert entry.amount == TONGS_STOCK
+    assert entry.graphic == SMITH_TONGS_GRAPHIC
+
+
+def test_toolbuy_resolve_bails_when_the_window_has_no_tongs_offer():
+    buy = ShopBuy(
+        vendor=VENDOR_SERIAL,
+        container=VENDOR_CONTAINER,
+        entries=[
+            ShopBuyEntry(price=50, name="shield", serial=SHIELD_SERIAL,
+                         graphic=SHIELD_GRAPHIC, amount=1),
+            ShopBuyEntry(price=5, name="iron ingot", serial=IRON_SERIAL,
+                         graphic=IRON_INGOT_GRAPHIC, amount=IRON_STOCK),
+        ],
+    )
+    assert BlacksmithMarket._tool_offer(buy) is None
+
+
+def test_toolbuy_resolve_fails_closed_on_a_malformed_tongs_entry():
+    for bad in (
+        ShopBuyEntry(price=TONGS_PRICE, name="tongs", serial=0,
+                     graphic=SMITH_TONGS_GRAPHIC, amount=TONGS_STOCK),
+        ShopBuyEntry(price=TONGS_PRICE, name="tongs", serial=TONGS_SERIAL,
+                     graphic=SMITH_TONGS_GRAPHIC, amount=0),
+        ShopBuyEntry(price=0, name="tongs", serial=TONGS_SERIAL,
+                     graphic=SMITH_TONGS_GRAPHIC, amount=TONGS_STOCK),
+    ):
+        buy = ShopBuy(vendor=VENDOR_SERIAL, container=VENDOR_CONTAINER, entries=[bad])
+        assert BlacksmithMarket._tool_offer(buy) is None
+
+
+# --- toolbuy: full capability vendor sequence + goal evidence ----------------------
+
+
+def test_toolbuy_capability_owns_exact_vendor_sequence_and_goal_evidence():
+    vendor = _mobile(VENDOR_MOBILE, *VENDOR)
+    popup = _popup(VENDOR_MOBILE, [BUY_CLILOC, SELL_CLILOC])  # Buy, then Sell
+    mem = {"vendor_spot": VENDOR, "bs_stand": (0, 0)}
+    skill = BuyTool()
+    before = [_backpack(), _gold(0x900, amount=100)]  # 100 gold, 0 pack tools
+
+    request = skill.step(
+        _ctx(before, memory=mem, pos=Position(*VENDOR, 0), mobiles=[vendor], goal_id=17)
+    )
+    select = skill.step(
+        _ctx(before, memory=mem, pos=Position(*VENDOR, 0), mobiles=[vendor], popup=popup, goal_id=17)
+    )
+    window_items = [_backpack(), _gold(0x900, amount=100)]
+    order = skill.step(
+        _ctx(
+            window_items,
+            memory=mem,
+            pos=Position(*VENDOR, 0),
+            mobiles=[vendor],
+            shop_buy=_buy_window(),
+            goal_id=17,
+        )
+    )
+
+    assert isinstance(request.action, PopupRequest)
+    assert isinstance(select.action, PopupSelect)
+    assert select.action.serial == VENDOR_MOBILE and select.action.index == 0  # Buy
+    assert isinstance(order.action, BuyItems)
+    assert order.action.vendor == VENDOR_SERIAL
+    assert order.action.items == [(TONGS_SERIAL, TOOL_BUY_AMOUNT)]  # tongs only, one tool
+    assert mem["cap_toolbuy_sent_goal_id"] == 17
+    assert mem["cap_toolbuy_bought_tools"] == TOOL_BUY_AMOUNT
+    assert mem["cap_toolbuy_expected_cost"] == TOOL_BUY_AMOUNT * TONGS_PRICE
+    assert mem["cap_toolbuy_offer"] == (TONGS_SERIAL, TOOL_BUY_AMOUNT, TONGS_PRICE)
+
+    # The buy lands: a tongs in the pack, gold spent by exactly the quoted cost.
+    after = [
+        _backpack(),
+        _gold(0x900, amount=100 - TOOL_BUY_AMOUNT * TONGS_PRICE),
+        _tongs_pack(),
+    ]
+    return_step = skill.step(
+        _ctx(after, memory=mem, pos=Position(*VENDOR, 0), mobiles=[vendor], goal_id=17)
+    )
+    finish = skill.step(_ctx(after, memory=mem, pos=Position(0, 0, 0), goal_id=17))
+
+    assert isinstance(return_step.action, Walk)
+    assert finish.action is None
+    assert mem["mkt_phase"] == "craft"
+    assert mem["cap_toolbuy_finished_goal_id"] == 17
+    assert mem["cap_toolbuy_returned_goal_id"] == 17
+    assert mem["cap_toolbuy_tool_delta"] == 1  # a tool arrived (count 0 -> 1)
+    assert mem["cap_toolbuy_gold_delta"] == TOOL_BUY_AMOUNT * TONGS_PRICE
+    # Never a hammer, a drop, or a sale — buying only ever emits popup/BuyItems.
+    assert not any(
+        isinstance(r.action, (Use, Drop, SellItems))
+        for r in (request, select, order, return_step, finish)
+    )
+
+
+def test_toolbuy_capability_waits_without_a_configured_vendor_route():
+    items = [_backpack(), _gold(0x900, amount=100)]
+    mem = {}  # no vendor_spot
+    res = BuyTool().step(_ctx(items, memory=mem, goal_id=17))
+    assert res.action is None
+    assert "cap_toolbuy_goal_id" not in mem
+
+
+def test_toolbuy_capability_never_buys_a_non_tongs_item_and_bails():
+    # The vendor's window offers only iron + a shield — no tongs entry. The buy
+    # must resolve nothing, emit no BuyItems, and walk home rather than mis-buy.
+    buy = ShopBuy(
+        vendor=VENDOR_SERIAL,
+        container=VENDOR_CONTAINER,
+        entries=[
+            ShopBuyEntry(price=50, name="shield", serial=SHIELD_SERIAL,
+                         graphic=SHIELD_GRAPHIC, amount=1),
+            ShopBuyEntry(price=5, name="iron ingot", serial=IRON_SERIAL,
+                         graphic=IRON_INGOT_GRAPHIC, amount=IRON_STOCK),
+        ],
+    )
+    items = [_backpack(), _gold(0x900, amount=100)]
+    mem = {
+        "vendor_spot": VENDOR, "bs_stand": (0, 0), "mkt_phase": "toolbuy",
+        "toolbuy_stage": "window", "toolbuy_vendor": VENDOR_MOBILE,
+        "cap_toolbuy_goal_id": 17, "cap_toolbuy_route": (VENDOR,),
+        "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+    }
+    res = BuyTool().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), shop_buy=buy, goal_id=17))
+    assert not isinstance(res.action, BuyItems)
+    assert mem["mkt_phase"] == "toolbuy_return"
+    assert "cap_toolbuy_sent_goal_id" not in mem
+
+
+# --- toolbuy: popup / window / confirm stages -------------------------------------
+
+
+def test_toolbuy_selects_the_buy_entry_once_the_popup_is_open():
+    popup = _popup(VENDOR_MOBILE, [BUY_CLILOC, SELL_CLILOC])
+    items = [_backpack(), _gold(0x900, amount=100)]
+    mem = {
+        "vendor_spot": VENDOR, "mkt_phase": "toolbuy", "toolbuy_stage": "popup",
+        "toolbuy_vendor": VENDOR_MOBILE, "cap_toolbuy_goal_id": 17,
+        "cap_toolbuy_route": (VENDOR,), "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+    }
+    res = BuyTool().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), popup=popup, goal_id=17))
+    assert isinstance(res.action, PopupSelect)
+    assert res.action.serial == VENDOR_MOBILE and res.action.index == 0
+    assert mem["toolbuy_stage"] == "window"
+
+
+def test_toolbuy_bails_if_the_popup_has_no_buy_entry():
+    popup = _popup(VENDOR_MOBILE, [SELL_CLILOC])  # sell only — not a seller
+    items = [_backpack(), _gold(0x900, amount=100)]
+    mem = {
+        "vendor_spot": VENDOR, "mkt_phase": "toolbuy", "toolbuy_stage": "popup",
+        "toolbuy_vendor": VENDOR_MOBILE, "bs_stand": (0, 0), "cap_toolbuy_goal_id": 17,
+        "cap_toolbuy_route": (VENDOR,), "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+    }
+    res = BuyTool().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), popup=popup, goal_id=17))
+    assert mem["mkt_phase"] == "toolbuy_return"
+    assert isinstance(res.action, Walk)
+
+
+def test_toolbuy_gives_up_if_the_buy_window_never_arrives():
+    items = [_backpack(), _gold(0x900, amount=100)]
+    mem = {
+        "vendor_spot": VENDOR, "mkt_phase": "toolbuy", "toolbuy_stage": "window",
+        "toolbuy_vendor": VENDOR_MOBILE, "toolbuy_ask_wait": ASK_RETRY - 1, "bs_stand": (0, 0),
+        "cap_toolbuy_goal_id": 17, "cap_toolbuy_route": (VENDOR,),
+        "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+    }
+    res = BuyTool().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), goal_id=17))
+    assert mem["mkt_phase"] == "toolbuy_return"
+    assert isinstance(res.action, Walk)
+
+
+def test_toolbuy_popup_gives_up_after_total_timeout_if_the_menu_never_arrives():
+    items = [_backpack(), _gold(0x900, amount=100)]
+    mem = {
+        "vendor_spot": VENDOR, "mkt_phase": "toolbuy", "bs_stand": (0, 0),
+        "toolbuy_stage": "popup", "toolbuy_vendor": VENDOR_MOBILE, "toolbuy_popup_total": POPUP_TIMEOUT,
+        "cap_toolbuy_goal_id": 17, "cap_toolbuy_route": (VENDOR,),
+        "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+    }
+    res = BuyTool().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), goal_id=17))
+    assert mem["mkt_phase"] == "toolbuy_return"
+    assert isinstance(res.action, Walk)
+
+
+def test_toolbuy_confirm_gives_up_after_a_bounded_wait():
+    # BuyItems was sent, gold spent, but no tool ever arrived — must not freeze.
+    items = [_backpack(), _gold(0x900, amount=87)]
+    mem = {
+        "vendor_spot": VENDOR, "mkt_phase": "toolbuy", "toolbuy_stage": "confirm",
+        "toolbuy_vendor": VENDOR_MOBILE, "toolbuy_tools_start": 0,
+        "toolbuy_confirm_wait": TOOL_BUY_CONFIRM_TIMEOUT - 1, "bs_stand": (0, 0),
+        "cap_toolbuy_goal_id": 17, "cap_toolbuy_route": (VENDOR,),
+        "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+    }
+    res = BuyTool().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), goal_id=17))
+    assert mem["mkt_phase"] == "toolbuy_return"
+    assert isinstance(res.action, Walk)
+
+
+def test_toolbuy_reward_pays_only_on_confirmed_tool_arrival():
+    vendor = _mobile(VENDOR_MOBILE, *VENDOR)
+    mem = {"vendor_spot": VENDOR, "bs_stand": (0, 0)}
+    skill = BuyTool()
+    pos = Position(*VENDOR, 0)
+    before = [_backpack(), _gold(0x900, amount=100)]
+
+    res1 = skill.step(_ctx(before, memory=mem, pos=pos, mobiles=[vendor], goal_id=17))
+    assert res1.reward == 0.0
+    assert isinstance(res1.action, PopupRequest)
+
+    popup = _popup(VENDOR_MOBILE, [BUY_CLILOC])
+    res2 = skill.step(_ctx(before, memory=mem, pos=pos, mobiles=[vendor], popup=popup, goal_id=17))
+    assert res2.reward == 0.0
+    assert isinstance(res2.action, PopupSelect)
+
+    window_items = [_backpack(), _gold(0x900, amount=100)]
+    res3 = skill.step(
+        _ctx(window_items, memory=mem, pos=pos, mobiles=[vendor], shop_buy=_buy_window(), goal_id=17)
+    )
+    assert res3.reward == 0.0
+    assert isinstance(res3.action, BuyItems)
+
+    # The buy lands — a tool arrived. Reward fires once (= one tool gained).
+    after = [_backpack(), _gold(0x900, amount=87), _tongs_pack()]
+    res4 = skill.step(_ctx(after, memory=mem, pos=pos, mobiles=[vendor], goal_id=17))
+    assert res4.reward == 1.0
+    assert mem["mkt_phase"] == "toolbuy_return"
+
+
+def test_toolbuy_capability_new_goal_resets_prior_goal_evidence():
+    skill = BuyTool()
+    items = [_backpack(), _gold(0x900, amount=100), _tongs_pack()]
+    mem = {
+        "vendor_spot": VENDOR,
+        "mkt_phase": "craft",
+        "cap_toolbuy_goal_id": 17,
+        "cap_toolbuy_sent_goal_id": 17,
+        "cap_toolbuy_finished_goal_id": 17,
+        "cap_toolbuy_offer": (TONGS_SERIAL, TOOL_BUY_AMOUNT, TONGS_PRICE),
+        "cap_toolbuy_bought_tools": TOOL_BUY_AMOUNT,
+    }
+
+    skill.step(_ctx(items, memory=mem, goal_id=18))
+
+    assert mem["cap_toolbuy_goal_id"] == 18
+    assert mem["cap_toolbuy_start_tools"] == 1  # the pack's existing tongs counts
+    assert mem["cap_toolbuy_start_gold"] == 100
+    assert "cap_toolbuy_sent_goal_id" not in mem
+    assert "cap_toolbuy_finished_goal_id" not in mem
+    assert "cap_toolbuy_offer" not in mem
+    assert "cap_toolbuy_bought_tools" not in mem
