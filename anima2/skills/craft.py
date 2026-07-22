@@ -122,6 +122,41 @@ class Blacksmith(Skill):
     #: exists on top of `stuck_gump`/`proximity_stuck`'s cliloc checks.
     dead_gump_presses: int = 6
 
+    # --- craft config (generalize the CraftGump MAKE loop to a new profession +
+    # recipe without forking — carpenter/tinker reuse these). The defaults are the
+    # blacksmith's, so every blacksmith path resolves exactly what it did before
+    # (byte-identical); a carpenter/tinker craft skill overrides them.
+    #: The tool that opens this recipe's craft gump (blacksmith: hammer/tongs).
+    craft_tool_graphics: frozenset[int] = SMITH_TOOL_GRAPHICS
+    #: The gump category button (`_button(0, category_index)`) and item button
+    #: (`_button(1, item_index)`) for the crafted item; make-last is 21 across all
+    #: ServUO craft systems (`_button(6, 2)`).
+    craft_category_btn: int = CATEGORY_BTN
+    craft_item_btn: int = DAGGER_BTN
+    craft_make_last_btn: int = MAKE_LAST_BTN
+    #: Resource-select stages: the blacksmith resets the remembered metal to iron
+    #: (RESOURCE_MENU_BTN then IRON_RESOURCE_BTN). `None` on both SKIPS them
+    #: (carpentry has no material submenu — open -> category directly).
+    craft_resource_menu_btn: int | None = RESOURCE_MENU_BTN
+    craft_material_resource_btn: int | None = IRON_RESOURCE_BTN
+    #: The material this recipe consumes (blacksmith: iron ingots), how many per
+    #: item, and the crafted item's own pack graphic.
+    craft_material_graphics: frozenset[int] = INGOT_GRAPHICS
+    craft_material_per_item: int = MIN_INGOTS
+    craft_output_graphic: int = DAGGER_GRAPHIC
+    #: The item-page safety cliloc (the item name shown on the gump). `None`
+    #: relies on `_has_reply(gump, craft_item_btn)` alone.
+    craft_item_name_cliloc: int | None = DAGGER_NAME_CLILOC
+    #: Fill-to-N batch target (blacksmith: 5 daggers = one sale batch; a big item
+    #: like the carpenter's Throne uses 1).
+    craft_batch: int = 5
+    #: The craft gump's title cliloc — ServUO gives each craft SYSTEM its own
+    #: `GumpTitleNumber` (blacksmithy 1044002, carpentry 1044004, tinkering
+    #: 1044007), so `_craft_gump` must key on THIS recipe's title, not a shared
+    #: constant, or a sibling profession's gump opens invisibly and the FSM
+    #: stalls at "category" forever waiting for a gump it never recognizes.
+    craft_title_cliloc: int = CRAFT_TITLE_CLILOC
+
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None
 
@@ -141,7 +176,7 @@ class Blacksmith(Skill):
         """
         if self._tool(ctx) is None:
             return "no smithing tool (hammer/tongs) in pack"
-        if self._pack_ingots(ctx) < MIN_INGOTS and self._nearby_ground_ingots(ctx) is None:
+        if self._pack_ingots(ctx) < self.craft_material_per_item and self._nearby_ground_ingots(ctx) is None:
             return "starved of ingots, no pile in range"
         return None
 
@@ -238,7 +273,7 @@ class Blacksmith(Skill):
         # pickup (walk → PickUp → Drop-into-pack is multi-tick) running to
         # completion even if a pickup mid-trip already pushed us back over
         # `MIN_INGOTS`.
-        starved = self._pack_ingots(ctx) < MIN_INGOTS or any(
+        starved = self._pack_ingots(ctx) < self.craft_material_per_item or any(
             j.cliloc == NOT_ENOUGH_METAL_CLILOC for j in obs.new_journal
         )
         if (gump is None or stuck_gump) and (state == "fetch" or starved):
@@ -253,11 +288,11 @@ class Blacksmith(Skill):
             gs, gid = gump.serial, gump.gump_id
             if state in ("open", "category"):
                 ctx.memory["bs_state"] = "item"
-                return SkillResult(Status.RUNNING, GumpResponse(gs, gid, button=CATEGORY_BTN), reward)
+                return SkillResult(Status.RUNNING, GumpResponse(gs, gid, button=self.craft_category_btn), reward)
             if state == "item":
                 ctx.memory["bs_state"] = "loop"
-                return SkillResult(Status.RUNNING, GumpResponse(gs, gid, button=DAGGER_BTN), reward)
-            return SkillResult(Status.RUNNING, GumpResponse(gs, gid, button=MAKE_LAST_BTN), reward)
+                return SkillResult(Status.RUNNING, GumpResponse(gs, gid, button=self.craft_item_btn), reward)
+            return SkillResult(Status.RUNNING, GumpResponse(gs, gid, button=self.craft_make_last_btn), reward)
 
         # No gump open.
         tool = self._tool(ctx)
@@ -356,36 +391,34 @@ class Blacksmith(Skill):
         )
 
     def _pack_ingots(self, ctx: SkillContext) -> int:
+        """Pack amount of this recipe's material (`self.craft_material_graphics`;
+        blacksmith: iron ingots). Byte-identical for the smith."""
         bp = self._backpack(ctx)
         if bp is None:
             return 0
-        return sum(i.amount for i in ctx.obs.items if i.graphic in INGOT_GRAPHICS and i.container == bp.serial)
+        return sum(i.amount for i in ctx.obs.items if i.graphic in self.craft_material_graphics and i.container == bp.serial)
 
     def _pack_daggers(self, ctx: SkillContext) -> int:
-        """Crafted daggers currently held — one leg of `step()`'s dead-gump
-        watchdog's progress signature (a successful craft moves this, even on
-        a tick where the ingot count alone might look ambiguous mid-stack-
-        merge). Mirrors `BlacksmithMarket._pack_daggers` (market.py); kept
-        separate rather than shared since this class predates that one and
-        has no dependency on it.
-        """
+        """Crafted output items currently held (`self.craft_output_graphic`;
+        blacksmith: daggers) — one leg of `step()`'s dead-gump watchdog's
+        progress signature (a successful craft moves this, even on a tick where
+        the material count alone might look ambiguous mid-stack-merge)."""
         bp = self._backpack(ctx)
         if bp is None:
             return 0
-        return sum(i.amount for i in ctx.obs.items if i.graphic == DAGGER_GRAPHIC and i.container == bp.serial)
+        return sum(i.amount for i in ctx.obs.items if i.graphic == self.craft_output_graphic and i.container == bp.serial)
 
-    @staticmethod
-    def _nearby_ground_ingots(ctx: SkillContext):
+    def _nearby_ground_ingots(self, ctx: SkillContext):
         # `container is None` (not merely "graphic matches") is essential — our
-        # *own* pack ingots also carry `graphic in INGOT_GRAPHICS` and, being a
-        # contained item, report the placeholder (0,0,0) position, which can
+        # *own* pack material also carries these graphics and, being a
+        # contained item, reports the placeholder (0,0,0) position, which can
         # read as "distance 0, right here" (the exact footgun `Harvest.
         # _backpack`'s docstring calls out for another mobile's backpack).
         # `items` is sorted by distance (Observation's own invariant), so the
-        # first match is the nearest.
+        # first match is the nearest. Uses `self.craft_material_graphics`.
         return next(
             (i for i in ctx.obs.items
-             if i.graphic in INGOT_GRAPHICS and i.container is None and i.distance <= PICKUP_RADIUS),
+             if i.graphic in self.craft_material_graphics and i.container is None and i.distance <= PICKUP_RADIUS),
             None,
         )
 
@@ -398,36 +431,37 @@ class Blacksmith(Skill):
         return next((i for i in ctx.obs.items
                     if i.layer == BACKPACK_LAYER and i.container == ctx.obs.player.serial), None)
 
-    @staticmethod
-    def _tool(ctx: SkillContext):
-        return next((i for i in ctx.obs.items if i.graphic in SMITH_TOOL_GRAPHICS), None)
+    def _tool(self, ctx: SkillContext):
+        return next((i for i in ctx.obs.items if i.graphic in self.craft_tool_graphics), None)
 
 
-class CraftDaggers(Blacksmith):
-    """Capability hands that make one observed sale batch and do nothing else.
+class CraftItemCapability(Blacksmith):
+    """Capability hands that make one observed craft batch and do nothing else —
+    the generalized base for `CraftDaggers` (blacksmith) and `CarpenterCraft`
+    (carpenter). Subclasses only set the `craft_*` config attrs (inherited from
+    `Blacksmith`, smith defaults) plus `name`/`description`; the whole gump FSM
+    below reads those, so nothing forks per recipe.
 
-    The ordinary blacksmith can fetch ground ingots and walk back to its forge.
+    The ordinary work skill can fetch ground material and walk back to its forge.
     This leaf deliberately disables both powers: admission requires owned pack
-    metal, an owned pack tool, and the exact configured craft stand. The only
+    material, an owned pack tool, and the exact configured craft stand. The only
     emitted actions are that tool's ``Use`` and responses to the craft gump
-    opened for this goal (plus button 0 to close it at the terminal yield).
+    opened for this goal (plus button 0 to close it at the terminal yield). (The
+    ``cap_craft_*``/``*_daggers`` memory keys keep their legacy names.)
     """
 
-    name = "craft_daggers"
-    description = "Craft enough observation-confirmed daggers to fill one five-item sale batch."
     max_goal_steps = 240
     max_attempts = 20
 
-    @staticmethod
-    def _tool(ctx: SkillContext):
-        backpack = Blacksmith._backpack(ctx)
+    def _tool(self, ctx: SkillContext):
+        backpack = self._backpack(ctx)
         if backpack is None:
             return None
         return next(
             (
                 item
                 for item in ctx.obs.items
-                if item.graphic in SMITH_TOOL_GRAPHICS
+                if item.graphic in self.craft_tool_graphics
                 and item.container == backpack.serial
             ),
             None,
@@ -456,7 +490,7 @@ class CraftDaggers(Blacksmith):
             sorted(
                 (item.serial, item.amount)
                 for item in ctx.obs.items
-                if item.graphic == DAGGER_GRAPHIC
+                if item.graphic == self.craft_output_graphic
                 and item.container == backpack.serial
             )
         )
@@ -465,7 +499,7 @@ class CraftDaggers(Blacksmith):
             ctx.obs.player.pos.y,
         )
         start_count = sum(amount for _serial, amount in ctx.memory["cap_craft_start_daggers"])
-        ctx.memory["cap_craft_needed"] = max(0, 5 - start_count)
+        ctx.memory["cap_craft_needed"] = max(0, self.craft_batch - start_count)
         ctx.memory["cap_craft_confirmed"] = 0
         ctx.memory["cap_craft_produced"] = ()
         ctx.memory["cap_craft_failed_attempts"] = 0
@@ -521,7 +555,7 @@ class CraftDaggers(Blacksmith):
         current = {
             item.serial: item.amount
             for item in ctx.obs.items
-            if item.graphic == DAGGER_GRAPHIC
+            if item.graphic == self.craft_output_graphic
             and item.container == backpack.serial
             and item.amount > 0
         }
@@ -539,7 +573,7 @@ class CraftDaggers(Blacksmith):
             (
                 gump
                 for gump in ctx.obs.gumps
-                if str(CRAFT_TITLE_CLILOC) in gump.layout
+                if str(self.craft_title_cliloc) in gump.layout
                 and gump.gump_id == known_gump_id
                 and gump.serial != attempt_gump_serial
             ),
@@ -548,17 +582,17 @@ class CraftDaggers(Blacksmith):
         lost_failure = bool(
             craft_gump is not None
             and str(CRAFT_FAILURE_CLILOC) in craft_gump.layout
-            and self._has_reply(craft_gump, MAKE_LAST_BTN)
+            and self._has_reply(craft_gump, self.craft_make_last_btn)
         )
         no_loss_failure = bool(
             craft_gump is not None
             and str(CRAFT_FAILURE_NO_LOSS_CLILOC) in craft_gump.layout
-            and self._has_reply(craft_gump, MAKE_LAST_BTN)
+            and self._has_reply(craft_gump, self.craft_make_last_btn)
         )
         fresh_result_gump = craft_gump is not None
         if (
             created == 1
-            and ingots_used == MIN_INGOTS
+            and ingots_used == self.craft_material_per_item
             and fresh_result_gump
             and not lost_failure
             and not no_loss_failure
@@ -585,7 +619,7 @@ class CraftDaggers(Blacksmith):
             created == 0
             and fresh_result_gump
             and (
-                (lost_failure and ingots_used in {0, MIN_INGOTS})
+                (lost_failure and ingots_used in {0, self.craft_material_per_item})
                 or (no_loss_failure and ingots_used == 0)
             )
         )
@@ -615,7 +649,7 @@ class CraftDaggers(Blacksmith):
             and (
                 (lost_failure or no_loss_failure)
                 or created > 1
-                or ingots_used > MIN_INGOTS
+                or ingots_used > self.craft_material_per_item
             )
         ):
             # A malformed mixed delta cannot be attributed to one dagger
@@ -630,13 +664,12 @@ class CraftDaggers(Blacksmith):
         # attempt pending until an exact success delta, a server failure
         # cliloc, or the bounded goal-step limit settles it.
 
-    @staticmethod
-    def _craft_gump(ctx: SkillContext):
+    def _craft_gump(self, ctx: SkillContext):
         return next(
             (
                 gump
                 for gump in ctx.obs.gumps
-                if str(CRAFT_TITLE_CLILOC) in gump.layout
+                if str(self.craft_title_cliloc) in gump.layout
             ),
             None,
         )
@@ -662,7 +695,7 @@ class CraftDaggers(Blacksmith):
                 (item.serial, item.amount)
                 for item in ctx.obs.items
                 if backpack is not None
-                and item.graphic == DAGGER_GRAPHIC
+                and item.graphic == self.craft_output_graphic
                 and item.container == backpack.serial
             )
         )
@@ -774,7 +807,11 @@ class CraftDaggers(Blacksmith):
                 ctx.memory["cap_craft_stage"] = "close"
                 return SkillResult(Status.RUNNING)
             ctx.memory["cap_craft_tool_serial"] = tool.serial
-            ctx.memory["cap_craft_stage"] = "resource_menu"
+            # Skip the resource-select stages entirely when this recipe has no
+            # material submenu (carpentry) — go open -> category directly.
+            ctx.memory["cap_craft_stage"] = (
+                "resource_menu" if self.craft_resource_menu_btn is not None else "category"
+            )
             return SkillResult(Status.RUNNING, Use(serial=tool.serial))
 
         gump = self._craft_gump(ctx)
@@ -789,40 +826,41 @@ class CraftDaggers(Blacksmith):
 
         if stage == "resource_menu":
             ctx.memory["cap_craft_stage"] = "iron"
-            button = RESOURCE_MENU_BTN
+            button = self.craft_resource_menu_btn
         elif stage == "iron":
             ctx.memory["cap_craft_stage"] = "category"
-            button = IRON_RESOURCE_BTN
+            button = self.craft_material_resource_btn
         elif stage == "category":
             ctx.memory["cap_craft_stage"] = "item"
-            button = CATEGORY_BTN
+            button = self.craft_category_btn
         elif stage == "item":
-            if (
-                str(DAGGER_NAME_CLILOC) not in gump.layout
-                or not self._has_reply(gump, DAGGER_BTN)
-            ):
+            name_ok = (
+                self.craft_item_name_cliloc is None
+                or str(self.craft_item_name_cliloc) in gump.layout
+            )
+            if not name_ok or not self._has_reply(gump, self.craft_item_btn):
                 return SkillResult(Status.RUNNING)
             self._snapshot_attempt(ctx, gump)
             ctx.memory["cap_craft_dagger_button_goal_id"] = goal_id
             ctx.memory["cap_craft_stage"] = "pending"
-            button = DAGGER_BTN
+            button = self.craft_item_btn
         elif stage == "make_last":
-            if self._pack_ingots(ctx) < MIN_INGOTS:
+            if self._pack_ingots(ctx) < self.craft_material_per_item:
                 ctx.memory["cap_craft_abort_goal_id"] = goal_id
                 ctx.memory["cap_craft_stage"] = "close"
                 return self._close_or_finish(ctx)
             self._snapshot_attempt(ctx, gump)
             ctx.memory["cap_craft_dagger_button_goal_id"] = goal_id
             ctx.memory["cap_craft_stage"] = "pending"
-            button = MAKE_LAST_BTN
+            button = self.craft_make_last_btn
         else:
             return SkillResult(Status.RUNNING)
-        if button not in {DAGGER_BTN, MAKE_LAST_BTN} and not self._has_reply(gump, button):
+        if button not in {self.craft_item_btn, self.craft_make_last_btn} and not self._has_reply(gump, button):
             # The prior response may still be the currently observed gump.
             # Never advance the FSM until the exact next-page reply exists.
             ctx.memory["cap_craft_stage"] = stage
             return SkillResult(Status.RUNNING)
-        if button == MAKE_LAST_BTN and not self._has_reply(gump, button):
+        if button == self.craft_make_last_btn and not self._has_reply(gump, button):
             ctx.memory.pop("cap_craft_attempt_daggers", None)
             ctx.memory.pop("cap_craft_attempt_ingots", None)
             ctx.memory.pop("cap_craft_attempt_gump_serial", None)
@@ -836,3 +874,14 @@ class CraftDaggers(Blacksmith):
             Status.RUNNING,
             GumpResponse(gump.serial, gump.gump_id, button=button),
         )
+
+
+class CraftDaggers(CraftItemCapability):
+    """Blacksmith config: craft a five-item batch of daggers from iron ingots.
+    Inherits every `craft_*` default (tool=hammer/tongs, category 22, item 16,
+    material=iron, 3/item, output=dagger, batch 5, iron resource submenu), so it
+    is byte-identical to the B4 skill.
+    """
+
+    name = "craft_daggers"
+    description = "Craft enough observation-confirmed daggers to fill one five-item sale batch."

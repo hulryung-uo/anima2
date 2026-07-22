@@ -222,6 +222,11 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("lumberjack", "sell_boards"),
         ("lumberjack", "bank_gold"),
         ("lumberjack", "buy_hatchet"),
+        ("carpenter", "craft_carpentry"),
+        ("carpenter", "sell_furniture"),
+        ("carpenter", "bank_gold"),
+        ("carpenter", "buy_boards"),
+        ("carpenter", "buy_saw"),
     ]
     assert len(keys) == len(set(keys))
     assert not isinstance(CAPABILITIES, list)
@@ -375,7 +380,7 @@ def test_registry_and_profession_planners_expose_the_same_closed_capability_set(
     capability_professions = {
         profession for profession, _capability in CAPABILITIES
     }
-    assert capability_professions == {"blacksmith", "lumberjack"}
+    assert capability_professions == {"blacksmith", "lumberjack", "carpenter"}
 
     planner_keys: list[tuple[str, str]] = []
     for profession in PROFESSIONS.values():

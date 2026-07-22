@@ -491,6 +491,24 @@ PROFESSIONS: dict[str, Profession] = {
         needs_workplace=True,
         work_skill=Chop,
     ),
+    # The lumber->carpenter->tinker chain's second link (Bricks 4-5,
+    # docs/LUMBER-CARPENTER-TINKER.md): saw boards into furniture, sell it, bank
+    # the gold, and self-provision boards + a replacement saw — five capabilities
+    # (`skills/carpentry.py`), all thin config subclasses of the generalized
+    # craft/market machinery. Capability-driven only (no standalone village
+    # work_skill yet, unlike the smith's `BlacksmithMarket`): the planner reads the
+    # five carpenter bindings straight from `CAPABILITIES`. Carpentry 80 clears the
+    # Throne's 73.6 skill floor; a durable `Saw 999` avoids the mid-run tool break
+    # that `SmithHammer 999` guards against on the smith (buy_saw is the fallback if
+    # it still breaks). No forge/anvil/structures (a saw crafts anywhere) and no
+    # resource-node workplace (the carpenter buys/gets boards, it doesn't harvest).
+    "carpenter": Profession(
+        key="carpenter",
+        persona_name="Sten",
+        skills={"Carpentry": 80},
+        items=["Saw 999"],
+        work_skill=None,
+    ),
     # Phase 3 item 3 (hunt/loot, DESIGN.md §10): engages weak creatures
     # (calibrated target: Mongbat — `Scripts/Mobiles/Normal/Mongbat.cs`, 4-6
     # hits, `AddLoot(LootPack.Poor)`) bare-handed. No weapon needed —

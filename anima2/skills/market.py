@@ -305,6 +305,12 @@ class BlacksmithMarket(Blacksmith):
     #: The exact for-sale tool art a buy_tool capability buys (blacksmith: tongs
     #: 0x0FBB) — resolved off the enriched `ShopBuyEntry` by graphic.
     offer_graphic: int = SMITH_TONGS_GRAPHIC
+    #: A material-buy capability's config (blacksmith: iron). `buy_material_graphics`
+    #: counts pack material (may be a stack-variant set); `buy_offer_graphic` is
+    #: the exact for-sale art; `buy_amount` is the fixed batch ordered.
+    buy_material_graphics: frozenset[int] = INGOT_GRAPHICS
+    buy_offer_graphic: int = IRON_INGOT_GRAPHIC
+    buy_amount: int = BUY_AMOUNT
 
     def step(self, ctx: SkillContext) -> SkillResult:
         vendor = ctx.memory.get("vendor_spot")
@@ -761,16 +767,16 @@ class BlacksmithMarket(Blacksmith):
                     self._stash_reward(ctx, reward)
                     return None  # the window never arrived — give up this trip
                 return SkillResult(Status.RUNNING, None, reward)
-            entry = self._iron_offer(buy)
+            entry = self._offer_by_graphic(buy, self.buy_offer_graphic)
             if entry is None:
                 # The vendor's for-sale list doesn't expose a single resolvable
-                # iron-ingot offer — bail rather than loop or buy the wrong item.
+                # material offer — bail rather than loop or buy the wrong item.
                 self._stash_reward(ctx, reward)
                 return None
             # Buy the fixed batch, clamped to what the vendor actually stocks
             # (`entry.amount`), so a thin stock yields a smaller — but still
             # exactly accounted-for — replenishment rather than a rejected order.
-            amount = min(BUY_AMOUNT, entry.amount)
+            amount = min(self.buy_amount, entry.amount)
             ctx.memory["buy_stage"] = "confirm"
             return SkillResult(
                 Status.RUNNING,
@@ -837,21 +843,21 @@ class BlacksmithMarket(Blacksmith):
 
     def _buy_offer_for(self, buy, action: BuyItems) -> tuple[int, int, int] | None:
         """Reconstruct the exact `(serial, amount, unit_price)` a `BuyItems`
-        action is committing to, straight from the still-open BUY window's iron
-        entry — never trusting any model text. `None` unless the action names
-        exactly that iron serial for the deterministic clamped order amount
-        (`min(BUY_AMOUNT, entry.amount)`) at the entry's own positive price.
-        Mirrors how `SellDaggers.step` reconstructs its offered items from the
-        open `ShopSell` before recording goal evidence.
+        action is committing to, straight from the still-open BUY window's
+        material entry (resolved by `self.buy_offer_graphic`) — never trusting any
+        model text. `None` unless the action names exactly that serial for the
+        deterministic clamped order amount (`min(self.buy_amount, entry.amount)`)
+        at the entry's own positive price. Mirrors how `SellDaggers.step`
+        reconstructs its offered items from the open `ShopSell`.
         """
-        entry = self._iron_offer(buy)
+        entry = self._offer_by_graphic(buy, self.buy_offer_graphic)
         if entry is None or len(action.items) != 1:
             return None
         serial, amount = action.items[0]
         if (
             serial != entry.serial
             or type(amount) is not int
-            or amount != min(BUY_AMOUNT, entry.amount)
+            or amount != min(self.buy_amount, entry.amount)
         ):
             return None
         return (serial, amount, entry.price)
@@ -1177,16 +1183,16 @@ class BlacksmithMarket(Blacksmith):
         )
 
     def _pack_iron(self, ctx: SkillContext) -> int:
-        """Iron ingots currently in the pack — summed across every pile-size
-        variant in `INGOT_GRAPHICS` (a bought stack can merge into any of them),
-        unlike `_iron_offer`, which matches the vendor's single for-sale display
-        graphic. The confirmed-arrival signal `_buy_step` rewards on and the
-        `buy_ingots` capability verifies against.
+        """The material a material-buy holds in the pack — summed across
+        `self.buy_material_graphics` (iron's 4 pile-size variants; a bought stack
+        can merge into any of them), unlike `self.buy_offer_graphic`, which
+        matches the vendor's single for-sale display graphic. The confirmed-
+        arrival signal `_buy_step` rewards on and the capability verifies against.
         """
         bp = self._backpack(ctx)
         if bp is None:
             return 0
-        return sum(i.amount for i in ctx.obs.items if i.graphic in INGOT_GRAPHICS and i.container == bp.serial)
+        return sum(i.amount for i in ctx.obs.items if i.graphic in self.buy_material_graphics and i.container == bp.serial)
 
     def _pack_tools(self, ctx: SkillContext) -> int:
         """COUNT of the capability's owned-tool graphics in the pack (each tool is
@@ -1811,25 +1817,22 @@ class BankGold(BlacksmithMarket):
         return self._payout(ctx, SkillResult(Status.RUNNING))
 
 
-class BuyIngots(BlacksmithMarket):
-    """Operation-specific vendor hands: buy iron ingots, never craft or sell.
+class BuyMaterialCapability(BlacksmithMarket):
+    """Operation-specific vendor hands: buy a fixed batch of a crafting material,
+    never craft or sell. The generalized base for `BuyIngots` (blacksmith, iron)
+    and `BuyBoards` (carpenter, boards) — subclasses only set `buy_material_graphics`
+    /`buy_offer_graphic`/`buy_amount`/`vendor_spot_key`/`name`/`description`; the
+    machinery below reads those.
 
-    The exact mirror of ``SellDaggers`` inverted — gold LEAVES the pack, iron
-    ingots ARRIVE — and the self-provisioning keystone: it lets a blacksmith
-    replenish its finite crafting metal with earned gold, so the
-    craft→sell→bank loop runs indefinitely without a GM re-gifting ingots.
-
-    The capability keeps observation evidence scoped to the active goal frame.
-    Merely opening a buy window, sending ``BuyItems``, or observing a gold
-    change is insufficient on its own: completion requires the exact vendor
-    offer observed, exactly the quoted cost to leave the pack, at least the
-    bought amount of iron to arrive in it, the UI to clear, and the smith to
-    return to the safe idle phase for the same ``goal_id``. Only iron ingots
-    are ever bought — never the vendor's shields, armour, weapons, or tongs.
+    The self-provisioning keystone: it lets a crafter replenish its finite
+    material with earned gold, so the craft→sell→bank loop runs indefinitely
+    without a GM re-gifting stock. The capability keeps observation evidence
+    scoped to the active goal frame: completion requires the exact vendor offer
+    observed, exactly the quoted cost to leave the pack, at least the bought
+    amount of material to arrive in it, the UI to clear, and a safe return for
+    the same ``goal_id``. Only the configured material is ever bought. (The
+    ``cap_buy_*``/``buy_iron_start`` memory keys keep their legacy names.)
     """
-
-    name = "buy_ingots"
-    description = "Buy a fixed batch of iron ingots from the configured vendor and return."
 
     _CLEANUP_KEYS = (
         "buy_iron_start",
@@ -1852,7 +1855,7 @@ class BuyIngots(BlacksmithMarket):
         if ctx.memory.get("cap_buy_goal_id") == goal_id:
             return True
 
-        vendor = ctx.memory.get("vendor_spot")
+        vendor = ctx.memory.get(self.vendor_spot_key)
         try:
             route = tuple(self._route(vendor))
         except (IndexError, TypeError, ValueError):
@@ -1947,6 +1950,23 @@ class BuyIngots(BlacksmithMarket):
         # Deliberately do not fall through to Blacksmith.step(): completion is
         # evaluated from the next Observation before any hammer action can run.
         return self._payout(ctx, SkillResult(Status.RUNNING))
+
+
+class BuyIngots(BuyMaterialCapability):
+    """Blacksmith config: buy a fixed batch of iron ingots (0x1BF2) from the
+    `vendor_spot` Blacksmith NPC when metal runs low. Inherits every default
+    (`buy_material_graphics=INGOT_GRAPHICS`, `buy_offer_graphic=IRON_INGOT_GRAPHIC`,
+    `buy_amount=BUY_AMOUNT`, `vendor_spot_key="vendor_spot"`), so it is
+    byte-identical to the B8 skill.
+    """
+
+    name = "buy_ingots"
+    description = "Buy a fixed batch of iron ingots from the configured vendor and return."
+    #: The reorder trigger (buy when pack material is below this) and the price
+    #: estimate for the readiness affordability gate (the buy reads the live
+    #: price). Iron: below one 5-dagger craft batch (15), 5g each.
+    buy_reorder: int = MIN_INGOTS * 5
+    buy_price_estimate: int = 5
 
 
 class BuyToolCapability(BlacksmithMarket):

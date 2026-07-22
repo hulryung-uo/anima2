@@ -16,10 +16,10 @@ from typing import Callable, Mapping
 from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
-from .skills.craft import DAGGER_GRAPHIC, MIN_INGOTS, SMITH_TOOL_GRAPHICS, CraftDaggers
+from .skills.carpentry import BuyBoards, BuySaw, CarpenterCraft, SellFurniture
+from .skills.craft import DAGGER_GRAPHIC, SMITH_TOOL_GRAPHICS, CraftDaggers
 from .skills.harvest import AXE_GRAPHICS
 from .skills.market import (
-    BUY_AMOUNT,
     TOOL_BUY_AMOUNT,
     BankGold,
     BuyIngots,
@@ -135,15 +135,22 @@ def _pack_daggers(ctx: SkillContext) -> int:
     return _pack_graphic(ctx, DAGGER_GRAPHIC)
 
 
-def _pack_ingots(ctx: SkillContext) -> int:
+def _pack_graphics(ctx: SkillContext, graphics: frozenset[int]) -> int:
+    """Pack amount summed over a SET of item arts — the generalized material
+    count a craft capability uses (blacksmith: the 4 ingot pile-size variants;
+    carpenter: boards)."""
     backpack = _backpack_serial(ctx)
     if backpack is None:
         return 0
     return sum(
         item.amount
         for item in ctx.obs.items
-        if item.graphic in INGOT_GRAPHICS and item.container == backpack
+        if item.graphic in graphics and item.container == backpack
     )
+
+
+def _pack_ingots(ctx: SkillContext) -> int:
+    return _pack_graphics(ctx, INGOT_GRAPHICS)
 
 
 def _owned_tool(ctx: SkillContext, graphics: frozenset[int]):
@@ -487,27 +494,40 @@ def _craft_at_spot(ctx: SkillContext) -> bool:
     )
 
 
-def _craft_ready(ctx: SkillContext) -> bool:
-    daggers = _pack_daggers(ctx)
-    obs = ctx.obs
-    return bool(
-        _craft_at_spot(ctx)
-        and _backpack_serial(ctx) is not None
-        and _owned_smith_tool(ctx) is not None
-        and 0 <= daggers < 5
-        and _pack_ingots(ctx) >= MIN_INGOTS * (5 - daggers)
-        and ctx.memory.get("mkt_phase", "craft") == "craft"
-        and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
-        and ctx.memory.get("bs_fetch_held") is None
-        and ctx.memory.get("bank_held") is None
-        and ctx.memory.get("cap_bank_release_pending") is None
-        and all(ctx.memory.get(key) is None for key in _SELL_TRANSACTION_KEYS)
-        and obs.pending_target is None
-        and not obs.gumps
-        and obs.popup is None
-        and obs.shop_buy is None
-        and obs.shop_sell is None
-    )
+def _make_craft_ready(
+    output_graphic: int,
+    material_graphics: frozenset[int],
+    per_item: int,
+    tool_graphics: frozenset[int],
+    batch: int,
+) -> Callable[[SkillContext], bool]:
+    """Build a craft readiness gate for one recipe. Blacksmith:
+    `(DAGGER_GRAPHIC, INGOT_GRAPHICS, MIN_INGOTS, SMITH_TOOL_GRAPHICS, 5)` —
+    byte-identical to the old `_craft_ready`."""
+
+    def ready(ctx: SkillContext) -> bool:
+        made = _pack_graphic(ctx, output_graphic)
+        obs = ctx.obs
+        return bool(
+            _craft_at_spot(ctx)
+            and _backpack_serial(ctx) is not None
+            and _owned_tool(ctx, tool_graphics) is not None
+            and 0 <= made < batch
+            and _pack_graphics(ctx, material_graphics) >= per_item * (batch - made)
+            and ctx.memory.get("mkt_phase", "craft") == "craft"
+            and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+            and ctx.memory.get("bs_fetch_held") is None
+            and ctx.memory.get("bank_held") is None
+            and ctx.memory.get("cap_bank_release_pending") is None
+            and all(ctx.memory.get(key) is None for key in _SELL_TRANSACTION_KEYS)
+            and obs.pending_target is None
+            and not obs.gumps
+            and obs.popup is None
+            and obs.shop_buy is None
+            and obs.shop_sell is None
+        )
+
+    return ready
 
 
 def _craft_can_yield(ctx: SkillContext) -> bool:
@@ -535,7 +555,28 @@ def _craft_can_yield(ctx: SkillContext) -> bool:
     )
 
 
-def _craft_achieved(ctx: SkillContext) -> bool:
+def _make_craft_achieved(
+    output_graphic: int,
+    material_graphics: frozenset[int],
+    per_item: int,
+    batch: int,
+) -> Callable[[SkillContext], bool]:
+    """Build a craft completion proof for one recipe. Blacksmith:
+    `(DAGGER_GRAPHIC, INGOT_GRAPHICS, MIN_INGOTS, 5)` — byte-identical."""
+
+    def achieved(ctx: SkillContext) -> bool:
+        return _craft_achieved_impl(ctx, output_graphic, material_graphics, per_item, batch)
+
+    return achieved
+
+
+def _craft_achieved_impl(
+    ctx: SkillContext,
+    output_graphic: int,
+    material_graphics: frozenset[int],
+    per_item: int,
+    batch: int,
+) -> bool:
     goal_id = ctx.goal_id
     needed = ctx.memory.get("cap_craft_needed")
     confirmed = ctx.memory.get("cap_craft_confirmed")
@@ -586,7 +627,7 @@ def _craft_achieved(ctx: SkillContext) -> bool:
         item.serial: item.amount
         for item in ctx.obs.items
         if backpack is not None
-        and item.graphic == DAGGER_GRAPHIC
+        and item.graphic == output_graphic
         and item.container == backpack
     }
     expected_daggers = (
@@ -611,7 +652,7 @@ def _craft_achieved(ctx: SkillContext) -> bool:
         and type(needed) is int
         and needed > 0
         and start_valid
-        and start_count + needed == 5
+        and start_count + needed == batch
         and type(confirmed) is int
         and confirmed == needed
         and produced_valid
@@ -628,11 +669,11 @@ def _craft_achieved(ctx: SkillContext) -> bool:
         and type(failed_ingots) is int
         and isinstance(failure_costs, tuple)
         and len(failure_costs) == failed_attempts
-        and all(type(cost) is int and cost in {0, MIN_INGOTS} for cost in failure_costs)
+        and all(type(cost) is int and cost in {0, per_item} for cost in failure_costs)
         and failed_ingots == sum(failure_costs)
-        and ingots_used == MIN_INGOTS * needed + failed_ingots
-        and start_ingots - _pack_ingots(ctx) == ingots_used
-        and _pack_daggers(ctx) == 5
+        and ingots_used == per_item * needed + failed_ingots
+        and start_ingots - _pack_graphics(ctx, material_graphics) == ingots_used
+        and _pack_graphic(ctx, output_graphic) == batch
         and _craft_can_yield(ctx)
     )
 
@@ -647,13 +688,34 @@ def _craft_progress(ctx: SkillContext) -> float:
     return max(0.0, min(1.0, confirmed / needed))
 
 
+def _craft_ready_for(skill_cls: type) -> Callable[[SkillContext], bool]:
+    """A craft readiness gate built from a craft skill class's own `craft_*`
+    config — the single source of truth (skill and leaf-func can't disagree)."""
+    return _make_craft_ready(
+        skill_cls.craft_output_graphic,
+        skill_cls.craft_material_graphics,
+        skill_cls.craft_material_per_item,
+        skill_cls.craft_tool_graphics,
+        skill_cls.craft_batch,
+    )
+
+
+def _craft_achieved_for(skill_cls: type) -> Callable[[SkillContext], bool]:
+    return _make_craft_achieved(
+        skill_cls.craft_output_graphic,
+        skill_cls.craft_material_graphics,
+        skill_cls.craft_material_per_item,
+        skill_cls.craft_batch,
+    )
+
+
 _CRAFT_DAGGERS = CapabilityBinding(
     capability_id="craft_daggers",
     profession="blacksmith",
     skill_type=CraftDaggers,
     allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
-    ready=_craft_ready,
-    achieved=_craft_achieved,
+    ready=_craft_ready_for(CraftDaggers),
+    achieved=_craft_achieved_for(CraftDaggers),
     progress=_craft_progress,
     can_yield=_craft_can_yield,
     default_deadline_ticks=300,
@@ -667,22 +729,13 @@ _CRAFT_DAGGERS = CapabilityBinding(
 # supply loop so craft->sell->bank runs indefinitely without a GM re-gifting
 # ingots.
 
-# Reorder trigger: below one full sale batch's worth of ingots. A five-dagger
-# `craft_daggers` batch needs ``MIN_INGOTS * 5`` == 15 ingots (each dagger costs
-# ``MIN_INGOTS`` == 3 — see `_craft_ready`), so at or above 15 the smith can
-# still craft a whole batch from stock and nothing needs buying; below it the
-# next batch would starve mid-run, which is exactly when a replenishment trip is
-# worthwhile. ``BUY_AMOUNT`` (also 15) refills from empty back over this line.
-_BUY_REORDER_INGOTS = MIN_INGOTS * 5
-# This ServUO shard's iron-ingot unit price (``Scripts/VendorInfo/
-# SBBlacksmith.cs``: ``GenericBuyInfo(typeof(IronIngot), 5, 16, 0x1BF2, 0)``),
-# used ONLY as the readiness affordability estimate. The actual purchase reads
-# the live price from the matching ``ShopBuyEntry`` and never hardcodes it (see
-# `skills/market.py::BlacksmithMarket._iron_offer`). The order is also clamped to
-# the vendor's live stock, so it never costs more than this estimate implies; if
-# the live price is higher than the estimate, a buy simply fails server-side for
-# want of gold and the goal times out — an optimistic estimate never overspends.
-_IRON_UNIT_PRICE = 5
+# The reorder trigger (buy when pack material is below one craft batch's worth)
+# and the affordability price estimate now live on each material-buy skill class
+# as `buy_reorder`/`buy_price_estimate` — the single config source the leaf-func
+# factory reads (`BuyIngots.buy_reorder == 15`, `BuyIngots.buy_price_estimate == 5`
+# for iron; the carpenter's `BuyBoards` sets its own). The actual purchase reads
+# the live price from the matching `ShopBuyEntry` and clamps to live stock, so an
+# optimistic estimate never overspends.
 
 _BUY_TRANSACTION_KEYS = (
     "buy_leg",
@@ -717,15 +770,28 @@ def _buy_can_yield(ctx: SkillContext) -> bool:
     )
 
 
-def _buy_ready(ctx: SkillContext) -> bool:
-    return bool(
-        _valid_spot(ctx.memory.get("vendor_spot"))
-        and _backpack_serial(ctx) is not None
-        and _pack_ingots(ctx) < _BUY_REORDER_INGOTS
-        and _pack_gold(ctx) >= BUY_AMOUNT * _IRON_UNIT_PRICE
-        and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
-        and _buy_can_yield(ctx)
-    )
+def _make_buy_ready(
+    material_graphics: frozenset[int],
+    reorder: int,
+    amount: int,
+    price_estimate: int,
+    vendor_spot_key: str,
+) -> Callable[[SkillContext], bool]:
+    """Build a material-buy readiness gate. Blacksmith:
+    `(INGOT_GRAPHICS, 15, BUY_AMOUNT, 5, "vendor_spot")` — byte-identical to the
+    old `_buy_ready`; carpenter: `(BOARD_GRAPHICS, ..., ..., 3, "vendor_spot")`."""
+
+    def ready(ctx: SkillContext) -> bool:
+        return bool(
+            _valid_spot(ctx.memory.get(vendor_spot_key))
+            and _backpack_serial(ctx) is not None
+            and _pack_graphics(ctx, material_graphics) < reorder
+            and _pack_gold(ctx) >= amount * price_estimate
+            and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+            and _buy_can_yield(ctx)
+        )
+
+    return ready
 
 
 def _buy_achieved(ctx: SkillContext) -> bool:
@@ -793,12 +859,23 @@ def _buy_progress(ctx: SkillContext) -> float:
     )
 
 
+def _buy_ready_for(skill_cls: type) -> Callable[[SkillContext], bool]:
+    """A material-buy readiness gate built from the skill class's own config."""
+    return _make_buy_ready(
+        skill_cls.buy_material_graphics,
+        skill_cls.buy_reorder,
+        skill_cls.buy_amount,
+        skill_cls.buy_price_estimate,
+        skill_cls.vendor_spot_key,
+    )
+
+
 _BUY_INGOTS = CapabilityBinding(
     capability_id="buy_ingots",
     profession="blacksmith",
     skill_type=BuyIngots,
     allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
-    ready=_buy_ready,
+    ready=_buy_ready_for(BuyIngots),
     achieved=_buy_achieved,
     progress=_buy_progress,
     can_yield=_buy_can_yield,
@@ -818,7 +895,7 @@ _BUY_INGOTS = CapabilityBinding(
 # the actual purchase reads the live `ShopBuyEntry` price) now lives on each
 # buy_tool skill class as `tool_price_estimate` — the single config source the
 # leaf-func factory reads (`BuyTool.tool_price_estimate == 13` for the smith's
-# tongs, `BuyHatchet.tool_price_estimate == 27` for the lumberjack's hatchet).
+# tongs, `BuyHatchet.tool_price_estimate == 25` for the lumberjack's hatchet).
 
 # Suggested working-capital reserve for `bank_gold`'s opt-in `bank_reserve`: keep
 # back enough pack gold to afford ONE iron replenishment batch AND ONE tool
@@ -826,9 +903,12 @@ _BUY_INGOTS = CapabilityBinding(
 # surplus can still fund the buy_ingots/buy_smith_tool fallbacks that bridge a
 # supply gap instead of banking itself broke and stalling. Nothing sets
 # `bank_reserve` by default (it stays 0 — byte-identical to B7); the loop/gate
-# opts in by writing `memory["bank_reserve"] = WORKING_CAPITAL_RESERVE`.
+# opts in by writing `memory["bank_reserve"] = WORKING_CAPITAL_RESERVE`. The iron
+# batch cost reads `BuyIngots`' own config (`buy_amount * buy_price_estimate`) so
+# it stays in lockstep with the buy_ingots gate that spends it.
 WORKING_CAPITAL_RESERVE = (
-    BUY_AMOUNT * _IRON_UNIT_PRICE + TOOL_BUY_AMOUNT * BuyTool.tool_price_estimate
+    BuyIngots.buy_amount * BuyIngots.buy_price_estimate
+    + TOOL_BUY_AMOUNT * BuyTool.tool_price_estimate
 )
 
 _TOOLBUY_TRANSACTION_KEYS = (
@@ -1102,6 +1182,78 @@ _BUY_HATCHET = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+# --- carpenter capabilities (Bricks 4-5) — the same config-attr/factory shape as
+# the lumberjack. `craft_carpentry` is the craft analog of `craft_daggers` (a
+# Throne from boards, via the no-material-submenu carpentry gump); `sell_furniture`
+# /`buy_boards`/`buy_saw` reuse the sell/material-buy/tool-buy machinery with the
+# carpenter skill classes' own config; `bank_gold` reuses the profession-agnostic
+# gold leaf funcs verbatim. All four vendor legs use the ONE `vendor_spot`
+# Carpenter NPC (SBCarpenter buys furniture + boards and sells boards + saws).
+
+_CRAFT_CARPENTRY = CapabilityBinding(
+    capability_id="craft_carpentry",
+    profession="carpenter",
+    skill_type=CarpenterCraft,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_craft_ready_for(CarpenterCraft),
+    achieved=_craft_achieved_for(CarpenterCraft),
+    progress=_craft_progress,
+    can_yield=_craft_can_yield,
+    default_deadline_ticks=300,
+)
+
+_SELL_FURNITURE = CapabilityBinding(
+    capability_id="sell_furniture",
+    profession="carpenter",
+    skill_type=SellFurniture,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_sell_ready(
+        SellFurniture.sold_graphic, SellFurniture.sell_threshold, SellFurniture.vendor_spot_key
+    ),
+    achieved=_sell_achieved,
+    progress=_sell_progress,
+    can_yield=_sell_can_yield,
+    default_deadline_ticks=180,
+)
+
+_CARPENTER_BANK_GOLD = CapabilityBinding(
+    capability_id="bank_gold",
+    profession="carpenter",
+    skill_type=BankGold,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_bank_ready,
+    achieved=_bank_achieved,
+    progress=_bank_progress,
+    can_yield=_bank_can_yield,
+    default_deadline_ticks=120,
+)
+
+_BUY_BOARDS = CapabilityBinding(
+    capability_id="buy_boards",
+    profession="carpenter",
+    skill_type=BuyBoards,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_buy_ready_for(BuyBoards),
+    achieved=_buy_achieved,
+    progress=_buy_progress,
+    can_yield=_buy_can_yield,
+    default_deadline_ticks=180,
+)
+
+_BUY_SAW = CapabilityBinding(
+    capability_id="buy_saw",
+    profession="carpenter",
+    skill_type=BuySaw,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_toolbuy_ready(
+        BuySaw.owned_tool_graphics, BuySaw.tool_price_estimate, BuySaw.vendor_spot_key
+    ),
+    achieved=_make_toolbuy_achieved(BuySaw.owned_tool_graphics),
+    progress=_toolbuy_progress,
+    can_yield=_toolbuy_can_yield,
+    default_deadline_ticks=180,
+)
+
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
     {
         (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
@@ -1113,6 +1265,11 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         (_SELL_BOARDS.profession, _SELL_BOARDS.capability_id): _SELL_BOARDS,
         (_LUMBER_BANK_GOLD.profession, _LUMBER_BANK_GOLD.capability_id): _LUMBER_BANK_GOLD,
         (_BUY_HATCHET.profession, _BUY_HATCHET.capability_id): _BUY_HATCHET,
+        (_CRAFT_CARPENTRY.profession, _CRAFT_CARPENTRY.capability_id): _CRAFT_CARPENTRY,
+        (_SELL_FURNITURE.profession, _SELL_FURNITURE.capability_id): _SELL_FURNITURE,
+        (_CARPENTER_BANK_GOLD.profession, _CARPENTER_BANK_GOLD.capability_id): _CARPENTER_BANK_GOLD,
+        (_BUY_BOARDS.profession, _BUY_BOARDS.capability_id): _BUY_BOARDS,
+        (_BUY_SAW.profession, _BUY_SAW.capability_id): _BUY_SAW,
     }
 )
 
