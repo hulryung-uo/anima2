@@ -51,10 +51,15 @@ observation-ready opaque capability id; Agent still rechecks and seals it.
 B5 adds a separately leased `blacksmith/sell_daggers` operation. Its success
 requires goal-scoped proof of the exact vendor offer, dagger removal, quoted
 gold arrival, and safe return before the selector proceeds to `bank_gold`.
+B6 adds `blacksmith/craft_daggers`: it can use only the owned backpack hammer
+and iron, verifies every live craft-gump reply, attributes successful and
+failed ingot consumption to the active goal, closes the UI, and replenishes the
+pack to one five-dagger sale batch. The production village now composes
+sale → bank → craft and records all three outcomes in its chronicle.
 
 **Phase 6 (the living village) — complete, all six items live-verified.**
 **Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** 947 tests green, ruff clean. The Python
+threading) — live-verified.** 1002 tests green, ruff clean. The Python
 brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
 a single agent up to a working **village** of profession-holding agents. Every
 milestone below is verified against a real ServUO shard with a non-vacuous live
@@ -99,7 +104,7 @@ See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 947 passing (offline; uses MockBody + a fake bridge)
+pytest -q                       # 1002 passing (offline; uses MockBody + a fake bridge)
 python -m anima2                # offline demo: a miner walks to work, then wanders
 
 # Live (needs a running UO server + the built bridge):

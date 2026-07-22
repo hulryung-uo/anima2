@@ -37,6 +37,8 @@ SKILL_BLACKSMITHING = 7
 # but it's the message a human would see, kept here for readers matching up
 # live journal output against this logic (`live_trade.py` watches for it).
 NOT_ENOUGH_METAL_CLILOC = 1044037
+CRAFT_FAILURE_CLILOC = 1044043
+CRAFT_FAILURE_NO_LOSS_CLILOC = 1044157
 # Cliloc 1044267 — "You must be near an anvil and a forge to smith items."
 # ServUO's `DefBlacksmithy.CanCraft` (`Scripts/Services/Craft/DefBlacksmithy.cs`)
 # returns this when `CheckAnvilAndForge` (2-tile range) fails; `CraftGump`'s
@@ -78,6 +80,10 @@ def _button(btn_type: int, index: int) -> int:
 CATEGORY_BTN = _button(0, 3)  # 22 — select the "bladed" category
 DAGGER_BTN = _button(1, 2)  # 16 — make a dagger
 MAKE_LAST_BTN = _button(6, 2)  # 21 — re-make the last item (the craft loop)
+RESOURCE_MENU_BTN = _button(6, 0)  # 7 — open material selection
+IRON_RESOURCE_BTN = _button(5, 0)  # 6 — reset the remembered resource to iron
+CRAFT_TITLE_CLILOC = 1044002
+DAGGER_NAME_CLILOC = 1023921
 # The Dagger's own item graphic (ServUO Scripts/VendorInfo/SBBlacksmith.cs:
 # `GenericBuyInfo(typeof(Dagger), 21, 20, 0xF52, 0)`) — what `skills/market.py`'s
 # sell phase matches pack/SellList items against to find crafted daggers, as
@@ -395,3 +401,438 @@ class Blacksmith(Skill):
     @staticmethod
     def _tool(ctx: SkillContext):
         return next((i for i in ctx.obs.items if i.graphic in SMITH_TOOL_GRAPHICS), None)
+
+
+class CraftDaggers(Blacksmith):
+    """Capability hands that make one observed sale batch and do nothing else.
+
+    The ordinary blacksmith can fetch ground ingots and walk back to its forge.
+    This leaf deliberately disables both powers: admission requires owned pack
+    metal, an owned pack tool, and the exact configured craft stand. The only
+    emitted actions are that tool's ``Use`` and responses to the craft gump
+    opened for this goal (plus button 0 to close it at the terminal yield).
+    """
+
+    name = "craft_daggers"
+    description = "Craft enough observation-confirmed daggers to fill one five-item sale batch."
+    max_goal_steps = 240
+    max_attempts = 20
+
+    @staticmethod
+    def _tool(ctx: SkillContext):
+        backpack = Blacksmith._backpack(ctx)
+        if backpack is None:
+            return None
+        return next(
+            (
+                item
+                for item in ctx.obs.items
+                if item.graphic in SMITH_TOOL_GRAPHICS
+                and item.container == backpack.serial
+            ),
+            None,
+        )
+
+    def _fetch_step(self, ctx: SkillContext, reward: float) -> SkillResult | None:
+        return None
+
+    def _fetch_return_step(
+        self, ctx: SkillContext, reward: float
+    ) -> SkillResult | None:
+        return None
+
+    def _begin_goal(self, ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int:
+            return False
+        if ctx.memory.get("cap_craft_goal_id") == goal_id:
+            return True
+        backpack = self._backpack(ctx)
+        if backpack is None:
+            return False
+        ctx.memory["cap_craft_goal_id"] = goal_id
+        ctx.memory["cap_craft_start_ingots"] = self._pack_ingots(ctx)
+        ctx.memory["cap_craft_start_daggers"] = tuple(
+            sorted(
+                (item.serial, item.amount)
+                for item in ctx.obs.items
+                if item.graphic == DAGGER_GRAPHIC
+                and item.container == backpack.serial
+            )
+        )
+        ctx.memory["cap_craft_start_pos"] = (
+            ctx.obs.player.pos.x,
+            ctx.obs.player.pos.y,
+        )
+        start_count = sum(amount for _serial, amount in ctx.memory["cap_craft_start_daggers"])
+        ctx.memory["cap_craft_needed"] = max(0, 5 - start_count)
+        ctx.memory["cap_craft_confirmed"] = 0
+        ctx.memory["cap_craft_produced"] = ()
+        ctx.memory["cap_craft_failed_attempts"] = 0
+        ctx.memory["cap_craft_failed_ingots"] = 0
+        ctx.memory["cap_craft_failure_costs"] = ()
+        ctx.memory["cap_craft_stage"] = "open"
+        ctx.memory["cap_craft_attempts"] = 0
+        ctx.memory["cap_craft_steps"] = 0
+        for key in (
+            "cap_craft_tool_serial",
+            "cap_craft_gump_id",
+            "cap_craft_dagger_button_goal_id",
+            "cap_craft_attempt_daggers",
+            "cap_craft_attempt_ingots",
+            "cap_craft_attempt_gump_serial",
+            "cap_craft_attempt_wait",
+            "cap_craft_ingots_used",
+            "cap_craft_abort_goal_id",
+            "cap_craft_close_sent",
+            "cap_craft_close_reopen_sent",
+            "cap_craft_close_absent_wait",
+            "cap_craft_close_reopen_wait",
+            "cap_craft_finished_goal_id",
+            "cap_craft_returned_goal_id",
+        ):
+            ctx.memory.pop(key, None)
+        return True
+
+    def _observe_evidence(self, ctx: SkillContext) -> None:
+        if (
+            ctx.memory.get("cap_craft_dagger_button_goal_id") != ctx.goal_id
+            or ctx.memory.get("cap_craft_stage") != "pending"
+        ):
+            return
+        backpack = self._backpack(ctx)
+        attempt = ctx.memory.get("cap_craft_attempt_daggers")
+        attempt_ingots = ctx.memory.get("cap_craft_attempt_ingots")
+        attempt_gump_serial = ctx.memory.get("cap_craft_attempt_gump_serial")
+        if (
+            backpack is None
+            or not isinstance(attempt, tuple)
+            or type(attempt_ingots) is not int
+            or type(attempt_gump_serial) is not int
+        ):
+            return
+        before = {
+            serial: amount
+            for entry in attempt
+            if isinstance(entry, tuple) and len(entry) == 2
+            for serial, amount in (entry,)
+            if type(serial) is int and type(amount) is int and amount >= 0
+        }
+        current = {
+            item.serial: item.amount
+            for item in ctx.obs.items
+            if item.graphic == DAGGER_GRAPHIC
+            and item.container == backpack.serial
+            and item.amount > 0
+        }
+        produced = tuple(
+            sorted(
+                (serial, amount - before.get(serial, 0))
+                for serial, amount in current.items()
+                if amount > before.get(serial, 0)
+            )
+        )
+        created = sum(amount for _serial, amount in produced)
+        ingots_used = max(0, attempt_ingots - self._pack_ingots(ctx))
+        known_gump_id = ctx.memory.get("cap_craft_gump_id")
+        craft_gump = next(
+            (
+                gump
+                for gump in ctx.obs.gumps
+                if str(CRAFT_TITLE_CLILOC) in gump.layout
+                and gump.gump_id == known_gump_id
+                and gump.serial != attempt_gump_serial
+            ),
+            None,
+        )
+        lost_failure = bool(
+            craft_gump is not None
+            and str(CRAFT_FAILURE_CLILOC) in craft_gump.layout
+            and self._has_reply(craft_gump, MAKE_LAST_BTN)
+        )
+        no_loss_failure = bool(
+            craft_gump is not None
+            and str(CRAFT_FAILURE_NO_LOSS_CLILOC) in craft_gump.layout
+            and self._has_reply(craft_gump, MAKE_LAST_BTN)
+        )
+        fresh_result_gump = craft_gump is not None
+        if (
+            created == 1
+            and ingots_used == MIN_INGOTS
+            and fresh_result_gump
+            and not lost_failure
+            and not no_loss_failure
+        ):
+            confirmed = ctx.memory.get("cap_craft_confirmed", 0) + 1
+            ctx.memory["cap_craft_confirmed"] = confirmed
+            prior = ctx.memory.get("cap_craft_produced", ())
+            ctx.memory["cap_craft_produced"] = tuple(prior) + produced
+            start_ingots = ctx.memory.get("cap_craft_start_ingots", attempt_ingots)
+            ctx.memory["cap_craft_ingots_used"] = max(
+                0, start_ingots - self._pack_ingots(ctx)
+            )
+            ctx.memory.pop("cap_craft_attempt_daggers", None)
+            ctx.memory.pop("cap_craft_attempt_ingots", None)
+            ctx.memory.pop("cap_craft_attempt_gump_serial", None)
+            ctx.memory.pop("cap_craft_attempt_wait", None)
+            needed = ctx.memory.get("cap_craft_needed", 0)
+            ctx.memory["cap_craft_stage"] = (
+                "close" if confirmed >= needed else "make_last"
+            )
+            return
+
+        confirmed_failure = bool(
+            created == 0
+            and fresh_result_gump
+            and (
+                (lost_failure and ingots_used in {0, MIN_INGOTS})
+                or (no_loss_failure and ingots_used == 0)
+            )
+        )
+        if confirmed_failure:
+            ctx.memory["cap_craft_failed_attempts"] = (
+                ctx.memory.get("cap_craft_failed_attempts", 0) + 1
+            )
+            ctx.memory["cap_craft_failed_ingots"] = (
+                ctx.memory.get("cap_craft_failed_ingots", 0) + ingots_used
+            )
+            costs = ctx.memory.get("cap_craft_failure_costs", ())
+            ctx.memory["cap_craft_failure_costs"] = tuple(costs) + (ingots_used,)
+            start_ingots = ctx.memory.get("cap_craft_start_ingots", attempt_ingots)
+            ctx.memory["cap_craft_ingots_used"] = max(
+                0, start_ingots - self._pack_ingots(ctx)
+            )
+            ctx.memory.pop("cap_craft_attempt_daggers", None)
+            ctx.memory.pop("cap_craft_attempt_ingots", None)
+            ctx.memory.pop("cap_craft_attempt_gump_serial", None)
+            ctx.memory.pop("cap_craft_attempt_wait", None)
+            ctx.memory["cap_craft_stage"] = "make_last"
+            return
+
+        if (
+            craft_gump is not None
+            and fresh_result_gump
+            and (
+                (lost_failure or no_loss_failure)
+                or created > 1
+                or ingots_used > MIN_INGOTS
+            )
+        ):
+            # A malformed mixed delta cannot be attributed to one dagger
+            # attempt.  Stop issuing craft replies and drain the owned gump.
+            ctx.memory["cap_craft_abort_goal_id"] = ctx.goal_id
+            ctx.memory["cap_craft_stage"] = "close"
+            return
+
+        wait = ctx.memory.get("cap_craft_attempt_wait", 0) + 1
+        ctx.memory["cap_craft_attempt_wait"] = wait
+        # A stale pre-response gump is not proof of failure.  Keep the one
+        # attempt pending until an exact success delta, a server failure
+        # cliloc, or the bounded goal-step limit settles it.
+
+    @staticmethod
+    def _craft_gump(ctx: SkillContext):
+        return next(
+            (
+                gump
+                for gump in ctx.obs.gumps
+                if str(CRAFT_TITLE_CLILOC) in gump.layout
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _has_reply(gump, button: int) -> bool:
+        """Require the structured reply actually present on this gump page."""
+
+        return any(
+            isinstance(element, dict)
+            and element.get("type") == "button"
+            and type(element.get("reply_id")) is int
+            and element.get("reply_id") == button
+            and type(element.get("pageflag")) is int
+            and element.get("pageflag") == 1
+            for element in gump.elements
+        )
+
+    def _snapshot_attempt(self, ctx: SkillContext, gump) -> None:
+        backpack = self._backpack(ctx)
+        ctx.memory["cap_craft_attempt_daggers"] = tuple(
+            sorted(
+                (item.serial, item.amount)
+                for item in ctx.obs.items
+                if backpack is not None
+                and item.graphic == DAGGER_GRAPHIC
+                and item.container == backpack.serial
+            )
+        )
+        ctx.memory["cap_craft_attempt_ingots"] = self._pack_ingots(ctx)
+        ctx.memory["cap_craft_attempt_gump_serial"] = gump.serial
+        ctx.memory["cap_craft_attempt_wait"] = 0
+        ctx.memory["cap_craft_attempts"] = ctx.memory.get("cap_craft_attempts", 0) + 1
+
+    def _close_or_finish(self, ctx: SkillContext) -> SkillResult:
+        # Once cleanup owns the leaf, no in-flight craft result may keep the
+        # capability lease non-yieldable forever.  Success/failure evidence
+        # has already been settled before normal close; abort paths deliberately
+        # discard their unattributable pending snapshot here.
+        ctx.memory.pop("cap_craft_attempt_daggers", None)
+        ctx.memory.pop("cap_craft_attempt_ingots", None)
+        ctx.memory.pop("cap_craft_attempt_gump_serial", None)
+        ctx.memory.pop("cap_craft_attempt_wait", None)
+        gump = self._craft_gump(ctx)
+        stage = ctx.memory.get("cap_craft_stage")
+        if gump is not None:
+            known = ctx.memory.get("cap_craft_gump_id")
+            if known is not None and known != gump.gump_id:
+                return SkillResult(Status.RUNNING)
+            ctx.memory["cap_craft_gump_id"] = gump.gump_id
+            ctx.memory["cap_craft_close_sent"] = True
+            ctx.memory["cap_craft_stage"] = "close_wait"
+            return SkillResult(
+                Status.RUNNING,
+                GumpResponse(gump.serial, gump.gump_id, button=0),
+            )
+        if stage == "close" and not ctx.memory.get("cap_craft_close_reopen_sent"):
+            wait = ctx.memory.get("cap_craft_close_absent_wait", 0) + 1
+            ctx.memory["cap_craft_close_absent_wait"] = wait
+            if wait < _REOPEN_AFTER:
+                return SkillResult(Status.RUNNING)
+            tool = self._tool(ctx)
+            if tool is not None:
+                ctx.memory["cap_craft_close_reopen_sent"] = True
+                ctx.memory["cap_craft_close_reopen_wait"] = 0
+                return SkillResult(Status.RUNNING, Use(serial=tool.serial))
+            ctx.memory["cap_craft_stage"] = "close_wait"
+            return SkillResult(Status.RUNNING)
+        if stage == "close" and ctx.memory.get("cap_craft_close_reopen_sent"):
+            wait = ctx.memory.get("cap_craft_close_reopen_wait", 0) + 1
+            ctx.memory["cap_craft_close_reopen_wait"] = wait
+            if wait >= _REOPEN_AFTER:
+                # A tool response has had a full ordinary reopen window to
+                # appear.  Move to a second no-gump observation before
+                # declaring the UI settled so one delayed packet cannot both
+                # finish the leaf and admit SUCCESS in the same tick.
+                ctx.memory["cap_craft_stage"] = "close_wait"
+            return SkillResult(Status.RUNNING)
+        if stage != "close_wait":
+            return SkillResult(Status.RUNNING)
+        ctx.memory["cap_craft_finished_goal_id"] = ctx.goal_id
+        ctx.memory["cap_craft_stage"] = "finished"
+        start_pos = ctx.memory.get("cap_craft_start_pos")
+        if start_pos == (ctx.obs.player.pos.x, ctx.obs.player.pos.y):
+            ctx.memory["cap_craft_returned_goal_id"] = ctx.goal_id
+        ctx.memory["bs_state"] = "open"
+        ctx.memory.pop("bs_wait", None)
+        return SkillResult(Status.RUNNING)
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self._begin_goal(ctx):
+            return SkillResult(Status.RUNNING)
+        self._observe_evidence(ctx)
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_craft_finished_goal_id") == goal_id:
+            return SkillResult(Status.RUNNING)
+        steps = ctx.memory.get("cap_craft_steps", 0) + 1
+        ctx.memory["cap_craft_steps"] = steps
+        stage = ctx.memory.get("cap_craft_stage")
+        abort = ctx.memory.get("cap_craft_abort_goal_id") == goal_id
+        limit_reached = bool(
+            stage not in {"close", "close_wait", "finished"}
+            and (
+                steps > self.max_goal_steps
+                or (
+                    stage != "pending"
+                    and ctx.memory.get("cap_craft_attempts", 0) >= self.max_attempts
+                )
+            )
+        )
+        if (
+            abort
+            or stage in {"close", "close_wait"}
+            or limit_reached
+        ):
+            if limit_reached:
+                ctx.memory["cap_craft_abort_goal_id"] = goal_id
+            if (abort or limit_reached) and stage not in {"close", "close_wait"}:
+                ctx.memory["cap_craft_stage"] = "close"
+            return self._close_or_finish(ctx)
+
+        if any(
+            str(cliloc) in gump.layout
+            for gump in ctx.obs.gumps
+            for cliloc in (NOT_ENOUGH_METAL_CLILOC, PROXIMITY_CLILOC)
+        ):
+            ctx.memory["cap_craft_abort_goal_id"] = goal_id
+            ctx.memory["cap_craft_stage"] = "close"
+            return self._close_or_finish(ctx)
+
+        if stage == "open":
+            tool = self._tool(ctx)
+            if tool is None:
+                ctx.memory["cap_craft_abort_goal_id"] = goal_id
+                ctx.memory["cap_craft_stage"] = "close"
+                return SkillResult(Status.RUNNING)
+            ctx.memory["cap_craft_tool_serial"] = tool.serial
+            ctx.memory["cap_craft_stage"] = "resource_menu"
+            return SkillResult(Status.RUNNING, Use(serial=tool.serial))
+
+        gump = self._craft_gump(ctx)
+        if gump is None:
+            return SkillResult(Status.RUNNING)
+        known = ctx.memory.get("cap_craft_gump_id")
+        if known is not None and known != gump.gump_id:
+            ctx.memory["cap_craft_abort_goal_id"] = goal_id
+            ctx.memory["cap_craft_stage"] = "close"
+            return SkillResult(Status.RUNNING)
+        ctx.memory["cap_craft_gump_id"] = gump.gump_id
+
+        if stage == "resource_menu":
+            ctx.memory["cap_craft_stage"] = "iron"
+            button = RESOURCE_MENU_BTN
+        elif stage == "iron":
+            ctx.memory["cap_craft_stage"] = "category"
+            button = IRON_RESOURCE_BTN
+        elif stage == "category":
+            ctx.memory["cap_craft_stage"] = "item"
+            button = CATEGORY_BTN
+        elif stage == "item":
+            if (
+                str(DAGGER_NAME_CLILOC) not in gump.layout
+                or not self._has_reply(gump, DAGGER_BTN)
+            ):
+                return SkillResult(Status.RUNNING)
+            self._snapshot_attempt(ctx, gump)
+            ctx.memory["cap_craft_dagger_button_goal_id"] = goal_id
+            ctx.memory["cap_craft_stage"] = "pending"
+            button = DAGGER_BTN
+        elif stage == "make_last":
+            if self._pack_ingots(ctx) < MIN_INGOTS:
+                ctx.memory["cap_craft_abort_goal_id"] = goal_id
+                ctx.memory["cap_craft_stage"] = "close"
+                return self._close_or_finish(ctx)
+            self._snapshot_attempt(ctx, gump)
+            ctx.memory["cap_craft_dagger_button_goal_id"] = goal_id
+            ctx.memory["cap_craft_stage"] = "pending"
+            button = MAKE_LAST_BTN
+        else:
+            return SkillResult(Status.RUNNING)
+        if button not in {DAGGER_BTN, MAKE_LAST_BTN} and not self._has_reply(gump, button):
+            # The prior response may still be the currently observed gump.
+            # Never advance the FSM until the exact next-page reply exists.
+            ctx.memory["cap_craft_stage"] = stage
+            return SkillResult(Status.RUNNING)
+        if button == MAKE_LAST_BTN and not self._has_reply(gump, button):
+            ctx.memory.pop("cap_craft_attempt_daggers", None)
+            ctx.memory.pop("cap_craft_attempt_ingots", None)
+            ctx.memory.pop("cap_craft_attempt_gump_serial", None)
+            ctx.memory.pop("cap_craft_attempt_wait", None)
+            ctx.memory["cap_craft_attempts"] = max(
+                0, ctx.memory.get("cap_craft_attempts", 1) - 1
+            )
+            ctx.memory["cap_craft_stage"] = stage
+            return SkillResult(Status.RUNNING)
+        return SkillResult(
+            Status.RUNNING,
+            GumpResponse(gump.serial, gump.gump_id, button=button),
+        )

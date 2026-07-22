@@ -18,6 +18,8 @@ from anima2.goals import GoalSource
 from anima2.persona import Persona
 from anima2.profession import PROFESSIONS
 from anima2.skills.base import Goal, SkillContext
+from anima2.skills.craft import DAGGER_GRAPHIC
+from anima2.skills.smelt import INGOT_GRAPHICS
 
 
 def _ctx(
@@ -28,6 +30,9 @@ def _ctx(
     banker_spot: object = (100, 100),
     daggers: int = 0,
     vendor_spot: object = (100, 100),
+    ingots: int = 0,
+    smith_tool: bool = False,
+    craft_spot: object | None = None,
 ) -> SkillContext:
     player = PlayerView(
         serial=1,
@@ -82,8 +87,32 @@ def _ctx(
         items.append(
             ItemView(
                 serial=6,
-                graphic=0x0F52,
+                graphic=DAGGER_GRAPHIC,
                 amount=daggers,
+                pos=player.pos,
+                container=backpack.serial,
+                layer=0,
+                distance=0,
+            )
+        )
+    if ingots:
+        items.append(
+            ItemView(
+                serial=7,
+                graphic=next(iter(INGOT_GRAPHICS)),
+                amount=ingots,
+                pos=player.pos,
+                container=backpack.serial,
+                layer=0,
+                distance=0,
+            )
+        )
+    if smith_tool:
+        items.append(
+            ItemView(
+                serial=8,
+                graphic=0x13E3,
+                amount=1,
                 pos=player.pos,
                 container=backpack.serial,
                 layer=0,
@@ -95,6 +124,8 @@ def _ctx(
         memory["banker_spot"] = banker_spot
     if vendor_spot is not None:
         memory["vendor_spot"] = vendor_spot
+    if craft_spot is not None:
+        memory["craft_spot"] = craft_spot
     return SkillContext(
         obs=Observation(player=player, items=items),
         persona=Persona(name="Tormund", title="a blacksmith"),
@@ -131,6 +162,50 @@ def test_ready_capability_ids_exposes_real_registry_ordered_choice() -> None:
     ) == ("bank_gold",)
 
 
+def test_ready_capability_ids_exposes_craft_only_with_owned_exact_prerequisites() -> None:
+    ready = _ctx(
+        pack_gold=0,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+    )
+    assert ready_capability_ids("blacksmith", ready) == ("craft_daggers",)
+    assert ready_capability_ids(
+        "blacksmith",
+        _ctx(pack_gold=0, ingots=14, smith_tool=True, craft_spot=(100, 100)),
+    ) == ()
+    assert ready_capability_ids(
+        "blacksmith", _ctx(pack_gold=0, ingots=15, craft_spot=(100, 100))
+    ) == ()
+    assert ready_capability_ids(
+        "blacksmith", _ctx(pack_gold=0, ingots=15, smith_tool=True)
+    ) == ()
+
+
+def test_registry_order_prefers_sale_then_bank_then_craft() -> None:
+    ctx = _ctx(
+        daggers=5,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+    )
+    assert ready_capability_ids("blacksmith", ctx) == (
+        "sell_daggers",
+        "bank_gold",
+    )
+
+    ctx = _ctx(
+        daggers=4,
+        ingots=3,
+        smith_tool=True,
+        craft_spot=(100, 100),
+    )
+    assert ready_capability_ids("blacksmith", ctx) == (
+        "bank_gold",
+        "craft_daggers",
+    )
+
+
 def test_exact_capability_decision_returns_exact_unsealed_wire_goal() -> None:
     client = StubLLMClient(_CAPABILITY_REPLY)
 
@@ -156,6 +231,23 @@ def test_exact_second_ready_capability_can_be_selected() -> None:
     goal = CapabilityCognition(client, "blacksmith").reconsider(_ctx(daggers=5))
 
     assert goal == capability_goal("blacksmith", "bank_gold")
+    assert len(client.calls) == 1
+
+
+def test_exact_craft_capability_can_be_selected_when_ready() -> None:
+    client = StubLLMClient(
+        '{"schema":1,"decision":"capability","capability":"craft_daggers"}'
+    )
+    ctx = _ctx(
+        pack_gold=0,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+    )
+
+    goal = CapabilityCognition(client, "blacksmith").reconsider(ctx)
+
+    assert goal == capability_goal("blacksmith", "craft_daggers")
     assert len(client.calls) == 1
 
 

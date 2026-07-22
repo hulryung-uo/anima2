@@ -16,6 +16,8 @@ story.
 
 from __future__ import annotations
 
+import pytest
+
 from anima2.contract import ItemView, Observation, PlayerView, Position
 from anima2.memory import Episode
 from anima2.village import (
@@ -24,6 +26,7 @@ from anima2.village import (
     _accumulate_hunt_reward,
     _accumulate_sell_reward,
     _banked_gold,
+    _crafted_daggers,
     _chronicle_events_this_tick,
     _delivered_ingots,
     _looted_corpse,
@@ -390,6 +393,81 @@ def test_banked_gold_negative_control_gave_up_deposit_no_confirmed_reward():
     assert _banked_gold(prev, now, None) is None
 
 
+def _completed_craft(goal_id: int = 17, needed: int = 5) -> dict:
+    start_count = 5 - needed
+    return {
+        "cap_craft_goal_id": goal_id,
+        "cap_craft_dagger_button_goal_id": goal_id,
+        "cap_craft_finished_goal_id": goal_id,
+        "cap_craft_returned_goal_id": goal_id,
+        "cap_craft_start_daggers": tuple(
+            (0x700 + index, 1) for index in range(start_count)
+        ),
+        "cap_craft_needed": needed,
+        "cap_craft_confirmed": needed,
+        "cap_craft_produced": tuple(
+            (0x800 + goal_id * 10 + index, 1) for index in range(needed)
+        ),
+        "cap_craft_failed_attempts": 0,
+        "cap_craft_failed_ingots": 0,
+        "cap_craft_failure_costs": (),
+        "cap_craft_start_ingots": needed * 3,
+        "cap_craft_ingots_used": needed * 3,
+        "cap_craft_close_sent": True,
+        "cap_craft_stage": "finished",
+    }
+
+
+def test_crafted_daggers_fires_once_for_each_goal_scoped_completion():
+    completed17 = _completed_craft()
+    completed18 = _completed_craft(goal_id=18, needed=3)
+
+    assert _crafted_daggers({}, completed17) == 5.0
+    assert _crafted_daggers(completed17, completed17) is None
+    assert _crafted_daggers(completed17, completed18) == 3.0
+
+
+def test_crafted_daggers_accepts_fully_attributed_failed_ingot_costs():
+    completed = _completed_craft()
+    completed.update(
+        {
+            "cap_craft_failed_attempts": 2,
+            "cap_craft_failed_ingots": 6,
+            "cap_craft_failure_costs": (3, 3),
+            "cap_craft_start_ingots": 21,
+            "cap_craft_ingots_used": 21,
+        }
+    )
+
+    assert _crafted_daggers({}, completed) == 5.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cap_craft_dagger_button_goal_id", 18),
+        ("cap_craft_finished_goal_id", 18),
+        ("cap_craft_returned_goal_id", 18),
+        ("cap_craft_abort_goal_id", 17),
+        ("cap_craft_stage", "close_wait"),
+        ("cap_craft_confirmed", 4),
+        ("cap_craft_produced", ((0x900, 4),)),
+        ("cap_craft_ingots_used", 14),
+        ("cap_craft_start_ingots", 14),
+        ("cap_craft_failed_attempts", 1),
+        ("cap_craft_failed_ingots", 3),
+        ("cap_craft_failure_costs", (3,)),
+    ],
+)
+def test_crafted_daggers_fails_closed_on_incomplete_or_malformed_evidence(
+    field: str, value: object
+) -> None:
+    snapshot = _completed_craft()
+    snapshot[field] = value
+
+    assert _crafted_daggers({}, snapshot) is None
+
+
 def test_sold_and_banked_are_independent_phases():
     # A sell-phase exit must never be mistaken for a bank-phase exit or vice
     # versa, even with an otherwise-matching reward-bearing episode.
@@ -478,6 +556,21 @@ def test_dispatch_blacksmith_can_fire_multiple_kinds_same_tick_from_independent_
     assert ("picked_up_ingots", "Grimm0", 6.0) in events
     assert ("sold_to_vendor", None, 20.0) in events
     assert len(events) == 2
+
+
+def test_dispatch_blacksmith_records_crafted_daggers_but_other_jobs_ignore_it():
+    completed = _completed_craft()
+    blacksmith = _chronicle_events_this_tick(
+        "blacksmith", None, {}, completed, None,
+        fetch_entry_ingots=None, pack_ingots_now=0,
+    )
+    miner = _chronicle_events_this_tick(
+        "miner", None, {}, completed, None,
+        fetch_entry_ingots=None, pack_ingots_now=0,
+    )
+
+    assert blacksmith == [("crafted_daggers", None, 5.0)]
+    assert miner == []
 
 
 def test_dispatch_hunter_ignores_blacksmith_and_miner_keys():

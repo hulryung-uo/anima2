@@ -123,6 +123,20 @@ def test_compose_post_grounding_line_matches_the_spec_example():
     assert "You delivered ingots to Tormund3 twice today." in body
 
 
+def test_compose_post_grounding_names_completed_craft_batches():
+    p = Persona(name="Tormund0", title="a blacksmith")
+    events = [
+        ChronicleEvent(
+            ts="", tick=10, from_persona="Tormund0", to_persona=None,
+            kind="crafted_daggers", amount=5.0,
+        )
+    ]
+
+    _, body = compose_post(p, [], job="blacksmith", chronicle_events=events)
+
+    assert "You crafted daggers today." in body
+
+
 def test_compose_post_grounding_line_ignores_events_that_arent_this_personas_own():
     # `to_persona == "Grimm0"` here (the blacksmith's own picked_up_ingots
     # event, counterparty Grimm0) — must NOT be narrated as Grimm0's own

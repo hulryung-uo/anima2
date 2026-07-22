@@ -517,3 +517,45 @@ B5 still provisions its first daggers. The next autonomy step is a separately
 evidenced crafting capability, followed by inventory/tool acquisition and a
 durable repeat policy, so the smith can replenish sale inventory instead of
 performing only the staged first cycle.
+
+### B6 — verified dagger crafting + sale→bank→craft composition ✅
+
+The closed registry now adds `("blacksmith", "craft_daggers")` after sale and
+bank. Readiness requires the exact configured work tile, an owned backpack,
+an owned smith tool, enough owned iron to reach five pack daggers, an idle
+market/craft FSM, and no open UI or target. The leaf never inherits the legacy
+blacksmith's ground-ingot pickup or walking powers: it may only `Use` the owned
+tool and answer observed ServUO craft-gump replies for resource selection,
+iron, bladed weapons, dagger, make-last, and terminal close.
+
+Every response is paired with the live gump that exposes that exact structured
+reply button. This prevents a stale root gump from consuming the iron-selection
+transition. Completion is scoped to the active `goal_id` and requires the
+recorded start inventory, exact new dagger serials, five-pack final inventory,
+successful 3-ingot consumption per dagger, separately observed 3-ingot failed
+attempts, total ingot delta, original stand position, and a closed/settled UI.
+Malformed mixed inventory deltas abort and drain the gump. Step/attempt limits,
+missing terminal gumps, and cancel/deadline paths all reach a bounded safe yield.
+
+Offline: 1002 tests pass; Ruff, compile, and diff checks are clean. The isolated
+B6 live gate passed twice on fresh accounts. In each run, Blacksmithing 50 made
+the fixture deterministic: exactly 15 owned iron became five unique dagger
+serials along `(15,0) → (12,1) → (9,2) → (6,3) → (3,4) → (0,5)`. The exact ten
+actions were `Use → 7 → 6 → 22 → 16 → 21×4 → 0`; all 16 flags passed, every
+action belonged to the registry's `CapabilityBoundSkill(CraftDaggers)`, the
+sealed 300-tick COGNITION frame succeeded once, and no goal replay occurred.
+
+The production village was then rerun on the final code with a fresh
+miner+blacksmith pair, `--capability-goals`, and Chronicle. At the normal
+Blacksmithing level, failed crafts consumed iron and were attributed
+separately. The real ledger recorded `sold_to_vendor` 50 at tick 16,
+`banked_gold` 1150 at tick 45, miner delivery of 12 ingots at tick 55,
+`crafted_daggers` 4 at tick 81, and a second `sold_to_vendor` 40 at tick 100.
+The smith retained one base dagger, created the four missing items to restore
+the five-item batch, then sold that replenished inventory in the next cycle.
+
+B6 closes first-cycle inventory replenishment, but not indefinite autonomy.
+`bank_gold` is still an absolute one-shot policy once the bank already holds
+100 gold, and iron/tool supply remains finite. B7 should make banking
+goal-scoped and repeatable; later capabilities must acquire iron, replace tools,
+and recover resources without GM staging.

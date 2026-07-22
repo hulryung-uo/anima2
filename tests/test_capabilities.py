@@ -29,6 +29,8 @@ from anima2.profession import PROFESSIONS
 from anima2.skills import SpeakPending
 from anima2.skills.base import Goal, Skill, SkillContext, SkillResult, Status
 from anima2.skills.market import BankGold, SellDaggers
+from anima2.skills.craft import DAGGER_GRAPHIC, CraftDaggers
+from anima2.skills.smelt import INGOT_GRAPHICS
 
 
 def _ctx(
@@ -37,6 +39,9 @@ def _ctx(
     gold: int = 0,
     bank_gold: int = 0,
     daggers: int = 0,
+    ingots: int = 0,
+    smith_tool: bool = False,
+    craft_spot: object | None = None,
     goal_id: int | None = None,
     goal_policy: CapabilityPolicy | None = None,
 ) -> SkillContext:
@@ -97,7 +102,7 @@ def _ctx(
         items.append(
             ItemView(
                 serial=6,
-                graphic=0x0F52,
+                graphic=DAGGER_GRAPHIC,
                 amount=daggers,
                 pos=player.pos,
                 container=backpack.serial,
@@ -105,11 +110,38 @@ def _ctx(
                 distance=0,
             )
         )
+    if ingots:
+        items.append(
+            ItemView(
+                serial=7,
+                graphic=next(iter(INGOT_GRAPHICS)),
+                amount=ingots,
+                pos=player.pos,
+                container=backpack.serial,
+                layer=0,
+                distance=0,
+            )
+        )
+    if smith_tool:
+        items.append(
+            ItemView(
+                serial=8,
+                graphic=0x13E3,
+                amount=1,
+                pos=player.pos,
+                container=backpack.serial,
+                layer=0,
+                distance=0,
+            )
+        )
+    memory = {"banker_spot": (100, 100), "vendor_spot": (100, 100)}
+    if craft_spot is not None:
+        memory["craft_spot"] = craft_spot
     return SkillContext(
         obs=Observation(player=player, items=items),
         persona=Persona(name="Tormund"),
         goal=goal,
-        memory={"banker_spot": (100, 100), "vendor_spot": (100, 100)},
+        memory=memory,
         goal_id=goal_id,
         goal_policy=goal_policy,
     )
@@ -142,6 +174,17 @@ def _contains_sell_daggers(skill: Skill) -> bool:
     return False
 
 
+def _contains_craft_daggers(skill: Skill) -> bool:
+    current: object = skill
+    seen: set[int] = set()
+    while isinstance(current, Skill) and id(current) not in seen:
+        if isinstance(current, CraftDaggers):
+            return True
+        seen.add(id(current))
+        current = getattr(current, "inner", None)
+    return False
+
+
 def test_capability_registry_is_unique_and_deeply_immutable():
     bindings = _registry_bindings()
     keys = [(binding.profession, binding.capability_id) for binding in bindings]
@@ -149,6 +192,7 @@ def test_capability_registry_is_unique_and_deeply_immutable():
     assert keys == [
         ("blacksmith", "sell_daggers"),
         ("blacksmith", "bank_gold"),
+        ("blacksmith", "craft_daggers"),
     ]
     assert len(keys) == len(set(keys))
     assert not isinstance(CAPABILITIES, list)
@@ -289,6 +333,7 @@ def test_capability_planner_opt_out_preserves_the_legacy_skill_order():
         ]
         assert not any(_contains_bank_gold(skill) for skill in opted_out.skills)
         assert not any(_contains_sell_daggers(skill) for skill in opted_out.skills)
+        assert not any(_contains_craft_daggers(skill) for skill in opted_out.skills)
 
 
 def test_registry_and_profession_planners_expose_the_same_closed_capability_set():
@@ -311,12 +356,16 @@ def test_registry_and_profession_planners_expose_the_same_closed_capability_set(
         planner = profession.planner(capability_goals=True)
         sell_skills = [skill for skill in planner.skills if _contains_sell_daggers(skill)]
         bank_skills = [skill for skill in planner.skills if _contains_bank_gold(skill)]
+        craft_skills = [skill for skill in planner.skills if _contains_craft_daggers(skill)]
         planner_keys.extend((profession.key, "sell_daggers") for _ in sell_skills)
         planner_keys.extend((profession.key, "bank_gold") for _ in bank_skills)
+        planner_keys.extend((profession.key, "craft_daggers") for _ in craft_skills)
         assert len(sell_skills) == 1
         assert len(bank_skills) == 1
+        assert len(craft_skills) == 1
         assert type(sell_skills[0].inner) is SellDaggers
         assert type(bank_skills[0].inner) is resolved.binding.skill_type
+        assert type(craft_skills[0].inner) is CraftDaggers
         names = {skill.name for skill in planner.skills}
         assert "capability_complete" in names
         assert "capability_wait" in names
@@ -371,6 +420,216 @@ def test_valid_blacksmith_sell_goal_selects_only_the_bound_sell_skill():
 
     assert _contains_sell_daggers(selected)
     assert not _contains_bank_gold(selected)
+
+
+def test_valid_blacksmith_craft_goal_selects_only_the_bound_craft_skill():
+    goal = capability_goal("blacksmith", "craft_daggers")
+    ready = _ctx(
+        goal,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+    )
+    resolved = resolve_capability(goal, "blacksmith", GoalSource.COGNITION, ready)
+    assert resolved is not None
+    planner = PROFESSIONS["blacksmith"].planner(capability_goals=True)
+
+    selected = planner.select(
+        _ctx(
+            resolved.goal,
+            ingots=15,
+            smith_tool=True,
+            craft_spot=(100, 100),
+            goal_id=17,
+            goal_policy=CapabilityPolicy("blacksmith"),
+        )
+    )
+
+    assert _contains_craft_daggers(selected)
+    assert not _contains_sell_daggers(selected)
+    assert not _contains_bank_gold(selected)
+
+
+def _completed_craft_ctx(*, goal_id: int = 17) -> SkillContext:
+    ctx = _ctx(
+        daggers=5,
+        ingots=0,
+        smith_tool=True,
+        craft_spot=(100, 100),
+        goal_id=goal_id,
+    )
+    ctx.obs.items = [item for item in ctx.obs.items if item.graphic != DAGGER_GRAPHIC]
+    backpack = next(item for item in ctx.obs.items if item.layer == 0x15)
+    ctx.obs.items.extend(
+        ItemView(
+            serial=0x800 + index,
+            graphic=DAGGER_GRAPHIC,
+            amount=1,
+            pos=ctx.obs.player.pos,
+            container=backpack.serial,
+            layer=0,
+            distance=0,
+        )
+        for index in range(5)
+    )
+    ctx.memory.update(
+        {
+            "cap_craft_goal_id": 17,
+            "cap_craft_dagger_button_goal_id": 17,
+            "cap_craft_finished_goal_id": 17,
+            "cap_craft_returned_goal_id": 17,
+            "cap_craft_start_ingots": 15,
+            "cap_craft_start_daggers": (),
+            "cap_craft_needed": 5,
+            "cap_craft_confirmed": 5,
+            "cap_craft_produced": tuple((0x800 + index, 1) for index in range(5)),
+            "cap_craft_failed_attempts": 0,
+            "cap_craft_failed_ingots": 0,
+            "cap_craft_failure_costs": (),
+            "cap_craft_ingots_used": 15,
+            "cap_craft_close_sent": True,
+            "cap_craft_stage": "finished",
+        }
+    )
+    return ctx
+
+
+def test_craft_completion_evidence_is_exactly_goal_scoped() -> None:
+    binding = CAPABILITIES[("blacksmith", "craft_daggers")]
+    ctx = _completed_craft_ctx()
+
+    assert binding.achieved(ctx)
+    assert binding.progress(ctx) == 1.0
+    assert binding.can_yield(ctx)
+
+    ctx.goal_id = 18
+    assert not binding.achieved(ctx)
+    assert binding.progress(ctx) == 0.0
+    # Goal 18 has not emitted an action; stale completed evidence from goal 17
+    # cannot achieve it, but it also cannot make this clean pre-start state
+    # unsafe to cancel.
+    assert binding.can_yield(ctx)
+
+
+def test_craft_completion_accepts_only_fully_attributed_failed_ingot_costs() -> None:
+    binding = CAPABILITIES[("blacksmith", "craft_daggers")]
+    ctx = _completed_craft_ctx()
+    ctx.memory.update(
+        {
+            "cap_craft_start_ingots": 21,
+            "cap_craft_failed_attempts": 2,
+            "cap_craft_failed_ingots": 6,
+            "cap_craft_failure_costs": (3, 3),
+            "cap_craft_ingots_used": 21,
+        }
+    )
+
+    assert binding.achieved(ctx)
+
+    ctx.memory["cap_craft_failed_ingots"] = 3
+    assert not binding.achieved(ctx)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cap_craft_dagger_button_goal_id", None),
+        ("cap_craft_finished_goal_id", None),
+        ("cap_craft_returned_goal_id", None),
+        ("cap_craft_needed", 4),
+        ("cap_craft_confirmed", 4),
+        ("cap_craft_produced", ((0x800, 4),)),
+        ("cap_craft_ingots_used", 14),
+        ("cap_craft_failed_attempts", 1),
+        ("cap_craft_failed_ingots", 3),
+        ("cap_craft_failure_costs", (3,)),
+        ("cap_craft_start_ingots", 14),
+        ("cap_craft_close_sent", False),
+        ("cap_craft_attempt_gump_serial", 0xABC),
+        ("cap_craft_attempt_wait", 1),
+        ("cap_craft_stage", "close_wait"),
+    ],
+)
+def test_craft_completion_requires_exact_batch_evidence_and_safe_close(
+    field: str, value: object
+) -> None:
+    binding = CAPABILITIES[("blacksmith", "craft_daggers")]
+    ctx = _completed_craft_ctx()
+    ctx.memory[field] = value
+
+    assert not binding.achieved(ctx)
+
+
+def test_craft_deadline_and_preemption_wait_for_owned_gump_cleanup() -> None:
+    proposal = capability_goal("blacksmith", "craft_daggers")
+    policy = CapabilityPolicy("blacksmith")
+    ready = _ctx(
+        proposal,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+    )
+    resolved = resolve_capability(
+        proposal, "blacksmith", GoalSource.COGNITION, ready
+    )
+    assert resolved is not None
+    ctx = _ctx(
+        resolved.goal,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+        goal_id=17,
+        goal_policy=policy,
+    )
+    ctx.memory.update(
+        {
+            "cap_craft_goal_id": 17,
+            "cap_craft_stage": "pending",
+            "cap_craft_attempt_daggers": (),
+            "cap_craft_attempt_ingots": 15,
+        }
+    )
+
+    assert not policy.deadline_can_expire(resolved.goal, ctx)
+    assert not policy.can_preempt(resolved.goal, ctx)
+
+    ctx.memory.update(
+        {
+            "cap_craft_finished_goal_id": 17,
+            "cap_craft_stage": "finished",
+        }
+    )
+    ctx.memory.pop("cap_craft_attempt_daggers")
+    ctx.memory.pop("cap_craft_attempt_ingots")
+
+    assert policy.deadline_can_expire(resolved.goal, ctx)
+    assert policy.can_preempt(resolved.goal, ctx)
+
+
+def test_craft_goal_can_be_cancelled_before_it_emits_its_first_action() -> None:
+    proposal = capability_goal("blacksmith", "craft_daggers")
+    policy = CapabilityPolicy("blacksmith")
+    ready = _ctx(
+        proposal,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+    )
+    resolved = resolve_capability(
+        proposal, "blacksmith", GoalSource.COGNITION, ready
+    )
+    assert resolved is not None
+    ctx = _ctx(
+        resolved.goal,
+        ingots=15,
+        smith_tool=True,
+        craft_spot=(100, 100),
+        goal_id=17,
+        goal_policy=policy,
+    )
+
+    assert policy.deadline_can_expire(resolved.goal, ctx)
+    assert policy.can_preempt(resolved.goal, ctx)
 
 
 def test_sell_completion_evidence_is_exactly_goal_scoped() -> None:

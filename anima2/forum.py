@@ -100,6 +100,7 @@ _CHRONICLE_VERB = {
     "picked_up_ingots": "picked up ingots from {who}",
     "sold_to_vendor": "sold goods to a vendor",
     "banked_gold": "banked gold",
+    "crafted_daggers": "crafted daggers",
     "looted_corpse": "looted a corpse",
 }
 

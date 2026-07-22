@@ -78,6 +78,7 @@ def _persona_for(prof: Profession, idx: int) -> Persona:
 #: "duplicate a handful of graphic constants rather than reach into a
 #: skill's own module" convention (see curriculum.py's own module docstring).
 _CHRONICLE_BACKPACK_LAYER = 0x15
+_CHRONICLE_DAGGER_INGOTS = 3
 _CHRONICLE_INGOT_GRAPHICS = frozenset({0x1BEF, 0x1BF0, 0x1BF1, 0x1BF2})
 
 
@@ -249,6 +250,104 @@ def _banked_gold(
     return None
 
 
+def _crafted_daggers(prev_memory: dict, memory: dict) -> float | None:
+    """blacksmith -> world: one newly completed closed craft goal.
+
+    The capability leaf already settles packet ordering and owns the exact
+    inventory provenance.  Chronicle therefore records only a transition to
+    a complete, internally consistent goal token; replaying the same memory
+    snapshot cannot emit duplicate events, while a later goal id can.
+    """
+
+    def _completion(snapshot: dict) -> tuple[int, float] | None:
+        goal_id = snapshot.get("cap_craft_goal_id")
+        needed = snapshot.get("cap_craft_needed")
+        confirmed = snapshot.get("cap_craft_confirmed")
+        produced = snapshot.get("cap_craft_produced")
+        ingots_used = snapshot.get("cap_craft_ingots_used")
+        start_ingots = snapshot.get("cap_craft_start_ingots")
+        failed_attempts = snapshot.get("cap_craft_failed_attempts")
+        failed_ingots = snapshot.get("cap_craft_failed_ingots")
+        failure_costs = snapshot.get("cap_craft_failure_costs")
+        start_daggers = snapshot.get("cap_craft_start_daggers")
+        produced_valid = bool(
+            isinstance(produced, tuple)
+            and produced
+            and all(
+                isinstance(entry, tuple)
+                and len(entry) == 2
+                and type(entry[0]) is int
+                and entry[0] > 0
+                and type(entry[1]) is int
+                and entry[1] == 1
+                for entry in produced
+            )
+            and len({serial for serial, _amount in produced}) == len(produced)
+        )
+        start_valid = bool(
+            isinstance(start_daggers, tuple)
+            and all(
+                isinstance(entry, tuple)
+                and len(entry) == 2
+                and type(entry[0]) is int
+                and entry[0] > 0
+                and type(entry[1]) is int
+                and entry[1] == 1
+                for entry in start_daggers
+            )
+            and len({serial for serial, _amount in start_daggers}) == len(start_daggers)
+        )
+        start_count = (
+            sum(amount for _serial, amount in start_daggers) if start_valid else -1
+        )
+        close_proven = bool(
+            snapshot.get("cap_craft_close_sent") is True
+            or (
+                snapshot.get("cap_craft_close_reopen_sent") is True
+                and snapshot.get("cap_craft_close_absent_wait", 0) >= 12
+                and snapshot.get("cap_craft_close_reopen_wait", 0) >= 12
+            )
+        )
+        if (
+            type(goal_id) is int
+            and snapshot.get("cap_craft_dagger_button_goal_id") == goal_id
+            and snapshot.get("cap_craft_finished_goal_id") == goal_id
+            and snapshot.get("cap_craft_returned_goal_id") == goal_id
+            and snapshot.get("cap_craft_abort_goal_id") != goal_id
+            and snapshot.get("cap_craft_stage") == "finished"
+            and close_proven
+            and type(needed) is int
+            and needed > 0
+            and start_valid
+            and start_count + needed == 5
+            and type(confirmed) is int
+            and confirmed == needed
+            and produced_valid
+            and sum(amount for _serial, amount in produced) == needed
+            and not ({serial for serial, _amount in start_daggers} &
+                     {serial for serial, _amount in produced})
+            and type(ingots_used) is int
+            and type(start_ingots) is int
+            and start_ingots >= ingots_used
+            and type(failed_attempts) is int
+            and failed_attempts >= 0
+            and type(failed_ingots) is int
+            and isinstance(failure_costs, tuple)
+            and len(failure_costs) == failed_attempts
+            and all(
+                type(cost) is int and cost in {0, _CHRONICLE_DAGGER_INGOTS}
+                for cost in failure_costs
+            )
+            and failed_ingots == sum(failure_costs)
+            and ingots_used == _CHRONICLE_DAGGER_INGOTS * needed + failed_ingots
+        ):
+            return goal_id, float(needed)
+        return None
+
+    current = _completion(memory)
+    return current[1] if current is not None and current != _completion(prev_memory) else None
+
+
 def _looted_corpse(prev_memory: dict, memory: dict, hunt_reward_accum: float) -> float | None:
     """hunter -> world: growth in `len(memory["hunt_looted"])` since the
     last check — mirrors `curriculum.py::_memory_list_len_threshold`'s exact
@@ -376,6 +475,9 @@ def _chronicle_events_this_tick(
         )
         if amount is not None:
             events.append(("banked_gold", None, amount))
+        amount = _crafted_daggers(prev_memory, memory)
+        if amount is not None:
+            events.append(("crafted_daggers", None, amount))
     elif job == "hunter":
         amount = _looted_corpse(prev_memory, memory, hunt_reward_accum)
         if amount is not None:
@@ -1025,6 +1127,8 @@ def _run_online_village(
             agent.memory["vendor_spot"] = p["vendor_spot"]  # blacksmith's sell route (trade pairing)
         if p["banker_spot"]:
             agent.memory["banker_spot"] = p["banker_spot"]  # blacksmith's bank route (trade pairing)
+        if capability_enabled and p["workplace"] is not None:
+            agent.memory["craft_spot"] = p["workplace"]
         if chosen_threshold is not None:
             print(f"  {p['persona'].name}: deliver_threshold={chosen_threshold} (tuner-chosen)")
         agents.append((agent, p["prof"].key, chosen_threshold))

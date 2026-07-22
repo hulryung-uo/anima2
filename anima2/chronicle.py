@@ -79,10 +79,11 @@ _chronicle_log_lock = threading.Lock()
 class ChronicleEvent:
     """One recorded village-economy event. `to_persona` is `None` for an
     agent-to-world event (a hunter's confirmed loot, a blacksmith's confirmed
-    sale to an NPC vendor or deposit at an NPC banker) — vendors/bankers are
+    sale to an NPC vendor, deposit at an NPC banker, or completed craft batch) — vendors/bankers are
     staged NPCs, not `Persona`-bearing agents, so there's no second party to
     name. `kind` is one of `"delivered_ingots"`, `"picked_up_ingots"`,
-    `"sold_to_vendor"`, `"banked_gold"`, `"looted_corpse"` today (see
+    `"sold_to_vendor"`, `"banked_gold"`, `"crafted_daggers"`,
+    `"looted_corpse"` today (see
     `village.py`'s detector functions) — a plain string, not an enum, so a
     future kind never needs a schema migration here.
     """

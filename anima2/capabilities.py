@@ -16,8 +16,9 @@ from typing import Callable, Mapping
 from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
-from .skills.craft import DAGGER_GRAPHIC
+from .skills.craft import DAGGER_GRAPHIC, MIN_INGOTS, SMITH_TOOL_GRAPHICS, CraftDaggers
 from .skills.market import BankGold, SellDaggers
+from .skills.smelt import INGOT_GRAPHICS
 
 _BACKPACK_LAYER = 0x15
 _BANKBOX_LAYER = 0x1D
@@ -110,6 +111,31 @@ def _pack_daggers(ctx: SkillContext) -> int:
         item.amount
         for item in ctx.obs.items
         if item.graphic == DAGGER_GRAPHIC and item.container == backpack
+    )
+
+
+def _pack_ingots(ctx: SkillContext) -> int:
+    backpack = _backpack_serial(ctx)
+    if backpack is None:
+        return 0
+    return sum(
+        item.amount
+        for item in ctx.obs.items
+        if item.graphic in INGOT_GRAPHICS and item.container == backpack
+    )
+
+
+def _owned_smith_tool(ctx: SkillContext):
+    backpack = _backpack_serial(ctx)
+    if backpack is None:
+        return None
+    return next(
+        (
+            item
+            for item in ctx.obs.items
+            if item.graphic in SMITH_TOOL_GRAPHICS and item.container == backpack
+        ),
+        None,
     )
 
 
@@ -291,10 +317,194 @@ _BANK_GOLD = CapabilityBinding(
     default_deadline_ticks=120,
 )
 
+
+def _craft_at_spot(ctx: SkillContext) -> bool:
+    spot = ctx.memory.get("craft_spot")
+    return bool(
+        isinstance(spot, (tuple, list))
+        and len(spot) == 2
+        and all(type(value) is int for value in spot)
+        and (ctx.obs.player.pos.x, ctx.obs.player.pos.y) == tuple(spot)
+    )
+
+
+def _craft_ready(ctx: SkillContext) -> bool:
+    daggers = _pack_daggers(ctx)
+    obs = ctx.obs
+    return bool(
+        _craft_at_spot(ctx)
+        and _backpack_serial(ctx) is not None
+        and _owned_smith_tool(ctx) is not None
+        and 0 <= daggers < 5
+        and _pack_ingots(ctx) >= MIN_INGOTS * (5 - daggers)
+        and ctx.memory.get("mkt_phase", "craft") == "craft"
+        and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+        and ctx.memory.get("bs_fetch_held") is None
+        and ctx.memory.get("bank_held") is None
+        and ctx.memory.get("cap_bank_release_pending") is None
+        and all(ctx.memory.get(key) is None for key in _SELL_TRANSACTION_KEYS)
+        and obs.pending_target is None
+        and not obs.gumps
+        and obs.popup is None
+        and obs.shop_buy is None
+        and obs.shop_sell is None
+    )
+
+
+def _craft_can_yield(ctx: SkillContext) -> bool:
+    obs = ctx.obs
+    goal_id = ctx.goal_id
+    started = type(goal_id) is int and ctx.memory.get("cap_craft_goal_id") == goal_id
+    terminal = bool(
+        started
+        and ctx.memory.get("cap_craft_finished_goal_id") == goal_id
+        and ctx.memory.get("cap_craft_stage") == "finished"
+    )
+    return bool(
+        type(goal_id) is int
+        and (not started or terminal)
+        and ctx.memory.get("cap_craft_attempt_daggers") is None
+        and ctx.memory.get("cap_craft_attempt_ingots") is None
+        and ctx.memory.get("cap_craft_attempt_gump_serial") is None
+        and ctx.memory.get("cap_craft_attempt_wait") is None
+        and ctx.memory.get("bs_fetch_held") is None
+        and obs.pending_target is None
+        and not obs.gumps
+        and obs.popup is None
+        and obs.shop_buy is None
+        and obs.shop_sell is None
+    )
+
+
+def _craft_achieved(ctx: SkillContext) -> bool:
+    goal_id = ctx.goal_id
+    needed = ctx.memory.get("cap_craft_needed")
+    confirmed = ctx.memory.get("cap_craft_confirmed")
+    produced = ctx.memory.get("cap_craft_produced")
+    ingots_used = ctx.memory.get("cap_craft_ingots_used")
+    failed_attempts = ctx.memory.get("cap_craft_failed_attempts")
+    failed_ingots = ctx.memory.get("cap_craft_failed_ingots")
+    failure_costs = ctx.memory.get("cap_craft_failure_costs")
+    start_ingots = ctx.memory.get("cap_craft_start_ingots")
+    start_daggers = ctx.memory.get("cap_craft_start_daggers")
+    produced_valid = bool(
+        isinstance(produced, tuple)
+        and produced
+        and all(
+            isinstance(entry, tuple)
+            and len(entry) == 2
+            and type(entry[0]) is int
+            and entry[0] > 0
+            and type(entry[1]) is int
+            and entry[1] > 0
+            for entry in produced
+        )
+    )
+    start_valid = bool(
+        isinstance(start_daggers, tuple)
+        and all(
+            isinstance(entry, tuple)
+            and len(entry) == 2
+            and type(entry[0]) is int
+            and entry[0] > 0
+            and type(entry[1]) is int
+            and entry[1] == 1
+            for entry in start_daggers
+        )
+        and len({serial for serial, _amount in start_daggers}) == len(start_daggers)
+    )
+    start_count = (
+        sum(amount for _serial, amount in start_daggers) if start_valid else -1
+    )
+    produced_serials = (
+        {serial for serial, _amount in produced} if produced_valid else set()
+    )
+    start_serials = (
+        {serial for serial, _amount in start_daggers} if start_valid else set()
+    )
+    backpack = _backpack_serial(ctx)
+    observed_daggers = {
+        item.serial: item.amount
+        for item in ctx.obs.items
+        if backpack is not None
+        and item.graphic == DAGGER_GRAPHIC
+        and item.container == backpack
+    }
+    expected_daggers = (
+        dict(start_daggers) | dict(produced)
+        if start_valid and produced_valid
+        else {}
+    )
+    close_proven = bool(
+        ctx.memory.get("cap_craft_close_sent") is True
+        or (
+            ctx.memory.get("cap_craft_close_reopen_sent") is True
+            and ctx.memory.get("cap_craft_close_absent_wait", 0) >= 12
+            and ctx.memory.get("cap_craft_close_reopen_wait", 0) >= 12
+        )
+    )
+    return bool(
+        type(goal_id) is int
+        and ctx.memory.get("cap_craft_goal_id") == goal_id
+        and ctx.memory.get("cap_craft_dagger_button_goal_id") == goal_id
+        and ctx.memory.get("cap_craft_returned_goal_id") == goal_id
+        and ctx.memory.get("cap_craft_abort_goal_id") != goal_id
+        and type(needed) is int
+        and needed > 0
+        and start_valid
+        and start_count + needed == 5
+        and type(confirmed) is int
+        and confirmed == needed
+        and produced_valid
+        and len(produced_serials) == len(produced)
+        and not (start_serials & produced_serials)
+        and sum(amount for _serial, amount in produced) == needed
+        and all(amount == 1 for _serial, amount in produced)
+        and observed_daggers == expected_daggers
+        and close_proven
+        and type(start_ingots) is int
+        and type(ingots_used) is int
+        and type(failed_attempts) is int
+        and failed_attempts >= 0
+        and type(failed_ingots) is int
+        and isinstance(failure_costs, tuple)
+        and len(failure_costs) == failed_attempts
+        and all(type(cost) is int and cost in {0, MIN_INGOTS} for cost in failure_costs)
+        and failed_ingots == sum(failure_costs)
+        and ingots_used == MIN_INGOTS * needed + failed_ingots
+        and start_ingots - _pack_ingots(ctx) == ingots_used
+        and _pack_daggers(ctx) == 5
+        and _craft_can_yield(ctx)
+    )
+
+
+def _craft_progress(ctx: SkillContext) -> float:
+    if ctx.memory.get("cap_craft_goal_id") != ctx.goal_id:
+        return 0.0
+    needed = ctx.memory.get("cap_craft_needed")
+    confirmed = ctx.memory.get("cap_craft_confirmed")
+    if type(needed) is not int or needed <= 0 or type(confirmed) is not int:
+        return 0.0
+    return max(0.0, min(1.0, confirmed / needed))
+
+
+_CRAFT_DAGGERS = CapabilityBinding(
+    capability_id="craft_daggers",
+    profession="blacksmith",
+    skill_type=CraftDaggers,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_craft_ready,
+    achieved=_craft_achieved,
+    progress=_craft_progress,
+    can_yield=_craft_can_yield,
+    default_deadline_ticks=300,
+)
+
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
     {
         (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
         (_BANK_GOLD.profession, _BANK_GOLD.capability_id): _BANK_GOLD,
+        (_CRAFT_DAGGERS.profession, _CRAFT_DAGGERS.capability_id): _CRAFT_DAGGERS,
     }
 )
 
