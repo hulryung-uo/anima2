@@ -28,7 +28,7 @@ from .curriculum import (
 )
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
-from .skills.warrior import EquipWeapon
+from .skills.warrior import EquipArmor, EquipWeapon
 from .skills.base import SkillContext, SkillResult, Status
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
@@ -399,9 +399,13 @@ class Profession:
         skills: list[Skill] = [Survive(), RecoverDeath(), SpeakPending(), GoTo()]
         # Pre-work reflexes (e.g. the swordsman's EquipWeapon) sit just above the
         # work skill: they beat Hunt but yield to Survive/RecoverDeath. Inert
-        # (default empty) for every other profession — no behaviour change.
-        for factory in self.pre_work_skills:
-            skills.append(factory())
+        # (default empty) for every other profession — no behaviour change. They
+        # belong to WORK-skill mode only: capability (economy) mode has no work
+        # skill to prep for, and its planner manifest is a fixed
+        # [reflexes]+[capabilities] shape that a pre-work reflex would break.
+        if not capability_goals:
+            for factory in self.pre_work_skills:
+                skills.append(factory())
         if self.work_skill is not None and not capability_goals:
             work = self.work_skill()
             if curriculum_goals:
@@ -578,12 +582,19 @@ PROFESSIONS: dict[str, Profession] = {
     "swordsman": Profession(
         key="swordsman",
         persona_name="Bram",
-        skills={"Swordsmanship": 90, "Tactics": 90, "Anatomy": 80, "Healing": 80},
-        items=["Bandage 200", "Katana"],
+        skills={"Swordsmanship": 100, "Tactics": 100, "Anatomy": 100, "Healing": 100},
+        # A full plate suit (soaks melee — a strong warrior tanks rich prey instead
+        # of being alpha-struck) + a Katana + a deep bandage stack. EquipArmor +
+        # EquipWeapon wear it all before Hunt engages.
+        items=[
+            "Bandage 200", "Katana",
+            "PlateChest", "PlateLegs", "PlateArms",
+            "PlateGloves", "PlateGorget", "PlateHelm",
+        ],
         needs_workplace=True,
         workplace=HUNTING_SPOT,
         work_skill=Hunt,
         combat_disposition="aggressive",
-        pre_work_skills=(EquipWeapon,),
+        pre_work_skills=(EquipWeapon, EquipArmor),
     ),
 }

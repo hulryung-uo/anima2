@@ -45,6 +45,7 @@ from .skills.market import (
     _bank_reserve,
 )
 from .skills.smelt import INGOT_GRAPHICS
+from .skills.warrior import WEAPON_LAYER, BuyWeapon
 from .skills.woodwork import (
     BOARD_GRAPHIC,
     LOG_GRAPHIC,
@@ -185,6 +186,28 @@ def _owned_tool(ctx: SkillContext, graphics: frozenset[int]):
             item
             for item in ctx.obs.items
             if item.graphic in graphics and item.container == backpack
+        ),
+        None,
+    )
+
+
+def _owned_weapon(ctx: SkillContext, graphics: frozenset[int]):
+    """Like `_owned_tool`, but WORN-aware: a swordsman WEARS its blade in the
+    one-handed layer, not in the pack, so a pack-only check would see "no weapon"
+    while the warrior is fully armed and buy an endless stream of swords. "Owns a
+    weapon" = a matching graphic in the pack OR worn at `WEAPON_LAYER`. The
+    buy_weapon trigger is this returning `None` (armed with nothing at all)."""
+    player = ctx.obs.player.serial
+    backpack = _backpack_serial(ctx)
+    return next(
+        (
+            item
+            for item in ctx.obs.items
+            if item.graphic in graphics
+            and (
+                (backpack is not None and item.container == backpack)
+                or (item.layer == WEAPON_LAYER and item.container == player)
+            )
         ),
         None,
     )
@@ -996,6 +1019,27 @@ def _make_toolbuy_ready(
     return ready
 
 
+def _make_weapon_buy_ready(
+    owned_graphics: frozenset[int], price_estimate: int, vendor_spot_key: str
+) -> Callable[[SkillContext], bool]:
+    """A WORN-aware `_make_toolbuy_ready` for the swordsman: the buy trigger is
+    owning NO weapon in the pack OR worn (`_owned_weapon`), so a warrior wearing
+    its Katana is "armed" and never buys a redundant blade — it only replaces a
+    weapon it has actually lost (destroyed/disarmed). Otherwise identical."""
+
+    def ready(ctx: SkillContext) -> bool:
+        return bool(
+            _valid_spot(ctx.memory.get(vendor_spot_key))
+            and _backpack_serial(ctx) is not None
+            and _owned_weapon(ctx, owned_graphics) is None
+            and _pack_gold(ctx) >= TOOL_BUY_AMOUNT * price_estimate
+            and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+            and _toolbuy_can_yield(ctx)
+        )
+
+    return ready
+
+
 def _make_toolbuy_achieved(
     owned_graphics: frozenset[int],
 ) -> Callable[[SkillContext], bool]:
@@ -1552,6 +1596,42 @@ _BUY_TINKER_TOOL = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+# --- The sword-warrior's economy: bank looted gold, buy a replacement blade ---
+# The warrior HUNTS in work-skill mode (work_skill=Hunt + the EquipWeapon pre-work
+# reflex); these two capabilities are its economy leg, driven in capability mode
+# (planner(capability_goals=True)) between hunts — bank the gold looted off
+# corpses, and buy a fresh Katana from the weapon vendor if the warrior is ever
+# left with no blade at all. bank_gold reuses the profession-agnostic `_bank_*`
+# machinery verbatim; buy_weapon reuses the generalized toolbuy FSM with a single
+# swap — a WORN-aware readiness (`_make_weapon_buy_ready`), since a swordsman wears
+# its sword at layer 1 and the stock pack-only trigger would buy blades forever.
+_SWORDSMAN_BANK_GOLD = CapabilityBinding(
+    capability_id="bank_gold",
+    profession="swordsman",
+    skill_type=BankGold,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_bank_ready,
+    achieved=_bank_achieved,
+    progress=_bank_progress,
+    can_yield=_bank_can_yield,
+    default_deadline_ticks=120,
+)
+
+_BUY_WEAPON = CapabilityBinding(
+    capability_id="buy_weapon",
+    profession="swordsman",
+    skill_type=BuyWeapon,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_weapon_buy_ready(
+        BuyWeapon.owned_tool_graphics, BuyWeapon.tool_price_estimate,
+        BuyWeapon.vendor_spot_key,
+    ),
+    achieved=_make_toolbuy_achieved(BuyWeapon.owned_tool_graphics),
+    progress=_toolbuy_progress,
+    can_yield=_toolbuy_can_yield,
+    default_deadline_ticks=180,
+)
+
 # --- Brick 10: the closed-village tool-supply link ---------------------------
 # The tinker forges the village's wooden-working tools (a Saw for the carpenter,
 # a Hatchet for the lumberjack) and DELIVERS one spare of each to its
@@ -1867,6 +1947,10 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         (_TINKER_BANK_GOLD.profession, _TINKER_BANK_GOLD.capability_id): _TINKER_BANK_GOLD,
         (_BUY_IRON.profession, _BUY_IRON.capability_id): _BUY_IRON,
         (_BUY_TINKER_TOOL.profession, _BUY_TINKER_TOOL.capability_id): _BUY_TINKER_TOOL,
+        # The sword-warrior's economy leg (driven in capability mode between hunts):
+        # bank looted gold, and buy a replacement Katana if left unarmed.
+        (_SWORDSMAN_BANK_GOLD.profession, _SWORDSMAN_BANK_GOLD.capability_id): _SWORDSMAN_BANK_GOLD,
+        (_BUY_WEAPON.profession, _BUY_WEAPON.capability_id): _BUY_WEAPON,
     }
 )
 
