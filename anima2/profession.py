@@ -28,6 +28,7 @@ from .curriculum import (
 )
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
+from .skills.warrior import EquipWeapon
 from .skills.base import SkillContext, SkillResult, Status
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
@@ -372,6 +373,12 @@ class Profession:
     #: already treat as "will fight" — only "pacifist" opts out), so this is
     #: purely flavor for the hunter below, not a behavioural change elsewhere.
     combat_disposition: str = "neutral"
+    #: Fast-loop skills inserted right BEFORE the work skill (after GoTo), each a
+    #: zero-arg factory. Default empty = every existing profession is unchanged.
+    #: The swordsman uses this for `EquipWeapon` (wield the blade before Hunt so the
+    #: server fights it with Swordsmanship) — a reflex that must beat the work skill
+    #: but yield to Survive/RecoverDeath above it.
+    pre_work_skills: tuple[Callable[[], Skill], ...] = ()
 
     def planner(
         self,
@@ -390,6 +397,11 @@ class Profession:
         if curriculum_goals and capability_goals:
             raise ValueError("curriculum_goals and capability_goals are separate modes")
         skills: list[Skill] = [Survive(), RecoverDeath(), SpeakPending(), GoTo()]
+        # Pre-work reflexes (e.g. the swordsman's EquipWeapon) sit just above the
+        # work skill: they beat Hunt but yield to Survive/RecoverDeath. Inert
+        # (default empty) for every other profession — no behaviour change.
+        for factory in self.pre_work_skills:
+            skills.append(factory())
         if self.work_skill is not None and not capability_goals:
             work = self.work_skill()
             if curriculum_goals:
@@ -551,5 +563,27 @@ PROFESSIONS: dict[str, Profession] = {
         skills={"Tinkering": 80},
         items=["TinkerTools 999"],
         work_skill=None,
+    ),
+    # The SWORD-warrior (goal: the strongest warrior, most money): a sword in the
+    # one-handed layer makes the existing weapon-agnostic Hunt fight with
+    # Swordsmanship (not Wrestling); Tactics+Anatomy scale the damage and Anatomy+
+    # Healing scale the bandage heals `Survive` already applies through the fight.
+    # All four skills RISE from live swinging + self-bandaging (ServUO on-use gain),
+    # so the warrior gets stronger by fighting. Staged strong (90/90/80/80) to solo
+    # the ~157-gold Ettin safely; `EquipWeapon` (a pre-work reflex) wields its best
+    # owned blade before Hunt engages, and re-wields a stronger one it buys/loots.
+    # 200 bandages for a long hunt; a Katana (best sustained DPS, StrReq 10) to open
+    # with. Economy (bank looted gold, buy a better sword) is `swordsman` capability
+    # bindings (bank_gold / buy_weapon) driven alongside the hunt.
+    "swordsman": Profession(
+        key="swordsman",
+        persona_name="Bram",
+        skills={"Swordsmanship": 90, "Tactics": 90, "Anatomy": 80, "Healing": 80},
+        items=["Bandage 200", "Katana"],
+        needs_workplace=True,
+        workplace=HUNTING_SPOT,
+        work_skill=Hunt,
+        combat_disposition="aggressive",
+        pre_work_skills=(EquipWeapon,),
     ),
 }
