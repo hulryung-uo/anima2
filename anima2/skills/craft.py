@@ -156,6 +156,13 @@ class Blacksmith(Skill):
     #: constant, or a sibling profession's gump opens invisibly and the FSM
     #: stalls at "category" forever waiting for a gump it never recognizes.
     craft_title_cliloc: int = CRAFT_TITLE_CLILOC
+    #: How many tiles of drift from `craft_spot` the craft readiness tolerates.
+    #: 0 (blacksmith) = exact tile — its forge/anvil proximity is load-bearing and
+    #: byte-identity is guardrailed. A hand-tool crafter with no fixed structure
+    #: (carpenter/tinker) overrides to a few tiles so a delivered pile that lands
+    #: off-centre, or a return from a vendor/bank trip, doesn't strand it unable to
+    #: craft (the intermittent silent-stall root cause found in the endurance test).
+    craft_spot_radius: int = 0
 
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None

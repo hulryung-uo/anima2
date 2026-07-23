@@ -504,14 +504,21 @@ _BANK_GOLD = CapabilityBinding(
 )
 
 
-def _craft_at_spot(ctx: SkillContext) -> bool:
+def _craft_at_spot(ctx: SkillContext, radius: int = 0) -> bool:
+    """At (within `radius` tiles of) the configured craft stand. `radius=0` is the
+    exact-tile match (the blacksmith, whose forge/anvil proximity is load-bearing —
+    byte-identical). A crafter with no fixed structure (carpenter/tinker craft with
+    a hand tool anywhere) uses a small radius so a tile or two of drift — from
+    fetching a delivered pile that landed off-centre, or returning from a vendor/
+    bank trip — doesn't leave it unable to craft (the silent-stall root cause)."""
     spot = ctx.memory.get("craft_spot")
-    return bool(
+    if not (
         isinstance(spot, (tuple, list))
         and len(spot) == 2
         and all(type(value) is int for value in spot)
-        and (ctx.obs.player.pos.x, ctx.obs.player.pos.y) == tuple(spot)
-    )
+    ):
+        return False
+    return max(abs(ctx.obs.player.pos.x - spot[0]), abs(ctx.obs.player.pos.y - spot[1])) <= radius
 
 
 def _make_craft_ready(
@@ -520,16 +527,18 @@ def _make_craft_ready(
     per_item: int,
     tool_graphics: frozenset[int],
     batch: int,
+    spot_radius: int = 0,
 ) -> Callable[[SkillContext], bool]:
     """Build a craft readiness gate for one recipe. Blacksmith:
-    `(DAGGER_GRAPHIC, INGOT_GRAPHICS, MIN_INGOTS, SMITH_TOOL_GRAPHICS, 5)` —
-    byte-identical to the old `_craft_ready`."""
+    `(DAGGER_GRAPHIC, INGOT_GRAPHICS, MIN_INGOTS, SMITH_TOOL_GRAPHICS, 5)` with
+    `spot_radius=0` — byte-identical to the old `_craft_ready`. `spot_radius > 0`
+    (carpenter/tinker) tolerates a few tiles of drift at the hand-tool stand."""
 
     def ready(ctx: SkillContext) -> bool:
         made = _pack_graphic(ctx, output_graphic)
         obs = ctx.obs
         return bool(
-            _craft_at_spot(ctx)
+            _craft_at_spot(ctx, spot_radius)
             and _backpack_serial(ctx) is not None
             and _owned_tool(ctx, tool_graphics) is not None
             and 0 <= made < batch
@@ -717,6 +726,7 @@ def _craft_ready_for(skill_cls: type) -> Callable[[SkillContext], bool]:
         skill_cls.craft_material_per_item,
         skill_cls.craft_tool_graphics,
         skill_cls.craft_batch,
+        getattr(skill_cls, "craft_spot_radius", 0),
     )
 
 

@@ -95,6 +95,10 @@ class CarpenterCraft(CraftItemCapability):
     #: The carpentry gump's own title cliloc (NOT blacksmithy's 1044002) — without
     #: this the saw's gump opens invisibly to the FSM and it stalls forever.
     craft_title_cliloc = CARPENTRY_TITLE_CLILOC
+    #: A saw crafts anywhere (no forge/anvil), so tolerate a few tiles of drift off
+    #: the stand — a delivered board pile landing off-centre used to strand the
+    #: carpenter unable to craft (the endurance test's intermittent silent stall).
+    craft_spot_radius = 3
     #: Carpentry has NO material submenu — both `None` skips the resource stages.
     craft_resource_menu_btn = None
     craft_material_resource_btn = None

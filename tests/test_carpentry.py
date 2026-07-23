@@ -280,9 +280,14 @@ def test_craft_carpentry_ready_needs_a_full_throne_of_boards_at_the_stand():
     assert ready(_ready_ctx([_backpack(), _saw(), _boards(0x700, 18)], memory=mem)) is False
     # A throne already in the pack (made == batch) -> not ready (nothing to add).
     assert ready(_ready_ctx([_backpack(), _saw(), _boards(0x700, 40), _throne()], memory=mem)) is False
-    # Off the configured stand tile -> not ready.
+    # A few tiles of drift off the stand (within craft_spot_radius=3) -> STILL ready:
+    # a saw crafts anywhere, so a delivered pile landing off-centre no longer strands
+    # the carpenter (the endurance-test silent-stall fix). Player is at (5, 5).
     assert ready(_ready_ctx([_backpack(), _saw(), _boards(0x700, 19)],
-                            memory={"craft_spot": (9, 9)})) is False
+                            memory={"craft_spot": (7, 7)})) is True   # chebyshev 2 <= 3
+    # Genuinely far from the stand (> radius) -> not ready.
+    assert ready(_ready_ctx([_backpack(), _saw(), _boards(0x700, 19)],
+                            memory={"craft_spot": (9, 9)})) is False  # chebyshev 4 > 3
 
 
 # --- sell_furniture: offers the throne (not distractors) via sold_graphic -----

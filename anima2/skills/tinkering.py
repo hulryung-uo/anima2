@@ -108,6 +108,9 @@ class TinkerTongs(CraftItemCapability):
     #: carpentry's 1044004) — without this the tool's gump opens invisibly to the
     #: FSM and it stalls forever (the bug that stalled the carpenter live).
     craft_title_cliloc = TINKERING_TITLE_CLILOC
+    #: TinkerTools craft anywhere (no forge), so tolerate a few tiles of drift off
+    #: the stand — same intermittent-stall guard as the carpenter (craft.py).
+    craft_spot_radius = 3
     #: Tools category -> tongs item (live-calibrated button ids).
     craft_category_btn = TOOLS_CATEGORY_BTN
     craft_item_btn = TONGS_ITEM_BTN
