@@ -222,9 +222,11 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("lumberjack", "sell_boards"),
         ("lumberjack", "bank_gold"),
         ("lumberjack", "buy_hatchet"),
+        ("lumberjack", "deliver_boards"),
         ("carpenter", "craft_carpentry"),
         ("carpenter", "sell_furniture"),
         ("carpenter", "bank_gold"),
+        ("carpenter", "fetch_boards"),
         ("carpenter", "buy_boards"),
         ("carpenter", "buy_saw"),
         ("tinker", "craft_tongs"),
@@ -2332,18 +2334,18 @@ def _lumber_ctx(
     )
 
 
-def test_lumberjack_manifest_includes_all_four_capabilities_in_registry_order():
+def test_lumberjack_manifest_includes_all_five_capabilities_in_registry_order():
     planner = PROFESSIONS["lumberjack"].planner(capability_goals=True)
-    assert len(planner.skills) == 8 + 4
+    assert len(planner.skills) == 8 + 5
     names = [skill.name for skill in planner.skills]
     assert names == [
         "survive", "recover_death", "speak_pending", "goto", "capability_complete",
-        "process_logs", "sell_boards", "bank_gold", "buy_hatchet",
+        "process_logs", "sell_boards", "bank_gold", "buy_hatchet", "deliver_boards",
         "capability_wait", "greet", "wander",
     ]
     assert planner.capability_lease is not None
     assert planner.capability_ids == frozenset(
-        {"process_logs", "sell_boards", "bank_gold", "buy_hatchet"}
+        {"process_logs", "sell_boards", "bank_gold", "buy_hatchet", "deliver_boards"}
     )
 
 

@@ -19,10 +19,20 @@ Live-verified: 20 logs → 20 boards in one `Use(axe)` + `TargetObject(pile)`.
 
 from __future__ import annotations
 
-from ..contract import TargetObject, Use
+from ..contract import Drop, PickUp, Position, TargetObject, Use, Walk
+from ..geometry import chebyshev, direction_toward
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import AXE_GRAPHICS, BACKPACK_LAYER
 from .market import BuyToolCapability, SellItemCapability
+
+
+def _valid_point(value: object) -> bool:
+    """A memory (x, y) tile is a 2-tuple/list of plain ints (never bools)."""
+    return bool(
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) for v in value)
+    )
 
 # ServUO `Scripts/Items/Resource/Log.cs`: `Log() : base(0x1BDD)` — a pack log pile.
 LOG_GRAPHIC = 0x1BDD
@@ -260,4 +270,201 @@ class ProcessLogsGoal(ProcessLogs):
         return sum(
             i.amount for i in ctx.obs.items
             if i.graphic == LOG_GRAPHIC and i.container == bp.serial
+        )
+
+
+class DeliverBoards(Skill):
+    """Capability hands: haul the pack's frozen boards to the carpenter drop point.
+
+    The lumberjack half of the board-delivery trade pair (Brick 6 of
+    `docs/LUMBER-CARPENTER-TINKER.md`) — the board-typed, goal-scoped analog of
+    `smelt.py::MineSmeltDeliver`'s deliver/return legs, structured exactly like
+    `ProcessLogsGoal` (a `_begin_goal` baseline frozen on `cap_deliver_*` keys, an
+    `_observe_evidence` progress readout, and a finished-guarded `step`). At
+    admission it freezes the pack's total board amount (N); it then walks greedily
+    to within one tile of `carpenter_drop` and `Drop`s every board pile there on
+    the GROUND (`container=0xFFFFFFFF`, for the carpenter's `FetchBoards` to pick
+    up — see `craft.py::Blacksmith._fetch_step`), one pile at a time, then walks
+    back to `lumber_home`/`cap_deliver_home` and marks the goal finished.
+    Completion (`_deliver_achieved`, `capabilities.py`) requires all N boards to
+    have left the pack, scoped to the same ``goal_id``.
+
+    Structurally the drop side mirrors `MineSmeltDeliver._deliver_step`/
+    `_return_step`/`_walk_toward` (a UO ground drop is two packets — `PickUp`
+    lifts the pile to the cursor, then `Drop` places it — with `cap_deliver_held`
+    carrying the lifted serial across the tick boundary; the drop point is reached
+    to chebyshev 1, not stood on, since a ground `Drop` reaches 2 tiles and
+    `carpenter_drop` may be occupied), only board-typed and goal-scoped.
+    """
+
+    name = "deliver_boards"
+    description = "Haul the pack's boards to the carpenter drop point for one verified goal."
+    #: Pack boards (summed amount) a delivery must carry — one throne's worth, so a
+    #: haul always drops at least a craftable batch. Also the `deliver_boards`
+    #: readiness trigger (see `capabilities.py::_deliver_ready`).
+    deliver_threshold: int = 19
+    #: Consecutive no-progress walking ticks before a deliver/return leg gives up
+    #: (mirrors `MineSmeltDeliver.stall_limit` / `GoTo.stall_limit`).
+    stall_limit: int = 6
+
+    def _begin_goal(self, ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int:
+            return False
+        if ctx.memory.get("cap_deliver_goal_id") == goal_id:
+            return True
+        if self._backpack(ctx) is None:
+            return False
+        if not _valid_point(ctx.memory.get("carpenter_drop")):
+            return False
+        start_boards = self._pack_boards(ctx)
+        if start_boards <= 0:
+            return False
+        # Remember where the shift started so `return` walks back to it, unless a
+        # fixed `lumber_home` was plumbed in (mirrors MineSmeltDeliver's
+        # `miner_home` setdefault): set `cap_deliver_home` from the player's pos
+        # only when `lumber_home` is absent, and only the first time.
+        if not _valid_point(ctx.memory.get("lumber_home")):
+            here = ctx.obs.player.pos
+            ctx.memory.setdefault("cap_deliver_home", (here.x, here.y))
+        ctx.memory["cap_deliver_goal_id"] = goal_id
+        ctx.memory["cap_deliver_start_boards"] = start_boards
+        ctx.memory["cap_deliver_needed"] = start_boards
+        for key in (
+            "cap_deliver_delivered",
+            "cap_deliver_boards_remaining",
+            "cap_deliver_finished_goal_id",
+            "cap_deliver_held",
+            "cap_deliver_stall",
+            "cap_deliver_last_pos",
+            "cap_deliver_return_stall",
+            "cap_deliver_return_last_pos",
+        ):
+            ctx.memory.pop(key, None)
+        return True
+
+    def _observe_evidence(self, ctx: SkillContext) -> None:
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_deliver_goal_id") != goal_id:
+            return
+        start = ctx.memory.get("cap_deliver_start_boards")
+        if type(start) is not int:
+            return
+        boards_now = self._pack_boards(ctx)
+        ctx.memory["cap_deliver_delivered"] = max(0, start - boards_now)
+        ctx.memory["cap_deliver_boards_remaining"] = boards_now
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self._begin_goal(ctx):
+            return SkillResult(Status.RUNNING)
+        self._observe_evidence(ctx)
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_deliver_finished_goal_id") == goal_id:
+            return SkillResult(Status.RUNNING)
+        # Drop every pack board pile at the drop point; then walk home. When both
+        # legs report `None` (haul delivered — or a wedge gave up — and home
+        # reached, or wedged), the goal is done.
+        result = self._deliver_step(ctx)
+        if result is not None:
+            return result
+        result = self._return_step(ctx)
+        if result is not None:
+            return result
+        ctx.memory["cap_deliver_finished_goal_id"] = goal_id
+        self._observe_evidence(ctx)
+        return SkillResult(Status.RUNNING)
+
+    def _deliver_step(self, ctx: SkillContext) -> SkillResult | None:
+        """One delivery tick, or `None` once every board pile has been dropped
+        (resume via `_return_step`). Mirrors `MineSmeltDeliver._deliver_step`,
+        board-typed and goal-scoped."""
+        drop = ctx.memory.get("carpenter_drop")
+        tx, ty = drop[0], drop[1]
+        here = ctx.obs.player.pos
+        if chebyshev(here, Position(tx, ty, here.z)) > 1:
+            return self._walk_toward(ctx, tx, ty, "cap_deliver")
+
+        ctx.memory.pop("cap_deliver_stall", None)
+        ctx.memory.pop("cap_deliver_last_pos", None)
+
+        held = ctx.memory.pop("cap_deliver_held", None)
+        if held is not None:
+            return SkillResult(
+                Status.RUNNING,
+                Drop(serial=held, x=tx, y=ty, z=here.z, container=0xFFFFFFFF),
+            )
+
+        pile = self._pack_board_pile(ctx)
+        if pile is None:
+            return None  # nothing left to drop — the haul is delivered
+        ctx.memory["cap_deliver_held"] = pile.serial
+        return SkillResult(Status.RUNNING, PickUp(serial=pile.serial, amount=pile.amount))
+
+    def _return_step(self, ctx: SkillContext) -> SkillResult | None:
+        """Walk back to the return tile, or `None` once there (or wedged) — the
+        goal then finishes. Mirrors `MineSmeltDeliver._return_step`."""
+        home = self._home_point(ctx)
+        if home is None:
+            return None
+        here = ctx.obs.player.pos
+        hx, hy = home
+        if chebyshev(here, Position(hx, hy, here.z)) == 0:
+            ctx.memory.pop("cap_deliver_return_stall", None)
+            ctx.memory.pop("cap_deliver_return_last_pos", None)
+            return None
+        return self._walk_toward(ctx, hx, hy, "cap_deliver_return")
+
+    def _walk_toward(self, ctx: SkillContext, tx: int, ty: int, tag: str) -> SkillResult | None:
+        """One greedy step toward `(tx, ty)`, `stall_limit`-bounded like
+        `MineSmeltDeliver._walk_toward`. `None` means wedged — give up this leg."""
+        here = ctx.obs.player.pos
+        cur = (here.x, here.y)
+        stall_key, pos_key = f"{tag}_stall", f"{tag}_last_pos"
+        stall = ctx.memory.get(stall_key, 0) + 1 if ctx.memory.get(pos_key) == cur else 0
+        ctx.memory[stall_key] = stall
+        ctx.memory[pos_key] = cur
+        if stall >= self.stall_limit:
+            ctx.memory.pop(stall_key, None)
+            ctx.memory.pop(pos_key, None)
+            return None
+        d = direction_toward(here, Position(tx, ty, here.z))
+        return SkillResult(Status.RUNNING, Walk(dir=d, run=False))
+
+    @staticmethod
+    def _home_point(ctx: SkillContext):
+        """The return tile: a plumbed-in `lumber_home`, else the `cap_deliver_home`
+        frozen from the shift's start."""
+        home = ctx.memory.get("lumber_home")
+        if _valid_point(home):
+            return (home[0], home[1])
+        home = ctx.memory.get("cap_deliver_home")
+        return home if _valid_point(home) else None
+
+    @staticmethod
+    def _backpack(ctx: SkillContext):
+        return next(
+            (i for i in ctx.obs.items
+             if i.layer == BACKPACK_LAYER and i.container == ctx.obs.player.serial),
+            None,
+        )
+
+    def _pack_boards(self, ctx: SkillContext) -> int:
+        bp = self._backpack(ctx)
+        if bp is None:
+            return 0
+        return sum(
+            i.amount for i in ctx.obs.items
+            if i.graphic in BOARD_GRAPHICS and i.container == bp.serial
+        )
+
+    def _pack_board_pile(self, ctx: SkillContext):
+        """The next pack board pile to drop (first in observation order), or
+        `None`. Mirrors `MineSmeltDeliver._pack_ingot_pile`."""
+        bp = self._backpack(ctx)
+        if bp is None:
+            return None
+        return next(
+            (i for i in ctx.obs.items
+             if i.graphic in BOARD_GRAPHICS and i.container == bp.serial),
+            None,
         )

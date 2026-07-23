@@ -16,9 +16,9 @@ from typing import Callable, Mapping
 from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
-from .skills.carpentry import BuyBoards, BuySaw, CarpenterCraft, SellFurniture
+from .skills.carpentry import BuyBoards, BuySaw, CarpenterCraft, FetchBoards, SellFurniture
 from .skills.tinkering import BuyIron, BuyTinkerTool, SellTongs, TinkerTongs
-from .skills.craft import DAGGER_GRAPHIC, SMITH_TOOL_GRAPHICS, CraftDaggers
+from .skills.craft import DAGGER_GRAPHIC, PICKUP_RADIUS, SMITH_TOOL_GRAPHICS, CraftDaggers
 from .skills.harvest import AXE_GRAPHICS
 from .skills.market import (
     TOOL_BUY_AMOUNT,
@@ -30,8 +30,10 @@ from .skills.market import (
 )
 from .skills.smelt import INGOT_GRAPHICS
 from .skills.woodwork import (
+    BOARD_GRAPHIC,
     LOG_GRAPHIC,
     BuyHatchet,
+    DeliverBoards,
     ProcessLogsGoal,
     SellBoards,
 )
@@ -1183,6 +1185,94 @@ _BUY_HATCHET = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+
+# --- deliver_boards (Brick 6) — the lumberjack half of the board-delivery trade
+# pair. Haul the pack's boards to the `carpenter_drop` point and drop them on the
+# ground for the carpenter's `fetch_boards` to pick up (the board-typed,
+# goal-scoped analog of the miner's `smelt.py::MineSmeltDeliver` deliver leg).
+
+
+def _deliver_can_yield(ctx: SkillContext) -> bool:
+    """Safe to yield/cancel a deliver_boards goal only between drop/walk gestures
+    (no open cursor/gump), and only before it starts or once it has finished —
+    mirrors `_process_can_yield`."""
+    goal_id = ctx.goal_id
+    started = type(goal_id) is int and ctx.memory.get("cap_deliver_goal_id") == goal_id
+    finished = bool(
+        started and ctx.memory.get("cap_deliver_finished_goal_id") == goal_id
+    )
+    return bool(
+        type(goal_id) is int
+        and (not started or finished)
+        and ctx.obs.pending_target is None
+        and not ctx.obs.gumps
+    )
+
+
+def _deliver_ready(ctx: SkillContext) -> bool:
+    obs = ctx.obs
+    return bool(
+        _backpack_serial(ctx) is not None
+        # Enough boards to carry AND a drop point to carry them to — the deliver
+        # trigger. A full throne's worth (19) so a delivery is a craftable batch.
+        and _pack_graphic(ctx, BOARD_GRAPHIC) >= DeliverBoards.deliver_threshold
+        and _valid_spot(ctx.memory.get("carpenter_drop"))
+        # An idle UI, not mid a market trip — mirrors `_process_ready` (checked
+        # before a goal is admitted, so it cannot require a goal_id the way the
+        # goal-scoped `_deliver_can_yield` does).
+        and ctx.memory.get("mkt_phase", "craft") == "craft"
+        and obs.pending_target is None
+        and not obs.gumps
+        and obs.popup is None
+        and obs.shop_buy is None
+        and obs.shop_sell is None
+    )
+
+
+def _deliver_achieved(ctx: SkillContext) -> bool:
+    goal_id = ctx.goal_id
+    needed = ctx.memory.get("cap_deliver_needed")
+    delivered = ctx.memory.get("cap_deliver_delivered")
+    boards_remaining = ctx.memory.get("cap_deliver_boards_remaining")
+    return bool(
+        type(goal_id) is int
+        and ctx.memory.get("cap_deliver_goal_id") == goal_id
+        and ctx.memory.get("cap_deliver_finished_goal_id") == goal_id
+        and type(needed) is int
+        and needed > 0
+        # The frozen N boards all left the pack (delivered == N, 0 remain) — the
+        # whole admitted haul dropped, goal-scoped.
+        and type(delivered) is int
+        and delivered == needed
+        and type(boards_remaining) is int
+        and boards_remaining == 0
+        and _pack_graphic(ctx, BOARD_GRAPHIC) == 0
+        and _deliver_can_yield(ctx)
+    )
+
+
+def _deliver_progress(ctx: SkillContext) -> float:
+    if ctx.memory.get("cap_deliver_goal_id") != ctx.goal_id:
+        return 0.0
+    needed = ctx.memory.get("cap_deliver_needed")
+    delivered = ctx.memory.get("cap_deliver_delivered")
+    if type(needed) is not int or needed <= 0 or type(delivered) is not int:
+        return 0.0
+    return max(0.0, min(1.0, delivered / needed))
+
+
+_DELIVER_BOARDS = CapabilityBinding(
+    capability_id="deliver_boards",
+    profession="lumberjack",
+    skill_type=DeliverBoards,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_deliver_ready,
+    achieved=_deliver_achieved,
+    progress=_deliver_progress,
+    can_yield=_deliver_can_yield,
+    default_deadline_ticks=180,
+)
+
 # --- carpenter capabilities (Bricks 4-5) — the same config-attr/factory shape as
 # the lumberjack. `craft_carpentry` is the craft analog of `craft_daggers` (a
 # Throne from boards, via the no-material-submenu carpentry gump); `sell_furniture`
@@ -1252,6 +1342,113 @@ _BUY_SAW = CapabilityBinding(
     achieved=_make_toolbuy_achieved(BuySaw.owned_tool_graphics),
     progress=_toolbuy_progress,
     can_yield=_toolbuy_can_yield,
+    default_deadline_ticks=180,
+)
+
+
+# --- fetch_boards (Brick 6) — the carpenter half of the board-delivery trade
+# pair. Pick up ground boards the lumberjack's `deliver_boards` dropped nearby
+# into the pack, to feed `craft_carpentry` (the board-typed, goal-scoped analog
+# of the blacksmith's `craft.py::Blacksmith._fetch_step` dropped-ingot pickup).
+
+# The fetch gate: only when the pack can't already craft a throne (below one
+# throne's boards). Reads `CarpenterCraft`'s own per-item board cost (19) so it
+# stays in lockstep with the craft gate that consumes it.
+_FETCH_BOARDS_THRESHOLD = CarpenterCraft.craft_material_per_item
+
+
+def _nearby_ground_boards(ctx: SkillContext):
+    """The nearest board pile ON THE GROUND within `PICKUP_RADIUS` (a world item,
+    `container is None` — never our own pack boards), or `None`. Mirrors the
+    board-typed `FetchBoards._nearby_ground_boards`."""
+    return next(
+        (
+            item
+            for item in ctx.obs.items
+            if item.graphic == BOARD_GRAPHIC
+            and item.container is None
+            and item.distance <= PICKUP_RADIUS
+        ),
+        None,
+    )
+
+
+def _fetch_can_yield(ctx: SkillContext) -> bool:
+    """Safe to yield/cancel a fetch_boards goal only between pickup/walk gestures
+    (no open cursor/gump), and only before it starts or once it has finished —
+    mirrors `_deliver_can_yield`."""
+    goal_id = ctx.goal_id
+    started = type(goal_id) is int and ctx.memory.get("cap_fetch_goal_id") == goal_id
+    finished = bool(
+        started and ctx.memory.get("cap_fetch_finished_goal_id") == goal_id
+    )
+    return bool(
+        type(goal_id) is int
+        and (not started or finished)
+        and ctx.obs.pending_target is None
+        and not ctx.obs.gumps
+    )
+
+
+def _fetch_ready(ctx: SkillContext) -> bool:
+    obs = ctx.obs
+    return bool(
+        _backpack_serial(ctx) is not None
+        # A board pile is on the ground nearby to fetch AND the pack can't already
+        # craft a throne (below one throne's boards) — so it only fetches when it
+        # genuinely needs boards, never on top of a craftable stock.
+        and _nearby_ground_boards(ctx) is not None
+        and _pack_graphic(ctx, BOARD_GRAPHIC) < _FETCH_BOARDS_THRESHOLD
+        and ctx.memory.get("mkt_phase", "craft") == "craft"
+        and obs.pending_target is None
+        and not obs.gumps
+        and obs.popup is None
+        and obs.shop_buy is None
+        and obs.shop_sell is None
+    )
+
+
+def _fetch_achieved(ctx: SkillContext) -> bool:
+    goal_id = ctx.goal_id
+    fetched = ctx.memory.get("cap_fetch_fetched")
+    ground_remaining = ctx.memory.get("cap_fetch_ground_remaining")
+    return bool(
+        type(goal_id) is int
+        and ctx.memory.get("cap_fetch_goal_id") == goal_id
+        and ctx.memory.get("cap_fetch_finished_goal_id") == goal_id
+        # Boards rose from the frozen baseline (fetched > 0) and no ground pile
+        # remains nearby — goal-scoped.
+        and type(fetched) is int
+        and fetched > 0
+        and type(ground_remaining) is int
+        and ground_remaining == 0
+        and _nearby_ground_boards(ctx) is None
+        and _fetch_can_yield(ctx)
+    )
+
+
+def _fetch_progress(ctx: SkillContext) -> float:
+    if ctx.memory.get("cap_fetch_goal_id") != ctx.goal_id:
+        return 0.0
+    fetched = ctx.memory.get("cap_fetch_fetched")
+    ground_remaining = ctx.memory.get("cap_fetch_ground_remaining")
+    if type(fetched) is not int or type(ground_remaining) is not int:
+        return 0.0
+    total = fetched + ground_remaining
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(1.0, fetched / total))
+
+
+_FETCH_BOARDS = CapabilityBinding(
+    capability_id="fetch_boards",
+    profession="carpenter",
+    skill_type=FetchBoards,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_fetch_ready,
+    achieved=_fetch_achieved,
+    progress=_fetch_progress,
+    can_yield=_fetch_can_yield,
     default_deadline_ticks=180,
 )
 
@@ -1339,9 +1536,14 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         (_SELL_BOARDS.profession, _SELL_BOARDS.capability_id): _SELL_BOARDS,
         (_LUMBER_BANK_GOLD.profession, _LUMBER_BANK_GOLD.capability_id): _LUMBER_BANK_GOLD,
         (_BUY_HATCHET.profession, _BUY_HATCHET.capability_id): _BUY_HATCHET,
+        (_DELIVER_BOARDS.profession, _DELIVER_BOARDS.capability_id): _DELIVER_BOARDS,
         (_CRAFT_CARPENTRY.profession, _CRAFT_CARPENTRY.capability_id): _CRAFT_CARPENTRY,
         (_SELL_FURNITURE.profession, _SELL_FURNITURE.capability_id): _SELL_FURNITURE,
         (_CARPENTER_BANK_GOLD.profession, _CARPENTER_BANK_GOLD.capability_id): _CARPENTER_BANK_GOLD,
+        # fetch_boards BEFORE buy_boards: prefer the lumberjack's FREE delivered
+        # boards over BUYING boards (which loses money — furniture is value-negative
+        # at NPC prices, docs/LUMBER-CARPENTER-TINKER.md's economics finding).
+        (_FETCH_BOARDS.profession, _FETCH_BOARDS.capability_id): _FETCH_BOARDS,
         (_BUY_BOARDS.profession, _BUY_BOARDS.capability_id): _BUY_BOARDS,
         (_BUY_SAW.profession, _BUY_SAW.capability_id): _BUY_SAW,
         (_CRAFT_TONGS.profession, _CRAFT_TONGS.capability_id): _CRAFT_TONGS,

@@ -114,10 +114,10 @@ NPC-economy loser:
   by just being a second board-seller. This is a property of the ServUO NPC
   economy (crafted goods have no NPC value-add; real carpentry value comes from
   player-to-player sales, which an autonomous agent on a test shard has none of),
-  not a fixable item choice. **Consequence:** Brick 6 (deliver boards → craft
-  thrones) would build a value-DESTROYING pipeline; it is deliberately NOT built.
-  Open question for the human: keep the carpenter as a (suboptimal) furniture
-  crafter, or let it sell boards raw for real profit.
+  not a fixable item choice. **Human decision (2026-07-23): keep the carpenter a
+  real furniture-maker on the lumberjack's free boards** (accepting the per-board
+  suboptimality) — so Brick 6 IS built + live-verified below. The carpenter banks
+  gold as a genuine carpenter; it just isn't the globally-optimal use of a board.
 
 ## Live calibration findings (verified against the shard)
 
@@ -143,6 +143,8 @@ NPC-economy loser:
 **Throne (carpenter profit item) — CALIBRATED + craft-confirmed:** Saw → category Furniture (button **8**) → item (button **58**) = cliloc 1044305 'magincia-style throne' = ServUO `typeof(Throne)`; consumes **19 Boards** (craft-confirmed: 60→41), sells 24g @ Carpenter. (button 51 = 'wooden throne' 1044304 = the cheaper WoodenThrone @ 6g.) Carpentry button formula confirmed identical to blacksmithy: category `1+idx*7`, item `2+idx*7`, MAKE_LAST=21.
 
 **Brick 2 (lumberjack) — DONE, live-verified, pushed (596c23e).** Lumberjack loop ran process_logs (30 logs→30 boards) → sell_boards (30→60g @ Carpenter) → bank_gold, GM-free. Blacksmith byte-identical (offline 103 tests + live B8 gate). The sell/buy-by-graphic + per-vendor-spot generalization is the reusable foundation.
+
+**Brick 6 (the wood pair) — DONE, live-verified.** Two new goal-scoped **capabilities** (not work-skills): lumberjack `deliver_boards` (`woodwork.py::DeliverBoards`, mirrors `MineSmeltDeliver`'s deliver/return: `PickUp` a pack board pile → `Drop` it on the GROUND `container=0xFFFFFFFF` at `carpenter_drop`, walk back to `lumber_home`) and carpenter `fetch_boards` (`carpentry.py::FetchBoards`, mirrors `Blacksmith._fetch_step`: `PickUp` a nearby GROUND board pile `container is None` within `PICKUP_REACH` → `Drop` into pack, goal-scoped). Registry: `fetch_boards` is placed BEFORE `buy_boards` so the carpenter prefers the FREE delivered boards over buying (which loses money). A lumberjack wired with `carpenter_drop` but NO `vendor_spot` DELIVERS instead of selling (the sell gate needs a vendor spot). Live proof (`scratchpad/board_trade.py`, TWO capability-driven agents co-located, GM-free): the carpenter — staged with a Saw and **zero boards** — crafts a Throne from boards the LUMBERJACK physically delivered: process_logs (40 logs→boards) → `deliver_boards` → `fetch_boards` → `craft_carpentry` → `sell_furniture` (@24g) → `bank_gold`, all five SUCCESS, full pipeline complete at tick 36. **Milestone: the lumberjack+carpenter live well as a pair** — the carpenter self-sustains on free boards, no vendor material purchases. 1177 offline tests (+7 board-trade), blacksmith byte-identical. (Note: the two-agent live harness is environmentally fragile — a persistent shard + 3 connections + long idle runs occasionally hit a transient disconnect or a one-off stall; proven across multiple runs.)
 
 **Bricks 7-9 (tinker) — DONE, live-verified.** Fourth profession on the generalized craft/market machinery, mirroring the carpenter: profession "tinker" (persona Pim, Tinkering 80, TinkerTools 999) + `skills/tinkering.py` — craft_tongs(TinkerTongs: Tools=15→tongs=86, 1 iron, no submenu, title **1044007**) / sell_tongs(Tongs 0xFBB @ Tinker 7g) / bank_gold / buy_iron(0x1BF2 @5g) / buy_tinker_tool(0x1EBC @7g, deferred fallback). Live loop (`scratchpad/tinker_loop.py`, GM-free): 4 craft cycles (20 iron → 0, 5 tongs/batch) → 4 sell cycles (@7g → 140g) → banked 140g — all three capability kinds fired SUCCESS. Economics (research brick): iron @5g → Tongs @7g = +2g/iron even BUYING iron, best gold-per-iron of any tinker item; on FREE/mined iron it's +7g/iron (a free-iron supply is the tinker's Brick-6 analog). Blacksmith/carpenter byte-identical; 1170 offline tests green (+9 tinker), ruff clean. The `craft_title_cliloc` fix generalized cleanly (1044007 set on TinkerTongs; a cross-profession title-isolation regression test proves the tinker ignores a carpentry-titled gump). Live-calibrated Tools item buttons (page 1): scissors=2, hatchet=30, saw=51 (the lumberjack's/carpenter's tools — Brick 10 tool-supply), tongs=86.
 

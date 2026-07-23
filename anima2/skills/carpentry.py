@@ -31,7 +31,11 @@ CraftGump → category "Furniture" (button 8) → item "magincia-style throne"
 
 from __future__ import annotations
 
-from .craft import CraftItemCapability
+from ..contract import Drop, PickUp, Walk
+from ..geometry import direction_toward
+from .base import Skill, SkillContext, SkillResult, Status
+from .craft import PICKUP_RADIUS, PICKUP_REACH, CraftItemCapability
+from .harvest import BACKPACK_LAYER
 from .market import BuyMaterialCapability, BuyToolCapability, SellItemCapability
 from .woodwork import BOARD_GRAPHIC, BOARD_GRAPHICS
 
@@ -198,3 +202,152 @@ class BuySaw(BuyToolCapability):
     #: estimate only — the buy reads the live entry price.
     tool_price_estimate = 15
     # vendor_spot_key = "vendor_spot" (inherited): the Carpenter sells saws too.
+
+
+class FetchBoards(Skill):
+    """Capability hands: pick nearby ground boards into the pack for one goal.
+
+    The carpenter half of the board-delivery trade pair (Brick 6 of
+    `docs/LUMBER-CARPENTER-TINKER.md`) — the board-typed, goal-scoped analog of
+    `craft.py::Blacksmith._fetch_step` (the smith's dropped-ingot pickup),
+    structured exactly like `woodwork.py::ProcessLogsGoal`/`DeliverBoards` (a
+    `_begin_goal` baseline frozen on `cap_fetch_*` keys, an `_observe_evidence`
+    progress readout, and a finished-guarded `step`). At admission it freezes the
+    pack's board amount and requires at least one board pile ON THE GROUND nearby
+    (a world item — `container is None` — within `PICKUP_RADIUS`, the same
+    "nearby ground pile" notion as `Blacksmith._nearby_ground_ingots`, board-
+    typed); it then walks to each ground pile and `PickUp`s it into the pack
+    (`Drop(container=bp.serial)`), one pile at a time, until none remain nearby,
+    then marks the goal finished. Completion (`_fetch_achieved`,
+    `capabilities.py`) requires the pack's board count to have risen and no
+    ground pile to remain, scoped to the same ``goal_id``.
+
+    A UO pickup is two packets (mirrors `Blacksmith._fetch_step`): `PickUp` lifts
+    the ground pile to the cursor, then `Drop` places it in the pack;
+    `cap_fetch_held` carries the lifted serial across that tick boundary the way
+    `bs_fetch_held` does there. A pile out of `PICKUP_REACH` is walked toward with
+    a `stall_limit`-bounded greedy step.
+    """
+
+    name = "fetch_boards"
+    description = "Pick up nearby ground boards into the pack for one verified goal."
+    #: Consecutive no-progress walking ticks before a pile is abandoned (mirrors
+    #: `Blacksmith.stall_limit`).
+    stall_limit: int = 6
+
+    def _begin_goal(self, ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        if type(goal_id) is not int:
+            return False
+        if ctx.memory.get("cap_fetch_goal_id") == goal_id:
+            return True
+        if self._backpack(ctx) is None:
+            return False
+        if self._nearby_ground_boards(ctx) is None:
+            return False
+        ctx.memory["cap_fetch_goal_id"] = goal_id
+        ctx.memory["cap_fetch_start_boards"] = self._pack_boards(ctx)
+        for key in (
+            "cap_fetch_fetched",
+            "cap_fetch_ground_remaining",
+            "cap_fetch_finished_goal_id",
+            "cap_fetch_held",
+            "cap_fetch_stall",
+            "cap_fetch_last_pos",
+        ):
+            ctx.memory.pop(key, None)
+        return True
+
+    def _observe_evidence(self, ctx: SkillContext) -> None:
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_fetch_goal_id") != goal_id:
+            return
+        start = ctx.memory.get("cap_fetch_start_boards")
+        if type(start) is not int:
+            return
+        ctx.memory["cap_fetch_fetched"] = max(0, self._pack_boards(ctx) - start)
+        ctx.memory["cap_fetch_ground_remaining"] = self._ground_board_amount(ctx)
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        if not self._begin_goal(ctx):
+            return SkillResult(Status.RUNNING)
+        self._observe_evidence(ctx)
+        goal_id = ctx.goal_id
+        if ctx.memory.get("cap_fetch_finished_goal_id") == goal_id:
+            return SkillResult(Status.RUNNING)
+        result = self._fetch_step(ctx)
+        if result is not None:
+            return result
+        # No ground board pile remains nearby (or the walk to one wedged) — done.
+        ctx.memory["cap_fetch_finished_goal_id"] = goal_id
+        self._observe_evidence(ctx)
+        return SkillResult(Status.RUNNING)
+
+    def _fetch_step(self, ctx: SkillContext) -> SkillResult | None:
+        """One fetch tick, or `None` when no ground board pile remains nearby
+        (or a walk to one wedged). Mirrors `Blacksmith._fetch_step`, board-typed
+        and goal-scoped — but without the walk-home leg (this leaf never leaves a
+        forge/anvil stand to defend)."""
+        bp = self._backpack(ctx)
+        if bp is None:
+            return None
+
+        held = ctx.memory.pop("cap_fetch_held", None)
+        if held is not None:
+            return SkillResult(Status.RUNNING, Drop(serial=held, container=bp.serial))
+
+        pile = self._nearby_ground_boards(ctx)
+        if pile is None:
+            return None  # nothing left nearby to fetch
+        if pile.distance <= PICKUP_REACH:
+            ctx.memory.pop("cap_fetch_stall", None)
+            ctx.memory.pop("cap_fetch_last_pos", None)
+            ctx.memory["cap_fetch_held"] = pile.serial
+            return SkillResult(Status.RUNNING, PickUp(serial=pile.serial, amount=pile.amount))
+
+        here = ctx.obs.player.pos
+        cur = (here.x, here.y)
+        stall = ctx.memory.get("cap_fetch_stall", 0) + 1 if ctx.memory.get("cap_fetch_last_pos") == cur else 0
+        ctx.memory["cap_fetch_stall"] = stall
+        ctx.memory["cap_fetch_last_pos"] = cur
+        if stall < self.stall_limit:
+            return SkillResult(Status.RUNNING, Walk(dir=direction_toward(here, pile.pos), run=False))
+        # wedged — give up this pile
+        ctx.memory.pop("cap_fetch_stall", None)
+        ctx.memory.pop("cap_fetch_last_pos", None)
+        return None
+
+    @staticmethod
+    def _backpack(ctx: SkillContext):
+        return next(
+            (i for i in ctx.obs.items
+             if i.layer == BACKPACK_LAYER and i.container == ctx.obs.player.serial),
+            None,
+        )
+
+    def _pack_boards(self, ctx: SkillContext) -> int:
+        bp = self._backpack(ctx)
+        if bp is None:
+            return 0
+        return sum(
+            i.amount for i in ctx.obs.items
+            if i.graphic in BOARD_GRAPHICS and i.container == bp.serial
+        )
+
+    def _nearby_ground_boards(self, ctx: SkillContext):
+        """The nearest board pile ON THE GROUND within `PICKUP_RADIUS`, or `None`.
+        `container is None` (a world item, not our own pack boards) is essential —
+        pack boards, being contained, report the placeholder (0,0,0) position and
+        would read as distance 0 (the footgun `Blacksmith._nearby_ground_ingots`
+        calls out). `items` is distance-sorted, so the first match is nearest."""
+        return next(
+            (i for i in ctx.obs.items
+             if i.graphic in BOARD_GRAPHICS and i.container is None and i.distance <= PICKUP_RADIUS),
+            None,
+        )
+
+    def _ground_board_amount(self, ctx: SkillContext) -> int:
+        return sum(
+            i.amount for i in ctx.obs.items
+            if i.graphic in BOARD_GRAPHICS and i.container is None and i.distance <= PICKUP_RADIUS
+        )
