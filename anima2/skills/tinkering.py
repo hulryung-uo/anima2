@@ -40,8 +40,10 @@ Live-calibration source (against this ServUO, `scratchpad/gump_probe.py`): a
 
 from __future__ import annotations
 
+from .carpentry import SAW_GRAPHIC, SAW_GRAPHICS
 from .craft import CraftItemCapability
 from .market import BuyMaterialCapability, BuyToolCapability, SellItemCapability
+from .woodwork import DeliverBoards
 
 # --- Tinkering tool + item graphics (ServUO-confirmed) -----------------------
 # TinkerTools (ServUO `Scripts/Items/Tools/Tools.cs`: `TinkerTools : base(0x1EB8)`,
@@ -191,3 +193,101 @@ class BuyTinkerTool(BuyToolCapability):
     #: estimate only — the buy reads the live entry price.
     tool_price_estimate = 7
     # vendor_spot_key = "vendor_spot" (inherited): the Tinker sells tools too.
+
+
+# --- Brick 10: the closed-village tool-supply link ---------------------------
+# The tinker ALSO forges the village's wooden-working tools (a Saw for the
+# carpenter, a Hatchet for the lumberjack) on the same TinkerTools gump's Tools
+# category, then DELIVERS one spare of each to the counterpart's own drop slot.
+# When a counterpart's tool breaks it FETCHES that delivered spare instead of
+# BUYING a replacement from a vendor — closing the village (no vendor tool
+# purchases). ServUO-confirmed recipes (already calibrated, team lead):
+#   Saw     = Tools btn 15 -> item btn 51, 4 IronIngot, MinSkill 30, out 0x1034.
+#   Hatchet = Tools btn 15 -> item btn 30, 4 IronIngot, MinSkill 30, out 0x0F43.
+# Both live under the SAME Tools category the tongs use (button 15), so
+# `TinkerSaw`/`TinkerHatchet` only override the item button + iron cost + output.
+
+# Saw: the carpentry tool the tinker forges + delivers (0x1034, shared with
+# `carpentry.SAW_GRAPHIC` — the same art the carpenter crafts with and fetches).
+SAW_ITEM_BTN = 51            # Tools -> saw (live-calibrated)
+SAW_NAME_CLILOC = 1024148    # "saw" — the item-page name safety-check
+SAW_IRON_PER = 4             # 4 IronIngot per Saw (ServUO DefTinkering AddCraft)
+
+# Hatchet: the lumberjack tool the tinker forges + delivers. ServUO
+# `Hatchet : base(0xF43)`, `[Flipable(0xF43, 0xF44)]` — both flip orientations
+# count as "a delivered hatchet" (a ground-dropped stack can show either), and
+# both are members of `harvest.AXE_GRAPHICS` so the lumberjack's `fetch_hatchet`
+# picks it up as a working axe.
+HATCHET_GRAPHIC = 0x0F43
+HATCHET_FLIP_GRAPHICS = frozenset({0x0F43, 0x0F44})
+HATCHET_ITEM_BTN = 30        # Tools -> hatchet (live-calibrated)
+HATCHET_NAME_CLILOC = 1023907  # "hatchet" — the item-page name safety-check
+HATCHET_IRON_PER = 4         # 4 IronIngot per Hatchet (ServUO DefTinkering AddCraft)
+
+
+class TinkerSaw(TinkerTongs):
+    """Tinker config: forge ONE Saw (4 iron, 0x1034) from pack iron with the
+    TinkerTools. Same Tools category + no-material-submenu path as `TinkerTongs`;
+    only the item button, per-item iron cost, name cliloc, output graphic, and
+    batch (1 tool, not a 5-item sale batch) differ."""
+
+    name = "craft_saw"
+    description = "Forge one observation-confirmed saw from pack iron with tinker's tools."
+    craft_item_btn = SAW_ITEM_BTN
+    craft_material_per_item = SAW_IRON_PER
+    craft_output_graphic = SAW_GRAPHIC
+    craft_item_name_cliloc = SAW_NAME_CLILOC
+    #: One tool per goal (a durable village spare, not a fill-to-5 sale batch).
+    craft_batch = 1
+
+
+class TinkerHatchet(TinkerTongs):
+    """Tinker config: forge ONE Hatchet (4 iron, 0x0F43) from pack iron with the
+    TinkerTools. Same Tools category + no-material-submenu path as `TinkerTongs`;
+    only the item button, per-item iron cost, name cliloc, output graphic, and
+    batch (1 tool) differ."""
+
+    name = "craft_hatchet"
+    description = "Forge one observation-confirmed hatchet from pack iron with tinker's tools."
+    craft_item_btn = HATCHET_ITEM_BTN
+    craft_material_per_item = HATCHET_IRON_PER
+    craft_output_graphic = HATCHET_GRAPHIC
+    craft_item_name_cliloc = HATCHET_NAME_CLILOC
+    #: One tool per goal (a durable village spare, not a fill-to-5 sale batch).
+    craft_batch = 1
+
+
+class DeliverSaw(DeliverBoards):
+    """Tinker config: haul ONE forged Saw to the carpenter's tool-drop slot and
+    drop it on the ground for the carpenter's `fetch_saw` to pick up. Only the
+    delivered graphics, the one-tool threshold, and the (carpenter-specific) drop
+    key differ from `DeliverBoards`; the goal-scoped drop/return machinery is
+    inherited unchanged."""
+
+    name = "deliver_saw"
+    description = "Haul one forged saw to the carpenter's tool-drop slot for one verified goal."
+    #: The Saw art (0x1034) this haul drops.
+    delivered_graphics = SAW_GRAPHICS
+    #: One tool is a full delivery (a single durable spare per slot).
+    deliver_threshold = 1
+    #: A DISTINCT drop key so the tinker delivers the saw to the CARPENTER's slot
+    #: (not the lumberjack's), keeping exactly one spare at each counterpart.
+    drop_key = "carpenter_tool_drop"
+
+
+class DeliverHatchet(DeliverBoards):
+    """Tinker config: haul ONE forged Hatchet to the lumberjack's tool-drop slot
+    and drop it on the ground for the lumberjack's `fetch_hatchet` to pick up.
+    Only the delivered graphics, the one-tool threshold, and the (lumberjack-
+    specific) drop key differ from `DeliverBoards`; the goal-scoped drop/return
+    machinery is inherited unchanged."""
+
+    name = "deliver_hatchet"
+    description = "Haul one forged hatchet to the lumberjack's tool-drop slot for one verified goal."
+    #: Either Hatchet flip orientation (0x0F43 staged, 0x0F44 ground flip).
+    delivered_graphics = HATCHET_FLIP_GRAPHICS
+    #: One tool is a full delivery (a single durable spare per slot).
+    deliver_threshold = 1
+    #: A DISTINCT drop key so the tinker delivers the hatchet to the LUMBERJACK's
+    #: slot (not the carpenter's), keeping exactly one spare at each counterpart.
+    drop_key = "lumber_drop"

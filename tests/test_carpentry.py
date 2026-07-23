@@ -113,9 +113,9 @@ def _mctx(items, *, memory, pos=Position(0, 0, 0), goal_id=None, gumps=(),
 
 
 def test_carpenter_graphics_and_buttons_match_servuo_and_live_calibration():
-    # ServUO: Saw base(0x1034); Throne base(0xB33); Board base(0x1BD7).
-    assert SAW_GRAPHIC == 0x1034
-    assert SAW_GRAPHICS == frozenset({0x1034})
+    # ServUO: Saw base(0x1034) [Flipable(0x1034,0x1035)]; Throne base(0xB33); Board 0x1BD7.
+    assert SAW_GRAPHIC == 0x1034                      # base craft/vendor art
+    assert SAW_GRAPHICS == frozenset({0x1034, 0x1035})  # flip-safe identity set
     assert THRONE_GRAPHIC == 0x0B33
     assert BOARD_GRAPHIC == 0x1BD7
     assert THRONE_BOARDS_PER == 19

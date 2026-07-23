@@ -40,11 +40,17 @@ from .market import BuyMaterialCapability, BuyToolCapability, SellItemCapability
 from .woodwork import BOARD_GRAPHIC, BOARD_GRAPHICS
 
 # --- Carpentry tool + item graphics (ServUO-confirmed) -----------------------
-# The Saw (ServUO `Scripts/Items/Tools/Tools.cs`: `Saw : base(0x1034)`) — the
-# carpentry craft tool AND the tool the Carpenter vendor sells; `Use(saw)` opens
-# the CraftGump from anywhere (no forge/anvil, unlike smithing).
+# The Saw (ServUO `Scripts/Items/Tools/Saw.cs`: `Saw : base(0x1034)`,
+# `[Flipable(0x1034, 0x1035)]`) — the carpentry craft tool AND the tool the
+# Carpenter vendor sells; `Use(saw)` opens the CraftGump from anywhere. SAW_GRAPHIC
+# (0x1034) is the base art a Use stages / a craft outputs / the vendor sells;
+# SAW_GRAPHICS is the FLIP-SAFE set ({0x1034, 0x1035}) used everywhere a saw is
+# merely IDENTIFIED (owned-tool checks, and Brick 10's ground deliver/fetch) — a
+# ground-dropped or flipped saw can render either art, exactly like the Hatchet's
+# 0xF43/0xF44 pair. Keeping the identity set flip-safe means a fetched-flipped saw
+# still counts as the carpenter's tool (no fetch-a-saw-you-cannot-craft-with gap).
 SAW_GRAPHIC = 0x1034
-SAW_GRAPHICS = frozenset({SAW_GRAPHIC})
+SAW_GRAPHICS = frozenset({0x1034, 0x1035})
 # The Throne's pack graphic (ServUO Thrones.cs `Throne : base(0xB33)`,
 # `[Flipable(0xB32, 0xB33)]` — base 0xB33 in a container) — what the sell phase
 # matches pack/SellList items against, and the craft output the FSM confirms.
@@ -234,6 +240,10 @@ class FetchBoards(Skill):
     #: Consecutive no-progress walking ticks before a pile is abandoned (mirrors
     #: `Blacksmith.stall_limit`).
     stall_limit: int = 6
+    #: The item art(s) this fetch picks up off the ground (a SET). Boards by
+    #: default (byte-identical to Brick 6); a tinker-tool fetch overrides it with
+    #: its own tool graphics (Brick 10).
+    fetched_graphics: frozenset[int] = BOARD_GRAPHICS
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
         goal_id = ctx.goal_id
@@ -331,7 +341,7 @@ class FetchBoards(Skill):
             return 0
         return sum(
             i.amount for i in ctx.obs.items
-            if i.graphic in BOARD_GRAPHICS and i.container == bp.serial
+            if i.graphic in self.fetched_graphics and i.container == bp.serial
         )
 
     def _nearby_ground_boards(self, ctx: SkillContext):
@@ -342,12 +352,25 @@ class FetchBoards(Skill):
         calls out). `items` is distance-sorted, so the first match is nearest."""
         return next(
             (i for i in ctx.obs.items
-             if i.graphic in BOARD_GRAPHICS and i.container is None and i.distance <= PICKUP_RADIUS),
+             if i.graphic in self.fetched_graphics and i.container is None and i.distance <= PICKUP_RADIUS),
             None,
         )
 
     def _ground_board_amount(self, ctx: SkillContext) -> int:
         return sum(
             i.amount for i in ctx.obs.items
-            if i.graphic in BOARD_GRAPHICS and i.container is None and i.distance <= PICKUP_RADIUS
+            if i.graphic in self.fetched_graphics and i.container is None and i.distance <= PICKUP_RADIUS
         )
+
+
+class FetchSaw(FetchBoards):
+    """Carpenter config: pick up a delivered Saw (0x1034) from the ground into the
+    pack for one goal, closing the free tool-supply loop (Brick 10) — the carpenter
+    fetches the tinker's `deliver_saw` spare instead of BUYING a saw when its own
+    breaks. Only `fetched_graphics` differs from `FetchBoards`; the goal-scoped
+    pickup machinery is inherited unchanged."""
+
+    name = "fetch_saw"
+    description = "Pick up a delivered saw from the ground into the pack for one verified goal."
+    #: The Saw art (both the craft tool and the fetchable tool are 0x1034).
+    fetched_graphics = SAW_GRAPHICS

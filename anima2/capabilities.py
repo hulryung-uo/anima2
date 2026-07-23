@@ -16,8 +16,24 @@ from typing import Callable, Mapping
 from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
-from .skills.carpentry import BuyBoards, BuySaw, CarpenterCraft, FetchBoards, SellFurniture
-from .skills.tinkering import BuyIron, BuyTinkerTool, SellTongs, TinkerTongs
+from .skills.carpentry import (
+    BuyBoards,
+    BuySaw,
+    CarpenterCraft,
+    FetchBoards,
+    FetchSaw,
+    SellFurniture,
+)
+from .skills.tinkering import (
+    BuyIron,
+    BuyTinkerTool,
+    DeliverHatchet,
+    DeliverSaw,
+    SellTongs,
+    TinkerHatchet,
+    TinkerSaw,
+    TinkerTongs,
+)
 from .skills.craft import DAGGER_GRAPHIC, PICKUP_RADIUS, SMITH_TOOL_GRAPHICS, CraftDaggers
 from .skills.harvest import AXE_GRAPHICS
 from .skills.market import (
@@ -34,6 +50,7 @@ from .skills.woodwork import (
     LOG_GRAPHIC,
     BuyHatchet,
     DeliverBoards,
+    FetchHatchet,
     ProcessLogsGoal,
     SellBoards,
 )
@@ -1525,6 +1542,278 @@ _BUY_TINKER_TOOL = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+# --- Brick 10: the closed-village tool-supply link ---------------------------
+# The tinker forges the village's wooden-working tools (a Saw for the carpenter,
+# a Hatchet for the lumberjack) and DELIVERS one spare of each to its
+# counterpart's drop slot, maintaining exactly ONE spare there. A counterpart
+# whose tool breaks FETCHES the delivered spare instead of BUYING one from a
+# vendor — closing the village (no vendor tool purchases). So the deliver/craft
+# side carries a NO-OVERSUPPLY gate (never forge or deliver a second spare while
+# one already sits at the drop slot) and the fetch side fires only when the
+# worker's OWN tool has broken (no working tool in the pack). All four leaf funcs
+# reuse the Brick-6 board deliver/fetch machinery (cap_deliver_*/cap_fetch_*
+# memory keys, goal-scoped), generalized over each skill's own graphics set.
+
+
+def _ground_graphics_near(
+    ctx: SkillContext, graphics: frozenset[int], point: object
+) -> bool:
+    """True iff a world item (`container is None`) of `graphics` sits within
+    `PICKUP_RADIUS` of the (x, y) `point` — the no-oversupply gate's "a spare is
+    already at the drop slot" check. Uses each item's own position (not its
+    distance-from-player), since the drop slot is a fixed tile, not the tinker."""
+    if not (
+        isinstance(point, (tuple, list))
+        and len(point) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) for v in point)
+    ):
+        return False
+    px, py = point
+    return any(
+        item.graphic in graphics
+        and item.container is None
+        and max(abs(item.pos.x - px), abs(item.pos.y - py)) <= PICKUP_RADIUS
+        for item in ctx.obs.items
+    )
+
+
+def _nearby_ground_graphics(ctx: SkillContext, graphics: frozenset[int]):
+    """The nearest world item (`container is None`) of `graphics` within
+    `PICKUP_RADIUS` of the player, or `None` — the generalized fetch trigger
+    (`items` is distance-sorted, so the first match is nearest). Mirrors
+    `_nearby_ground_boards`, tool-graphics-set-typed."""
+    return next(
+        (
+            item
+            for item in ctx.obs.items
+            if item.graphic in graphics
+            and item.container is None
+            and item.distance <= PICKUP_RADIUS
+        ),
+        None,
+    )
+
+
+def _make_deliver_ready(skill_cls: type) -> Callable[[SkillContext], bool]:
+    """A deliver readiness gate from a `DeliverBoards` subclass's own config:
+    enough `delivered_graphics` to carry, a valid `drop_key` point, and an idle UI
+    — AND a NO-OVERSUPPLY gate: NOT ready if a matching spare is already on the
+    ground at the drop slot (so the tinker keeps exactly ONE spare per slot).
+
+    Only the two TOOL delivers use this; `deliver_boards` keeps the unchanged
+    `_deliver_ready` (boards get consumed, so no oversupply gate is needed there),
+    staying byte-identical to Brick 6."""
+    graphics = frozenset(skill_cls.delivered_graphics)
+    threshold = skill_cls.deliver_threshold
+    drop_key = skill_cls.drop_key
+
+    def ready(ctx: SkillContext) -> bool:
+        obs = ctx.obs
+        drop = ctx.memory.get(drop_key)
+        return bool(
+            _backpack_serial(ctx) is not None
+            and _pack_graphics(ctx, graphics) >= threshold
+            and _valid_spot(drop)
+            and not _ground_graphics_near(ctx, graphics, drop)
+            and ctx.memory.get("mkt_phase", "craft") == "craft"
+            and obs.pending_target is None
+            and not obs.gumps
+            and obs.popup is None
+            and obs.shop_buy is None
+            and obs.shop_sell is None
+        )
+
+    return ready
+
+
+def _make_deliver_achieved(skill_cls: type) -> Callable[[SkillContext], bool]:
+    """A deliver completion proof from a `DeliverBoards` subclass's config — the
+    pack count summed over `delivered_graphics` must reach 0 (the whole haul
+    dropped), goal-scoped. Mirrors `_deliver_achieved`, generalized off the tool
+    graphics rather than the single `BOARD_GRAPHIC`."""
+    graphics = frozenset(skill_cls.delivered_graphics)
+
+    def achieved(ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        needed = ctx.memory.get("cap_deliver_needed")
+        delivered = ctx.memory.get("cap_deliver_delivered")
+        remaining = ctx.memory.get("cap_deliver_boards_remaining")
+        return bool(
+            type(goal_id) is int
+            and ctx.memory.get("cap_deliver_goal_id") == goal_id
+            and ctx.memory.get("cap_deliver_finished_goal_id") == goal_id
+            and type(needed) is int
+            and needed > 0
+            and type(delivered) is int
+            and delivered == needed
+            and type(remaining) is int
+            and remaining == 0
+            and _pack_graphics(ctx, graphics) == 0
+            and _deliver_can_yield(ctx)
+        )
+
+    return achieved
+
+
+def _make_tool_craft_ready(
+    craft_cls: type, tool_graphics: frozenset[int], drop_key: str
+) -> Callable[[SkillContext], bool]:
+    """A tool-craft readiness gate: the normal `_craft_ready_for(craft_cls)` AND a
+    VALID drop point AND that drop slot is empty (no `tool_graphics` on the ground
+    at `memory[drop_key]`) AND the pack holds no such tool. So the tinker forges a
+    spare only for a real counterpart (a wired drop key — fail-closed, matching
+    `_make_deliver_ready` so a forged tool is never stranded undeliverable) and
+    only when both the slot AND the pack are empty of that tool — never a second on
+    top of a delivered spare, never while it still carries an undelivered one.
+    A standalone tinker (no drop key) never forges tools -> falls through to its
+    tongs income loop, so the tool crafts can sit at higher priority safely."""
+    base_ready = _craft_ready_for(craft_cls)
+    graphics = frozenset(tool_graphics)
+
+    def ready(ctx: SkillContext) -> bool:
+        drop = ctx.memory.get(drop_key)
+        return bool(
+            base_ready(ctx)
+            and _valid_spot(drop)
+            and not _ground_graphics_near(ctx, graphics, drop)
+            and _pack_graphics(ctx, graphics) == 0
+        )
+
+    return ready
+
+
+def _make_tool_fetch_ready(
+    tool_graphics: frozenset[int],
+) -> Callable[[SkillContext], bool]:
+    """A fetch-tool readiness gate: a backpack, a matching tool on the ground
+    nearby, the worker's OWN tool broken (no working `tool_graphics` in the pack —
+    the trigger that the tool broke), and an idle UI. Mirrors `_fetch_ready`,
+    tool-typed."""
+    graphics = frozenset(tool_graphics)
+
+    def ready(ctx: SkillContext) -> bool:
+        obs = ctx.obs
+        return bool(
+            _backpack_serial(ctx) is not None
+            and _nearby_ground_graphics(ctx, graphics) is not None
+            and _owned_tool(ctx, graphics) is None
+            and ctx.memory.get("mkt_phase", "craft") == "craft"
+            and obs.pending_target is None
+            and not obs.gumps
+            and obs.popup is None
+            and obs.shop_buy is None
+            and obs.shop_sell is None
+        )
+
+    return ready
+
+
+def _make_tool_fetch_achieved(
+    tool_graphics: frozenset[int],
+) -> Callable[[SkillContext], bool]:
+    """A fetch-tool completion proof: the pack tool count rose (fetched > 0) and no
+    ground tool remains nearby, goal-scoped. Mirrors `_fetch_achieved`, tool-typed
+    (a working tool now in the pack retires the broken-tool trigger)."""
+    graphics = frozenset(tool_graphics)
+
+    def achieved(ctx: SkillContext) -> bool:
+        goal_id = ctx.goal_id
+        fetched = ctx.memory.get("cap_fetch_fetched")
+        ground_remaining = ctx.memory.get("cap_fetch_ground_remaining")
+        return bool(
+            type(goal_id) is int
+            and ctx.memory.get("cap_fetch_goal_id") == goal_id
+            and ctx.memory.get("cap_fetch_finished_goal_id") == goal_id
+            and type(fetched) is int
+            and fetched > 0
+            and type(ground_remaining) is int
+            and ground_remaining == 0
+            and _nearby_ground_graphics(ctx, graphics) is None
+            and _fetch_can_yield(ctx)
+        )
+
+    return achieved
+
+
+# lumberjack: FETCH the tinker's delivered Hatchet instead of BUYING one.
+_FETCH_HATCHET = CapabilityBinding(
+    capability_id="fetch_hatchet",
+    profession="lumberjack",
+    skill_type=FetchHatchet,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_tool_fetch_ready(FetchHatchet.fetched_graphics),
+    achieved=_make_tool_fetch_achieved(FetchHatchet.fetched_graphics),
+    progress=_fetch_progress,
+    can_yield=_fetch_can_yield,
+    default_deadline_ticks=180,
+)
+
+# carpenter: FETCH the tinker's delivered Saw instead of BUYING one.
+_FETCH_SAW = CapabilityBinding(
+    capability_id="fetch_saw",
+    profession="carpenter",
+    skill_type=FetchSaw,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_tool_fetch_ready(FetchSaw.fetched_graphics),
+    achieved=_make_tool_fetch_achieved(FetchSaw.fetched_graphics),
+    progress=_fetch_progress,
+    can_yield=_fetch_can_yield,
+    default_deadline_ticks=180,
+)
+
+# tinker: forge + deliver each village tool, one spare per counterpart's slot.
+_CRAFT_SAW = CapabilityBinding(
+    capability_id="craft_saw",
+    profession="tinker",
+    skill_type=TinkerSaw,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_tool_craft_ready(
+        TinkerSaw, DeliverSaw.delivered_graphics, DeliverSaw.drop_key
+    ),
+    achieved=_craft_achieved_for(TinkerSaw),
+    progress=_craft_progress,
+    can_yield=_craft_can_yield,
+    default_deadline_ticks=300,
+)
+
+_CRAFT_HATCHET = CapabilityBinding(
+    capability_id="craft_hatchet",
+    profession="tinker",
+    skill_type=TinkerHatchet,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_tool_craft_ready(
+        TinkerHatchet, DeliverHatchet.delivered_graphics, DeliverHatchet.drop_key
+    ),
+    achieved=_craft_achieved_for(TinkerHatchet),
+    progress=_craft_progress,
+    can_yield=_craft_can_yield,
+    default_deadline_ticks=300,
+)
+
+_DELIVER_SAW = CapabilityBinding(
+    capability_id="deliver_saw",
+    profession="tinker",
+    skill_type=DeliverSaw,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_deliver_ready(DeliverSaw),
+    achieved=_make_deliver_achieved(DeliverSaw),
+    progress=_deliver_progress,
+    can_yield=_deliver_can_yield,
+    default_deadline_ticks=180,
+)
+
+_DELIVER_HATCHET = CapabilityBinding(
+    capability_id="deliver_hatchet",
+    profession="tinker",
+    skill_type=DeliverHatchet,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_deliver_ready(DeliverHatchet),
+    achieved=_make_deliver_achieved(DeliverHatchet),
+    progress=_deliver_progress,
+    can_yield=_deliver_can_yield,
+    default_deadline_ticks=180,
+)
+
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
     {
         (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
@@ -1535,6 +1824,10 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         (_PROCESS_LOGS.profession, _PROCESS_LOGS.capability_id): _PROCESS_LOGS,
         (_SELL_BOARDS.profession, _SELL_BOARDS.capability_id): _SELL_BOARDS,
         (_LUMBER_BANK_GOLD.profession, _LUMBER_BANK_GOLD.capability_id): _LUMBER_BANK_GOLD,
+        # fetch_hatchet BEFORE buy_hatchet: prefer the tinker's FREE delivered
+        # hatchet over BUYING one from the WeaponSmith (closing the village —
+        # no vendor tool purchases, Brick 10).
+        (_FETCH_HATCHET.profession, _FETCH_HATCHET.capability_id): _FETCH_HATCHET,
         (_BUY_HATCHET.profession, _BUY_HATCHET.capability_id): _BUY_HATCHET,
         (_DELIVER_BOARDS.profession, _DELIVER_BOARDS.capability_id): _DELIVER_BOARDS,
         (_CRAFT_CARPENTRY.profession, _CRAFT_CARPENTRY.capability_id): _CRAFT_CARPENTRY,
@@ -1545,7 +1838,20 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         # at NPC prices, docs/LUMBER-CARPENTER-TINKER.md's economics finding).
         (_FETCH_BOARDS.profession, _FETCH_BOARDS.capability_id): _FETCH_BOARDS,
         (_BUY_BOARDS.profession, _BUY_BOARDS.capability_id): _BUY_BOARDS,
+        # fetch_saw BEFORE buy_saw: prefer the tinker's FREE delivered saw over
+        # BUYING one from the Carpenter vendor (Brick 10).
+        (_FETCH_SAW.profession, _FETCH_SAW.capability_id): _FETCH_SAW,
         (_BUY_SAW.profession, _BUY_SAW.capability_id): _BUY_SAW,
+        # Brick 10: the tinker forges + delivers the village's wooden-working tools
+        # BEFORE its tongs income loop. Each tool craft is DEMAND-gated (ready only
+        # when that counterpart's drop key is wired AND its drop slot is empty), so
+        # a spare is forged only when actually needed; when both slots are full (or
+        # the tinker is standalone, no drop keys) these fall through to the Tongs
+        # income loop. Interleaved craft->deliver so the pack holds <=1 forged tool.
+        (_CRAFT_SAW.profession, _CRAFT_SAW.capability_id): _CRAFT_SAW,
+        (_DELIVER_SAW.profession, _DELIVER_SAW.capability_id): _DELIVER_SAW,
+        (_CRAFT_HATCHET.profession, _CRAFT_HATCHET.capability_id): _CRAFT_HATCHET,
+        (_DELIVER_HATCHET.profession, _DELIVER_HATCHET.capability_id): _DELIVER_HATCHET,
         (_CRAFT_TONGS.profession, _CRAFT_TONGS.capability_id): _CRAFT_TONGS,
         (_SELL_TONGS.profession, _SELL_TONGS.capability_id): _SELL_TONGS,
         (_TINKER_BANK_GOLD.profession, _TINKER_BANK_GOLD.capability_id): _TINKER_BANK_GOLD,

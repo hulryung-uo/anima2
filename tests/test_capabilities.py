@@ -221,6 +221,7 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("lumberjack", "process_logs"),
         ("lumberjack", "sell_boards"),
         ("lumberjack", "bank_gold"),
+        ("lumberjack", "fetch_hatchet"),
         ("lumberjack", "buy_hatchet"),
         ("lumberjack", "deliver_boards"),
         ("carpenter", "craft_carpentry"),
@@ -228,7 +229,12 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("carpenter", "bank_gold"),
         ("carpenter", "fetch_boards"),
         ("carpenter", "buy_boards"),
+        ("carpenter", "fetch_saw"),
         ("carpenter", "buy_saw"),
+        ("tinker", "craft_saw"),
+        ("tinker", "deliver_saw"),
+        ("tinker", "craft_hatchet"),
+        ("tinker", "deliver_hatchet"),
         ("tinker", "craft_tongs"),
         ("tinker", "sell_tongs"),
         ("tinker", "bank_gold"),
@@ -2334,18 +2340,20 @@ def _lumber_ctx(
     )
 
 
-def test_lumberjack_manifest_includes_all_five_capabilities_in_registry_order():
+def test_lumberjack_manifest_includes_all_six_capabilities_in_registry_order():
     planner = PROFESSIONS["lumberjack"].planner(capability_goals=True)
-    assert len(planner.skills) == 8 + 5
+    assert len(planner.skills) == 8 + 6
     names = [skill.name for skill in planner.skills]
     assert names == [
         "survive", "recover_death", "speak_pending", "goto", "capability_complete",
-        "process_logs", "sell_boards", "bank_gold", "buy_hatchet", "deliver_boards",
+        "process_logs", "sell_boards", "bank_gold", "fetch_hatchet", "buy_hatchet",
+        "deliver_boards",
         "capability_wait", "greet", "wander",
     ]
     assert planner.capability_lease is not None
     assert planner.capability_ids == frozenset(
-        {"process_logs", "sell_boards", "bank_gold", "buy_hatchet", "deliver_boards"}
+        {"process_logs", "sell_boards", "bank_gold", "fetch_hatchet", "buy_hatchet",
+         "deliver_boards"}
     )
 
 

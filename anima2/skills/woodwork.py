@@ -306,6 +306,14 @@ class DeliverBoards(Skill):
     #: Consecutive no-progress walking ticks before a deliver/return leg gives up
     #: (mirrors `MineSmeltDeliver.stall_limit` / `GoTo.stall_limit`).
     stall_limit: int = 6
+    #: The item art(s) this deliver hauls + drops (a SET, summed over pack piles).
+    #: Boards by default (byte-identical to Brick 6); a tinker tool deliver
+    #: overrides it with its own tool graphics (Brick 10).
+    delivered_graphics: frozenset[int] = BOARD_GRAPHICS
+    #: The memory key holding the drop point. `carpenter_drop` by default (the
+    #: lumberjack->carpenter board trade); a tool deliver uses its own key so the
+    #: tinker delivers each tool to the right counterpart's slot (Brick 10).
+    drop_key: str = "carpenter_drop"
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
         goal_id = ctx.goal_id
@@ -315,7 +323,7 @@ class DeliverBoards(Skill):
             return True
         if self._backpack(ctx) is None:
             return False
-        if not _valid_point(ctx.memory.get("carpenter_drop")):
+        if not _valid_point(ctx.memory.get(self.drop_key)):
             return False
         start_boards = self._pack_boards(ctx)
         if start_boards <= 0:
@@ -378,7 +386,7 @@ class DeliverBoards(Skill):
         """One delivery tick, or `None` once every board pile has been dropped
         (resume via `_return_step`). Mirrors `MineSmeltDeliver._deliver_step`,
         board-typed and goal-scoped."""
-        drop = ctx.memory.get("carpenter_drop")
+        drop = ctx.memory.get(self.drop_key)
         tx, ty = drop[0], drop[1]
         here = ctx.obs.player.pos
         if chebyshev(here, Position(tx, ty, here.z)) > 1:
@@ -454,7 +462,7 @@ class DeliverBoards(Skill):
             return 0
         return sum(
             i.amount for i in ctx.obs.items
-            if i.graphic in BOARD_GRAPHICS and i.container == bp.serial
+            if i.graphic in self.delivered_graphics and i.container == bp.serial
         )
 
     def _pack_board_pile(self, ctx: SkillContext):
@@ -465,6 +473,31 @@ class DeliverBoards(Skill):
             return None
         return next(
             (i for i in ctx.obs.items
-             if i.graphic in BOARD_GRAPHICS and i.container == bp.serial),
+             if i.graphic in self.delivered_graphics and i.container == bp.serial),
             None,
         )
+
+
+# The lumberjack's fetch-tool skill (Brick 10, the closed-village tool-supply
+# link): pick up the Hatchet the tinker's `deliver_hatchet` dropped at the
+# `lumber_drop` slot instead of BUYING one from the WeaponSmith when the axe
+# breaks. A thin, tool-typed config subclass of `carpentry.FetchBoards` (the
+# same nearby-ground-pile pickup gesture, generalized over `fetched_graphics`).
+# `FetchBoards` lives in `carpentry`, which imports `woodwork` at its top; this
+# bottom-of-module import closes the cycle only after `woodwork`'s own symbols
+# (BOARD_GRAPHICS et al.) are defined, and `skills/__init__` imports `woodwork`
+# before anyone reaches `carpentry`, so the resolution is order-stable.
+from .carpentry import FetchBoards  # noqa: E402 — deferred to break the import cycle
+
+
+class FetchHatchet(FetchBoards):
+    """Lumberjack config: pick up a delivered Hatchet (any AXE_GRAPHICS art) from
+    the ground into the pack for one goal, closing the free tool-supply loop. Only
+    `fetched_graphics` differs from `FetchBoards`; the goal-scoped pickup machinery
+    is inherited unchanged."""
+
+    name = "fetch_hatchet"
+    description = "Pick up a delivered hatchet from the ground into the pack for one verified goal."
+    #: Any axe counts as the fetchable tool (the tinker forges a 0x0F43 Hatchet,
+    #: whose ground flip is 0x0F44 — both are in AXE_GRAPHICS).
+    fetched_graphics = AXE_GRAPHICS
