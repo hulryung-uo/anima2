@@ -123,6 +123,20 @@ robustness cliff plus one shipped improvement. Full write-up:
 - **Positive result.** A properly-provisioned warrior LIVES WELL: `live_warrior_thrive.py`
   (kills-driven respawn) ran ~500 ticks with **0 deaths, full plate kept, ~646 gold
   banked, HP healthy** — the shipped combat/heal/loot code is sound.
-- **Next fix (not built).** Re-arm-after-death: when the corpse can't be recovered, buy a
-  replacement blade + bandages with banked gold (the `buy_weapon` capability exists),
-  composing the hunt and economy loops so a death is a setback, not a terminal loop.
+- **Re-arm after death (shipped).** The resupply leg that breaks the naked death-loop:
+  when the corpse can't be recovered, buy a replacement blade + bandages with looted gold
+  instead of fighting on naked and dry. `skills/warrior.py::BuyBandage` (a
+  `BuyMaterialCapability` buying a 20-batch of bandages from the `healer_spot` Healer @5g,
+  mirroring the tinker's `BuyIron`) joins `bank_gold` + `buy_weapon` in the swordsman's
+  economy set. Live-verified (`scratchpad/live_warrior_rearm.py`, GATE PASSED): a
+  post-death warrior — no sword, a near-empty bandage stack, looted gold — RE-ARMS via the
+  economy (`buy_weapon` → Katana, gold 300→267; `buy_bandage` → bandages 8→28, 267→167) and
+  then the work-skill planner's `EquipWeapon` re-wields the fresh blade. Two live gotchas:
+  drive the capability goals with a SYNCHRONOUS `CapabilityCognition` (the async
+  `ThreadedCognition` raced and intermittently never proposed the goal), and stage one
+  vendor at a time on one calibrated tile (two nearby wandering NPCs confuse the
+  closest-mobile vendor pick).
+- **Next fix (not built).** The autonomous ORCHESTRATOR that decides *when* to switch a
+  live agent between the hunt planner and this economy leg (weaponless / low-supply →
+  re-arm → resume), so the composition runs unattended in `village.py`, not just in the
+  proof driver.
