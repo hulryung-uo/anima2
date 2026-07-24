@@ -1978,11 +1978,12 @@ def _valid_capability_skill_manifest(
     goal_complete = skills[4]
     bound_skills = skills[5 : 5 + len(bindings)]
     wait, greet, wander = skills[-3:]
-    if tuple(type(skill) for skill in prefix) != (
-        Survive,
-        RecoverDeath,
-        SpeakPending,
-        GoTo,
+    # The survival slot accepts any `Survive` (a profession may install a subclass,
+    # e.g. the warrior's WarriorSurvive with heal hysteresis); the rest are exact.
+    if not (
+        isinstance(prefix[0], Survive)
+        and tuple(type(skill) for skill in prefix[1:])
+        == (RecoverDeath, SpeakPending, GoTo)
     ):
         return False
     if (

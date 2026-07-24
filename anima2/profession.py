@@ -28,7 +28,7 @@ from .curriculum import (
 )
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
-from .skills.warrior import EquipArmor, EquipWeapon
+from .skills.warrior import EquipArmor, EquipWeapon, WarriorSurvive
 from .skills.base import SkillContext, SkillResult, Status
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
@@ -379,6 +379,10 @@ class Profession:
     #: server fights it with Swordsmanship) — a reflex that must beat the work skill
     #: but yield to Survive/RecoverDeath above it.
     pre_work_skills: tuple[Callable[[], Skill], ...] = ()
+    #: Factory for the top-priority survival reflex. Defaults to the stock `Survive`
+    #: (byte-identical for every profession); a warrior swaps in a `WarriorSurvive`
+    #: that heals to a safe margin before re-engaging (living-test hardening).
+    survive_factory: Callable[[], Skill] = Survive
 
     def planner(
         self,
@@ -396,7 +400,7 @@ class Profession:
         """
         if curriculum_goals and capability_goals:
             raise ValueError("curriculum_goals and capability_goals are separate modes")
-        skills: list[Skill] = [Survive(), RecoverDeath(), SpeakPending(), GoTo()]
+        skills: list[Skill] = [self.survive_factory(), RecoverDeath(), SpeakPending(), GoTo()]
         # Pre-work reflexes (e.g. the swordsman's EquipWeapon) sit just above the
         # work skill: they beat Hunt but yield to Survive/RecoverDeath. Inert
         # (default empty) for every other profession — no behaviour change. They
@@ -596,5 +600,7 @@ PROFESSIONS: dict[str, Profession] = {
         work_skill=Hunt,
         combat_disposition="aggressive",
         pre_work_skills=(EquipWeapon, EquipArmor),
+        # Heal to a safe margin before wading back in (living-test hardening).
+        survive_factory=WarriorSurvive,
     ),
 }

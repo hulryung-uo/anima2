@@ -27,6 +27,18 @@ from ..contract import Drop, Equip, PickUp
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import BACKPACK_LAYER
 from .market import BuyToolCapability
+from .survival import Survive
+
+
+class WarriorSurvive(Survive):
+    """A warrior's survival reflex: identical to `Survive`, but once a heal starts it
+    keeps bandaging until HP recovers to a SAFE margin (75%) before returning to the
+    fight. The stock `Survive` stops the instant HP crosses back above 40%, so a
+    warrior re-engages Ettins at ~41% HP and is bursted down again — the death-loop a
+    living-endurance test surfaced. Plate soaks the damage; this makes the fighter
+    wait behind it until it is actually safe to swing again."""
+
+    heal_until_fraction = 0.75
 
 # The equip layer for a ONE-HANDED weapon (ServUO Layer.OneHanded == 1). Two-handed
 # weapons use layer 2 (mirrors harvest.py's axe), but the buyable swords are all

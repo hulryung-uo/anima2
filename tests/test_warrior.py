@@ -231,6 +231,41 @@ def test_equip_armor_wears_each_owned_plate_piece_at_its_layer():
     assert skill.step(done).status is Status.SUCCESS
 
 
+def _hp_ctx(hits, *, hits_max=100, memory):
+    obs = Observation(player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0),
+                                        hits=hits, hits_max=hits_max), items=[])
+    return SkillContext(obs=obs, persona=Persona(name="Bram"), memory=memory)
+
+
+def test_warrior_survive_heals_to_a_safe_margin_before_re_engaging():
+    # The living-test death-loop fix: once a heal starts, keep healing until HP
+    # recovers to the 75% safe ceiling (hysteresis) rather than stopping at 41%.
+    from anima2.skills.warrior import WarriorSurvive
+
+    assert WarriorSurvive.heal_until_fraction == 0.75
+    ws = WarriorSurvive()
+    mem: dict = {}
+    assert ws._wounded(_hp_ctx(30, memory=mem)) is True   # <40% -> heal starts (latch set)
+    assert ws._wounded(_hp_ctx(50, memory=mem)) is True   # above trigger, below ceiling -> keep healing
+    assert ws._wounded(_hp_ctx(74, memory=mem)) is True   # still under 75% -> keep healing
+    assert ws._wounded(_hp_ctx(80, memory=mem)) is False  # >=75% -> safe, stop (latch cleared)
+    # Fresh 50% HP with no active heal -> NOT wounded (never dropped below the trigger).
+    assert ws._wounded(_hp_ctx(50, memory={})) is False
+
+
+def test_base_survive_hysteresis_is_a_byte_identical_noop():
+    # Default Survive (heal_until == heal_below == 0.40) must behave exactly as before:
+    # heal below 40%, stop the instant HP crosses back above it.
+    from anima2.skills.survival import Survive
+
+    assert Survive.heal_until_fraction == Survive.heal_below_fraction == 0.40
+    s = Survive()
+    mem: dict = {}
+    assert s._wounded(_hp_ctx(30, memory=mem)) is True    # <40% -> wounded
+    assert s._wounded(_hp_ctx(45, memory=mem)) is False   # >=40% -> NOT wounded (no hysteresis)
+    assert s._wounded(_hp_ctx(50, memory={})) is False
+
+
 def test_equip_armor_never_steals_a_cursor():
     skill = EquipArmor()
     ctx = _ctx([_backpack(), _item(0x800, PLATE_CHEST_GRAPHIC)],

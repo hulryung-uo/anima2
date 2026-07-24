@@ -41,6 +41,13 @@ class Survive(Skill):
     description = "Retreat from nearby hostiles when badly wounded, then bandage self."
 
     heal_below_fraction: float = 0.40
+    #: Heal UP TO this HP fraction once a heal has started, before yielding back to
+    #: combat/work (hysteresis). Default == `heal_below_fraction` disables the
+    #: hysteresis — byte-for-byte the old "heal only below the trigger" behavior.
+    #: Set it ABOVE the trigger (e.g. a warrior's 0.75) so a wounded fighter recovers
+    #: to a safe margin instead of re-engaging at ~41% HP and being bursted down again
+    #: (the living-test death-loop finding).
+    heal_until_fraction: float = 0.40
     hostile_scan_range: int = 6
     flee_hostile_count: int = 3
     max_flee_steps: int = 5
@@ -61,6 +68,7 @@ class Survive(Skill):
     _BANDAGE_SERIAL = "survival_bandage_serial"
     _FLEE_STEPS = "survival_flee_steps"
     _CURE_COOLDOWN = "survival_cure_cooldown"
+    _HEAL_LATCH = "survival_heal_latch"
 
     def can_run(self, ctx: SkillContext) -> bool:
         if self._observably_dead(ctx):
@@ -224,7 +232,23 @@ class Survive(Skill):
 
     def _wounded(self, ctx: SkillContext) -> bool:
         p = ctx.obs.player
-        return p.hits > 0 and p.hits_max > 0 and p.hits / p.hits_max < self.heal_below_fraction
+        if not (p.hits > 0 and p.hits_max > 0):
+            ctx.memory.pop(self._HEAL_LATCH, None)
+            return False
+        frac = p.hits / p.hits_max
+        # Hysteresis: a heal starts when HP drops below the trigger and keeps going
+        # until HP recovers to `heal_until_fraction`, so a wounded fighter re-engages
+        # at a safe margin instead of at ~41% (where it just gets bursted down again).
+        # When heal_until_fraction == heal_below_fraction (every default profession),
+        # the latch branch can never hold above the trigger, so this is byte-for-byte
+        # the old behavior.
+        if frac < self.heal_below_fraction:
+            ctx.memory[self._HEAL_LATCH] = True
+            return True
+        if ctx.memory.get(self._HEAL_LATCH) and frac < self.heal_until_fraction:
+            return True
+        ctx.memory.pop(self._HEAL_LATCH, None)
+        return False
 
     def _needs_recovery(self, ctx: SkillContext) -> bool:
         if self._observably_dead(ctx):
