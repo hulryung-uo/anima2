@@ -26,8 +26,11 @@ from __future__ import annotations
 from ..contract import Drop, Equip, PickUp
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import BACKPACK_LAYER
-from .market import BuyToolCapability
-from .survival import Survive
+from .market import BuyMaterialCapability, BuyToolCapability
+from .survival import BANDAGE_GRAPHICS, Survive
+
+#: The healing bandage art (ServUO `Bandage`, 0x0E21) — sold by a Healer @5g.
+BANDAGE_GRAPHIC = 0x0E21
 
 
 class WarriorSurvive(Survive):
@@ -343,3 +346,30 @@ class BuyWeapon(BuyToolCapability):
     tool_price_estimate = 33
     #: The warrior's weapon vendor (a SEPARATE key from any sell/bank vendor).
     vendor_spot_key = "weapon_vendor_spot"
+
+
+class BuyBandage(BuyMaterialCapability):
+    """Warrior config: buy a batch of bandages (0x0E21, a STACKING material) from the
+    `healer_spot` Healer when the warrior's stack runs low — the resupply leg that
+    keeps a hunter able to heal (SBHealer sells Bandage @5g). This is the piece that,
+    with `buy_weapon`, lets a warrior RE-ARM after a death instead of fighting on
+    naked and bandage-less: it loots gold, then restocks blade + bandages. Mirrors the
+    tinker's `BuyIron` exactly — only the material, price, and vendor key differ; the
+    buy machinery is `BuyMaterialCapability`'s, unchanged.
+    """
+
+    name = "buy_bandage"
+    description = "Buy a batch of bandages from the configured healer and return."
+    #: Bandages stack, so "owned" is a pack amount (unlike a worn blade).
+    buy_material_graphics = BANDAGE_GRAPHICS
+    buy_offer_graphic = BANDAGE_GRAPHIC
+    #: The SBHealer stocks bandages in batches of 20 (GenericBuyInfo amount), and the
+    #: buy clamps to `min(buy_amount, entry.amount)`, so order a full 20-batch; the
+    #: warrior re-triggers buy_bandage whenever the stack falls back below the reorder.
+    buy_amount = 20
+    #: Reorder when the stack drops below ~a fight's worth, so a hunter never runs dry.
+    buy_reorder = 10
+    #: This shard's live bandage price (SBHealer @5g) — affordability estimate only.
+    buy_price_estimate = 5
+    #: The warrior's bandage vendor — a Healer, a SEPARATE key from the weapon vendor.
+    vendor_spot_key = "healer_spot"

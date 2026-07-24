@@ -45,7 +45,7 @@ from .skills.market import (
     _bank_reserve,
 )
 from .skills.smelt import INGOT_GRAPHICS
-from .skills.warrior import WEAPON_LAYER, BuyWeapon
+from .skills.warrior import WEAPON_LAYER, BuyBandage, BuyWeapon
 from .skills.woodwork import (
     BOARD_GRAPHIC,
     LOG_GRAPHIC,
@@ -1632,6 +1632,18 @@ _BUY_WEAPON = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+_BUY_BANDAGE = CapabilityBinding(
+    capability_id="buy_bandage",
+    profession="swordsman",
+    skill_type=BuyBandage,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_buy_ready_for(BuyBandage),
+    achieved=_buy_achieved,
+    progress=_buy_progress,
+    can_yield=_buy_can_yield,
+    default_deadline_ticks=180,
+)
+
 # --- Brick 10: the closed-village tool-supply link ---------------------------
 # The tinker forges the village's wooden-working tools (a Saw for the carpenter,
 # a Hatchet for the lumberjack) and DELIVERS one spare of each to its
@@ -1951,6 +1963,9 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         # bank looted gold, and buy a replacement Katana if left unarmed.
         (_SWORDSMAN_BANK_GOLD.profession, _SWORDSMAN_BANK_GOLD.capability_id): _SWORDSMAN_BANK_GOLD,
         (_BUY_WEAPON.profession, _BUY_WEAPON.capability_id): _BUY_WEAPON,
+        # The resupply leg that lets a warrior RE-ARM after a death (buy blade +
+        # bandages with looted gold) instead of fighting on naked and dry.
+        (_BUY_BANDAGE.profession, _BUY_BANDAGE.capability_id): _BUY_BANDAGE,
     }
 )
 

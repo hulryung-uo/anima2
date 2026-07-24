@@ -119,6 +119,17 @@ def test_buy_weapon_config_targets_a_katana_at_the_weapon_vendor():
     assert BuyWeapon.vendor_spot_key == "weapon_vendor_spot"  # its own vendor key
 
 
+def test_buy_bandage_config_restocks_bandages_from_the_healer():
+    from anima2.skills.survival import BANDAGE_GRAPHICS
+    from anima2.skills.warrior import BANDAGE_GRAPHIC, BuyBandage
+
+    assert BuyBandage.buy_offer_graphic == BANDAGE_GRAPHIC == 0x0E21
+    assert BuyBandage.buy_material_graphics == BANDAGE_GRAPHICS  # stacking material
+    assert BuyBandage.buy_price_estimate == 5                    # SBHealer @5g
+    assert BuyBandage.buy_amount == 20 and BuyBandage.buy_reorder == 10  # Healer's 20-batch
+    assert BuyBandage.vendor_spot_key == "healer_spot"           # a Healer, own key
+
+
 def test_owned_weapon_is_worn_aware_so_the_warrior_never_double_buys():
     from anima2.capabilities import _owned_weapon
 
@@ -149,10 +160,10 @@ def test_swordsman_wires_both_hunt_and_the_economy_capabilities():
     # The economy planner (capability mode) builds — its manifest must pass, which
     # it only does because pre-work reflexes are excluded from capability mode.
     econ = sword.planner(capability_goals=True)
-    assert set(econ.capability_ids) == {"bank_gold", "buy_weapon"}
+    assert set(econ.capability_ids) == {"bank_gold", "buy_weapon", "buy_bandage"}
     econ_names = [type(s).__name__ for s in econ.skills]
     assert "EquipWeapon" not in econ_names and "EquipArmor" not in econ_names
-    assert {cid for (p, cid) in CAPABILITIES if p == "swordsman"} == {"bank_gold", "buy_weapon"}
+    assert {cid for (p, cid) in CAPABILITIES if p == "swordsman"} == {"bank_gold", "buy_weapon", "buy_bandage"}
 
 
 def test_all_six_plate_layers_match_the_live_verified_values():
