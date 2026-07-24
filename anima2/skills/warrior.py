@@ -101,16 +101,19 @@ class EquipWeapon(Skill):
     def step(self, ctx: SkillContext) -> SkillResult:
         if ctx.obs.pending_target is not None:
             return SkillResult(Status.FAILURE, None)
-        best = self._best_owned_sword(ctx)
         held = ctx.memory.get(self._SERIAL)
-        # Mid-equip: the sword is on the cursor (vanished from `items`); drive the
-        # second packet off the remembered serial.
-        if held is not None and (best is None or best.serial == held):
-            step = ctx.memory.get(self._STEP, 0)
-            if step == 1:
-                ctx.memory[self._STEP] = 0
-                ctx.memory.pop(self._SERIAL, None)
-                return SkillResult(Status.RUNNING, Equip(serial=held, layer=WEAPON_LAYER))
+        # Mid-equip: the sword was PickUp'd to the cursor last tick (and has vanished
+        # from `items`). Commit the second (Equip) packet off the REMEMBERED serial —
+        # never re-derive `best` to decide whether to send it. During an UPGRADE the
+        # still-worn weaker sword is the only blade left visible, so a re-derived best
+        # would flip away from the held sword and the Equip would be skipped, stranding
+        # the picked-up blade on the cursor forever (the exact bug an armored-review
+        # trace caught). EquipArmor commits the same way, purely off held + step.
+        if held is not None and ctx.memory.get(self._STEP) == 1:
+            ctx.memory[self._STEP] = 0
+            ctx.memory.pop(self._SERIAL, None)
+            return SkillResult(Status.RUNNING, Equip(serial=held, layer=WEAPON_LAYER))
+        best = self._best_owned_sword(ctx)
         if best is None:
             self._reset(ctx)
             return SkillResult(Status.SUCCESS, None)

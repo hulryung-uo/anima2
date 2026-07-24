@@ -13,7 +13,10 @@ from anima2.skills.warrior import (
     CUTLASS_GRAPHIC,
     KATANA_GRAPHIC,
     PLATE_ARMOR_LAYERS,
+    PLATE_ARMS_GRAPHIC,
     PLATE_CHEST_GRAPHIC,
+    PLATE_GLOVES_GRAPHIC,
+    PLATE_GORGET_GRAPHIC,
     PLATE_HELM_GRAPHIC,
     PLATE_LEGS_GRAPHIC,
     SWORD_GRAPHICS,
@@ -75,15 +78,29 @@ def test_equip_weapon_wields_the_pack_sword_in_two_steps():
     assert skill.step(done_ctx).status is Status.SUCCESS
 
 
-def test_equip_weapon_prefers_a_stronger_blade_in_the_pack_over_a_worn_weaker_one():
+def test_equip_weapon_upgrades_by_actually_equipping_the_stronger_pack_blade():
+    # Regression (armored-review trace): during an UPGRADE the second (Equip) packet
+    # must fire off the REMEMBERED serial. The old code re-derived `best` mid-equip,
+    # which flipped to the still-worn weaker sword and stranded the picked-up blade on
+    # the cursor forever — the upgrade silently failed and the cursor could stall Hunt.
     skill = EquipWeapon()
+    mem: dict = {}
     worn_cutlass = _item(0x700, CUTLASS_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
     pack_katana = _item(0x701, KATANA_GRAPHIC)  # stronger blade sitting in the pack
-    ctx = _ctx([_backpack(), worn_cutlass, pack_katana], memory={})
-    # A weaker sword is worn but a stronger one is owned -> re-wield (upgrade).
-    assert skill.can_run(ctx) is True
-    r = skill.step(ctx)
-    assert isinstance(r.action, PickUp) and r.action.serial == 0x701  # picks the katana
+
+    ctx1 = _ctx([_backpack(), worn_cutlass, pack_katana], memory=mem)
+    assert skill.can_run(ctx1) is True  # weaker worn, stronger owned -> re-wield
+    r1 = skill.step(ctx1)
+    assert isinstance(r1.action, PickUp) and r1.action.serial == 0x701  # grab the katana
+
+    # Tick 2: the Katana is on the cursor (gone from `items`) while the Cutlass is
+    # STILL worn — the exact state that used to flip `best` away from the held blade.
+    ctx2 = _ctx([_backpack(), worn_cutlass], memory=mem)
+    assert skill.can_run(ctx2) is True  # mid-equip -> keep running
+    r2 = skill.step(ctx2)
+    assert isinstance(r2.action, Equip)
+    assert r2.action.serial == 0x701 and r2.action.layer == WEAPON_LAYER  # equips the katana
+    assert mem.get(skill._SERIAL) is None  # cursor state cleared — nothing stranded
 
 
 def test_equip_weapon_never_steals_a_cursor_and_is_inert_bare_handed():
@@ -136,6 +153,47 @@ def test_swordsman_wires_both_hunt_and_the_economy_capabilities():
     econ_names = [type(s).__name__ for s in econ.skills]
     assert "EquipWeapon" not in econ_names and "EquipArmor" not in econ_names
     assert {cid for (p, cid) in CAPABILITIES if p == "swordsman"} == {"bank_gold", "buy_weapon"}
+
+
+def test_all_six_plate_layers_match_the_live_verified_values():
+    # Every piece's layer was empirically verified live (a wrong value is rejected by
+    # ServUO and the piece silently won't wear). Pin ALL six so a bad layer can never
+    # pass offline while failing live (the project's known offline-mock hazard).
+    assert PLATE_ARMOR_LAYERS == {
+        PLATE_CHEST_GRAPHIC: 0x0D,   # InnerTorso
+        PLATE_LEGS_GRAPHIC: 0x04,    # Pants
+        PLATE_ARMS_GRAPHIC: 0x13,    # Arms
+        PLATE_GLOVES_GRAPHIC: 0x07,  # Gloves
+        PLATE_GORGET_GRAPHIC: 0x0A,  # Neck
+        PLATE_HELM_GRAPHIC: 0x06,    # Helm
+    }
+    assert ARMOR_GRAPHICS == frozenset(PLATE_ARMOR_LAYERS)
+
+
+def test_buy_weapon_binding_readiness_is_worn_aware_end_to_end():
+    # The binding-level check the worn-aware trigger exists FOR: exercise the actual
+    # registered `ready` gate, not just `_owned_weapon`. A swordsman WEARS its blade
+    # (0 swords in the pack) yet must count as armed, or it buys Katanas forever.
+    from anima2.capabilities import CAPABILITIES
+    from anima2.skills.market import GOLD_GRAPHIC
+
+    ready = CAPABILITIES[("swordsman", "buy_weapon")].ready
+
+    def _gold(amount, serial):
+        return ItemView(serial=serial, graphic=GOLD_GRAPHIC, amount=amount,
+                        pos=Position(), container=BACKPACK, layer=0, distance=0)
+
+    def _ctx_vendor(items):
+        return _ctx(items, memory={"weapon_vendor_spot": ((100, 100),)})
+
+    # Unarmed + enough gold (Katana 33g) + a vendor route -> buy_weapon IS ready.
+    assert ready(_ctx_vendor([_backpack(), _gold(50, 0xA00)])) is True
+    # A Katana WORN at layer 1 (pack has 0 swords) -> NOT ready: the worn-aware gate
+    # must see the wielded blade and refuse a redundant buy.
+    worn = _item(0x700, KATANA_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
+    assert ready(_ctx_vendor([_backpack(), _gold(50, 0xA00), worn])) is False
+    # Unarmed but too poor -> not ready.
+    assert ready(_ctx_vendor([_backpack(), _gold(10, 0xA01)])) is False
 
 
 def test_equip_armor_wears_each_owned_plate_piece_at_its_layer():
