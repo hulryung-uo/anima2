@@ -98,3 +98,31 @@ fast-loop piece a swordsman fundamentally needs is to *wear its blade*.
   and cruising above 50% HP while banking 208 gold. Skills (Swords/Tactics/Anatomy/
   Healing) also rise from live swinging + bandaging (ServUO on-use gain), so the warrior
   gets stronger by fighting.
+
+## Living-test iteration (post-hoc hardening)
+
+A `/goal` to "make a good test character, run a LIVING test, and improve from what it
+reveals" was run against the swordsman. A 4-lens design workflow chose it (deliberately
+under-provisioned) as the richest test subject, and an endurance run
+(`scratchpad/live_warrior_life.py`, then `live_warrior_thrive.py`) surfaced a real
+robustness cliff plus one shipped improvement. Full write-up:
+`scratchpad/LIVING_TEST_FINDINGS.md`.
+
+- **Finding — remote-death naked loop.** An under-provisioned warrior overwhelmed by 3
+  Ettins (their DPS outpaces a single ~50-HP bandage) dies, drops all its plate onto its
+  corpse, resurrects ~134 tiles away at a distant healer, and — the corpse now sitting in
+  the prey zone — death-loops naked. `RecoverDeath`'s corpse recovery works mechanically
+  (it navigates the 134 tiles back) but is defeated by prey guarding the corpse.
+- **Improvement shipped — heal hysteresis.** `Survive` gained `heal_until_fraction`:
+  once a heal starts it recovers to a safe ceiling before re-engaging, instead of
+  stopping the instant HP crosses back above 40%. Default equals the trigger, so every
+  existing profession is byte-identical; the warrior installs `WarriorSurvive` (0.75) via
+  `Profession.survive_factory`. Honestly, a heal-ceiling demo showed a single bandage on
+  this shard already overshoots to ~89%, so the hysteresis is a modest buffer, not the
+  main lever — a fact the re-test, not the hypothesis, established.
+- **Positive result.** A properly-provisioned warrior LIVES WELL: `live_warrior_thrive.py`
+  (kills-driven respawn) ran ~500 ticks with **0 deaths, full plate kept, ~646 gold
+  banked, HP healthy** — the shipped combat/heal/loot code is sound.
+- **Next fix (not built).** Re-arm-after-death: when the corpse can't be recovered, buy a
+  replacement blade + bandages with banked gold (the `buy_weapon` capability exists),
+  composing the hunt and economy loops so a death is a setback, not a terminal loop.
