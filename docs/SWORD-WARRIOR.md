@@ -175,5 +175,25 @@ robustness cliff plus one shipped improvement. Full write-up:
   Live result: `--warriors 1 --ticks 200` now finishes with a real kill and **out+160.0**
   (looted gold), where every run before these fixes reported 0 kills and 0.0 reward. The
   swordsman lives the full autonomous loop in the standing village.
+- **Multi-warrior scale-out (measured).** `--warriors N` runs several swordsmen at once,
+  each in its own pocket 25 tiles apart. A 3-warrior run exposed a real staging bug: each
+  pocket is cleared with a `[WipeNPCs` radius of 20 and the wipe ran INLINE with that
+  warrior's staging, so staging warrior N+1 deleted warrior N's just-staged vendors (at
+  ±12) and its adjacent prey — every warrior but the last sat with nothing to fight. Fixed
+  with **two-pass staging**: pass 1 places every warrior and clears every pocket (before
+  any vendor/prey exists), pass 2 dresses each warrior and stages its own furniture, with
+  nothing wiping afterwards. Measured throughput on this single-port ServUO:
+
+  | warriors | result |
+  |---|---|
+  | 1 | out+316.0, 2 kills |
+  | 2 | out+181.0 + out+158.0, 2 kills — both hunting in parallel |
+  | 3 | out+0.0 ×3, 0 kills — all near-frozen |
+
+  So **2 concurrent warriors is the working ceiling here**; at 3 the shared bridge/server
+  saturates and no warrior gets enough cadence to fight (consistent with the known
+  "bridge drops connections on long multi-agent runs" limit). That is an infrastructure
+  ceiling, not a logic defect — the same code hunts fine at 1-2.
 - **Next (not built).** Richer economy triggers (upgrade the blade, buy armor to replace
-  pieces lost on a corpse) and multi-warrior village runs.
+  pieces lost on a corpse), and raising the concurrent-warrior ceiling (slower pump /
+  staggered ticking / a second shard port).
