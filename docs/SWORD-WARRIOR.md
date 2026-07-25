@@ -190,6 +190,7 @@ robustness cliff plus one shipped improvement. Full write-up:
   | 2 | out+181.0 + out+158.0, 2 kills — both hunting in parallel |
   | 3 (before the GM budget) | out+0.0 ×3, 0 kills — all frozen at steps=0 |
   | 3 (after) | out+301.0, 2 kills — all three alive and moving |
+  | 5 | out+151.0, 1 kill — only 3 of 5 get enough cadence |
 
 - **Raising the ceiling — budget the GM work.** The 3-warrior wall was measured, not
   guessed: every GM call costs a full pump on the ONE shared control connection, served by
@@ -203,6 +204,15 @@ robustness cliff plus one shipped improvement. Full write-up:
   interval that grows with the roster plus a 0.7s stagger between worker starts so the
   bridges' pump windows interleave. Result: 3 warriors went from *all frozen, 0 kills* to
   *all active, 2 kills, out+301*.
+- **The 5-warrior limit (measured, not guessed).** One more lever was found and applied:
+  an agent runner observes **twice** per tick (the agent's own observe, then the runner's
+  for status), and on a shared single-threaded shard those pumps are the scarce resource —
+  `_CachingBody` now serves the second observe of a tick from that tick's cached state
+  (`WarriorLife.tick()` calls `begin_tick()` so each tick still starts fresh), halving each
+  warrior's pump load and taking 5 warriors from 2-of-5 active to 3-of-5. But the ceiling
+  held at ~3: a liveness check added at staging confirms **every body reports
+  `connected=True`** right before the threads start, so the starved warriors are alive and
+  simply not being served. That is a single-threaded-shard limit — pushing past it needs a
+  second shard port (or a shard that services connections in parallel), not more tuning.
 - **Next (not built).** Richer economy triggers (upgrade the blade, buy armor to replace
-  pieces lost on a corpse), and pushing past 3 warriors (the same budget knobs plus a
-  second shard port would be the next levers).
+  pieces lost on a corpse); a second shard port if a bigger roster is ever wanted.
