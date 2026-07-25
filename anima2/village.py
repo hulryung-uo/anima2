@@ -1350,8 +1350,140 @@ def _run_online_village(
                 print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
 
 
+def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
+                        ticks: int = 200, account_prefix: str = "animawar",
+                        prey: str = "Ettin", prey_target: int = 2, spacing: int = 25) -> None:
+    """Run `count` swordsmen LIVING the full autonomous loop via `WarriorLife`: each
+    hunts, and when it loses its blade or runs low on bandages it re-arms/restocks/banks
+    on its own, then resumes. Each warrior is staged at its own hunting pocket with a
+    Weaponsmith, a Healer, and a Banker (spread far enough apart that each buy resolves
+    to the right one), full plate + Katana + bandages + seed gold, and a KILLS-DRIVEN
+    prey supply the monitor tops up (spawn one per confirmed kill — no accumulating
+    swarm). Uses `_run_worker` unchanged (`WarriorLife` duck-types as an `Agent`).
+    """
+    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle
+    from .profession import HUNTING_SPOT
+    from .skills.harvest import BACKPACK_LAYER
+    from .skills.hunt import GOLD_GRAPHIC
+    from .warrior_life import WarriorLife
+
+    hx, hy = HUNTING_SPOT
+    prof = PROFESSIONS["swordsman"]
+    items = ["Bandage 100", "Katana", "PlateChest", "PlateLegs", "PlateArms",
+             "PlateGloves", "PlateGorget", "PlateHelm"]
+
+    print(f"raising a warrior village: {count} swordsman(men) at {host}:{port}")
+    bodies: list[tuple[int, ResilientIpcBody]] = []
+    for i in range(count):
+        account = f"{account_prefix}{i}{fresh_suffix()}"
+        try:
+            body = ResilientIpcBody.spawn(host, port, account, account, pump_ms=400)
+        except Exception as e:  # noqa: BLE001
+            print(f"  {account}: login failed ({e})")
+            continue
+        bodies.append((i, body))
+        print(f"  {account}: Bram{i} the swordsman")
+        time.sleep(1.0)
+    if not bodies:
+        print("no warriors came online")
+        return
+
+    login_throttle(GM_RELOGIN_COOLDOWN_S)
+    gm = GmControl.spawn(host, port).__enter__()
+    warriors: list[dict] = []
+    try:
+        gm.hide()
+        for i, body in bodies:
+            serial = body.ready["player"]["serial"]
+            sx, sy = hx + i * spacing, hy
+            gx, gy, gz = gm.stage(serial, sx, sy, skills=prof.skills, items=items)
+            for r in (20, 12, 6):  # clear stray mobiles so a fresh pocket, not a swarm
+                gm.command_area("[WipeNPCs", gx - r, gy - r, gx + r, gy + r, gz)
+            for c in ("[Set Str 150", "[Set Dex 125", "[Set Hits 150", "[Set HitsMax 150"):
+                gm.command_on(c, serial)
+            gm.command_on(f'[Set Name "Bram{i}"', serial)
+            # Delete the ~1000 starter gold (else the warrior banks it immediately
+            # instead of hunting) and seed a small reserve, below BANK_ABOVE, so it
+            # can re-arm a lost blade before it has looted much.
+            staged = [body.observe() for _ in range(3)][-1]
+            pack = next((it.serial for it in staged.items
+                         if it.layer == BACKPACK_LAYER and it.container == serial), None)
+            for it in staged.items:
+                if it.container == pack and it.graphic == GOLD_GRAPHIC:
+                    gm.command_on("[Delete", it.serial)
+            gm.command_on("[AddToPack Gold 50", serial)
+            # Vendors pushed well OUT of the hunting pocket (>=10 tiles, spread apart):
+            # near the stand they'd distract Greet/Wander (the warrior drifts to greet a
+            # friendly NPC when no prey is adjacent) and each buy's "closest mobile to its
+            # spot" pick needs them well-separated anyway.
+            gm.stage_npc("Weaponsmith", gx + 12, gy, gz, exclude=serial)
+            gm.stage_npc("Healer", gx - 12, gy, gz, exclude=serial)
+            gm.stage_npc("Banker", gx, gy + 12, gz, exclude=serial)
+            # Prey spawned ADJACENT to the stand so Hunt engages immediately (before the
+            # warrior can drift), each on its own tile around the warrior.
+            adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            for k in range(prey_target):
+                dx, dy = adj[k % len(adj)]
+                gm.command_at(f"[Add {prey}", gx + dx, gy + dy, gz)
+            routes = {"weapon_vendor_spot": [(gx + 12, gy)],
+                      "healer_spot": [(gx - 12, gy)],
+                      "banker_spot": [(gx, gy + 12)]}
+            life = WarriorLife(body=body,
+                               persona=Persona(name=f"Bram{i}", combat_disposition="aggressive"),
+                               routes=routes)
+            warriors.append({"i": i, "life": life, "spot": (gx, gy, gz), "respawned": 0})
+        print(f"staged {len(warriors)} warrior(s). the hunt begins.\n")
+
+        status: dict[int, str] = {}
+        lock = threading.Lock()
+        threads: list[threading.Thread] = []
+        for w in warriors:
+            t = threading.Thread(target=_run_worker,
+                                 args=(w["life"], ticks, w["i"], status, lock, "swordsman"),
+                                 daemon=True)
+            threads.append(t)
+            t.start()
+
+        # Monitor: print a live snapshot + keep each pocket stocked. Replace every
+        # confirmed kill 1-for-1 (kills-driven, no accumulating swarm), and if a
+        # warrior goes several cycles with NO kill its prey has wandered off — refresh
+        # a fresh batch so it never idles waiting on prey that drifted away.
+        while any(t.is_alive() for t in threads):
+            time.sleep(3.0)
+            for w in warriors:
+                gx, gy, gz = w["spot"]
+                kills = w["life"].kills
+                for _ in range(max(0, kills - w["respawned"])):
+                    gm.command_at(f"[Add {prey}", gx + 1, gy, gz)
+                    w["respawned"] += 1
+                w["idle"] = w.get("idle", 0) + 1 if kills == w.get("last_kills", 0) else 0
+                w["last_kills"] = kills
+                if w["idle"] >= 3:  # ~9s with no kill: the prey drifted — restock adjacent
+                    adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    for k in range(prey_target):
+                        dx, dy = adj[k % len(adj)]
+                        gm.command_at(f"[Add {prey}", gx + dx, gy + dy, gz)
+                    w["idle"] = 0
+            with lock:
+                snap = [status[i] for i in sorted(status)]
+            modes = " ".join(f"Bram{w['i']}:{w['life'].mode}" for w in warriors)
+            print(f"— warrior village [{modes}] —\n  " + "\n  ".join(snap))
+        for t in threads:
+            t.join()
+    finally:
+        try:
+            gm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+    total_kills = sum(w["life"].kills for w in warriors)
+    print(f"\nthe day's hunt is done. total kills across the village: {total_kills}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--warriors", type=int, default=0,
+                    help="run N swordsmen living the autonomous hunt<->re-arm loop (WarriorLife); "
+                         "supersedes the trade-village roster when > 0")
     ap.add_argument("--miners", type=int, default=2)
     ap.add_argument("--lumberjacks", type=int, default=1)
     ap.add_argument("--fishers", type=int, default=1)
@@ -1431,6 +1563,11 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
+    if args.warriors > 0:
+        run_warrior_village(args.warriors, host=args.host, port=args.port,
+                            ticks=args.ticks, account_prefix=args.account_prefix)
+        return
+
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
               + ["townsfolk"] * args.townsfolk + ["hunter"] * args.hunters)

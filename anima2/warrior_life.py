@@ -113,20 +113,50 @@ class _LifeClient:
         return '{"schema":1,"decision":"capability","capability":"%s"}' % cap
 
 
+class _CachingBody:
+    """Wraps a body, remembering the LAST observation so the orchestrator can read the
+    current world state to decide the mode WITHOUT issuing its own extra `observe()`. An
+    extra pump inserted between an agent's own observe and its next action breaks the
+    inner agent's non-blocking route / reflex cadence (live-caught: the warrior stopped
+    equipping and never engaged prey). The inner agent's own observe populates
+    `last_obs`, so the decision is free."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.last_obs: Observation | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self.inner.connected
+
+    @property
+    def ready(self):
+        return self.inner.ready
+
+    def observe(self) -> Observation:
+        self.last_obs = self.inner.observe()
+        return self.last_obs
+
+    def act(self, action) -> None:
+        self.inner.act(action)
+
+
 class WarriorLife:
     """Autonomous hunt <-> re-arm orchestrator for a swordsman (see module docstring)."""
 
     def __init__(self, body, persona: Persona, profession: str = "swordsman",
                  routes: dict | None = None) -> None:
         prof = PROFESSIONS[profession]
-        self.body = body
+        # Wrap the body so the inner agents' own observes cache the world state; the
+        # orchestrator then decides the mode off that cache with no extra pump.
+        self.body = _CachingBody(body)
         #: Vendor routes the economy leg needs (weapon_vendor_spot / healer_spot /
         #: banker_spot). `decide_mode` reads them; the economy agent's memory carries
         #: them so its buy/bank FSMs can navigate.
         self.routes: dict = dict(routes) if routes else {}
-        self.hunt_agent = Agent(body=body, persona=persona, planner=prof.planner())
+        self.hunt_agent = Agent(body=self.body, persona=persona, planner=prof.planner())
         self.econ_agent = Agent(
-            body=body, persona=persona,
+            body=self.body, persona=persona,
             planner=prof.planner(capability_goals=True),
             cognition=CapabilityCognition(_LifeClient(self), profession),
             cognition_interval=1, profession=profession,
@@ -143,8 +173,16 @@ class WarriorLife:
         self.routes[key] = value
         self.econ_agent.memory[key] = value
 
-    def tick(self) -> None:
-        obs = self.body.observe()
+    def tick(self):
+        # Tick the CURRENT mode's agent (it observes + acts), then decide the NEXT tick's
+        # mode from the observation IT just cached — no extra pump (an extra observe
+        # around the inner agent's own tick breaks its route/reflex cadence; live-caught).
+        # The one-tick lag on the mode decision is immaterial (modes change slowly) and
+        # `self.mode` starts at "hunt", so the very first action is a hunt action.
+        action = (self.econ_agent if self.mode == "economy" else self.hunt_agent).tick()
+        obs = self.body.last_obs
+        if obs is None:
+            return action
         mode, cap = decide_mode(obs, self.routes)
         # Hysteresis: only commit to the economy after the condition PERSISTS for
         # ECON_GRACE ticks, so a transient mid-equip "weaponless" blip doesn't yank the
@@ -157,4 +195,29 @@ class WarriorLife:
         else:
             self._econ_streak = 0
         self.mode, self.target_cap = mode, cap
-        (self.econ_agent if mode == "economy" else self.hunt_agent).tick()
+        return action
+
+    # --- Agent-compatible surface, so any agent runner (e.g. village._run_worker)
+    # drives a WarriorLife unchanged. The HUNT agent is the primary: it does the
+    # living, so its persona/episodes/memory are what status + chronicle read. ---
+    @property
+    def persona(self) -> Persona:
+        return self.hunt_agent.persona
+
+    @property
+    def episodes(self):
+        return self.hunt_agent.episodes
+
+    @property
+    def memory(self) -> dict:
+        return self.hunt_agent.memory
+
+    @property
+    def ticks(self) -> int:
+        return self.hunt_agent.ticks + self.econ_agent.ticks
+
+    @property
+    def kills(self) -> int:
+        """Corpses this warrior has looted (~its kills) — `Hunt` records each in
+        `hunt_looted`. Lets a village driver drive a kills-based prey respawn."""
+        return len(self.hunt_agent.memory.get("hunt_looted", ()))
