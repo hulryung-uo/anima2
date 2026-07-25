@@ -160,9 +160,15 @@ robustness cliff plus one shipped improvement. Full write-up:
   around the inner agent's tick breaks that agent's non-blocking route/reflex cadence
   (live-caught: with the extra pump the warrior never equipped or engaged; with the cache
   it equips and enters hunt mode). Live status: the warriors come online, stage, equip
-  (Katana + plate), and autonomously enter hunt mode; effective KILL throughput in the
-  village still needs prey-engagement tuning (prey wander off the pocket faster than the
-  two-rate warrior closes to melee — the same prey-supply tuning the endurance test hit).
-- **Next (not built).** Sharpen village prey engagement (a tighter respawn that keeps prey
-  in melee reach), and richer economy triggers (upgrade the blade, buy armor to replace
-  pieces lost on a corpse).
+  (Katana + plate), and autonomously enter hunt mode. Prey PROXIMITY is now solved — the
+  monitor spawns prey adjacent to each warrior's LIVE position (read from its WarriorLife's
+  cached `last_obs`), so an aggressive Ettin reaches melee (a mindist trace confirms
+  mindist=1, HP ticking down in melee) instead of wandering off a fixed stand the warrior
+  drifted from.
+- **Residual (open).** Even adjacent (mindist=1), the two-agent WarriorLife warrior does
+  not yet deal effective damage — kills=0 while adjacent, then the Ettin loses interest and
+  wanders — whereas the SINGLE-agent standalone proofs (rich/thrive) kill + bank fine. So
+  the open issue is combat ENGAGEMENT under the orchestrator (likely `Hunt`'s
+  approach-vs-attack / WarMode not landing in the two-rate + wrapped-body context), NOT
+  prey proximity. Fixing that (and richer economy triggers — blade upgrade, replace
+  corpse-lost armor) is the next work.
