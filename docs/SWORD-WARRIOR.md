@@ -214,5 +214,20 @@ robustness cliff plus one shipped improvement. Full write-up:
   `connected=True`** right before the threads start, so the starved warriors are alive and
   simply not being served. That is a single-threaded-shard limit — pushing past it needs a
   second shard port (or a shard that services connections in parallel), not more tuning.
-- **Next (not built).** Richer economy triggers (upgrade the blade, buy armor to replace
-  pieces lost on a corpse); a second shard port if a bigger roster is ever wanted.
+- **Armor replacement (shipped).** The last piece of the re-arm story: death drops the
+  whole suit on the corpse, and a corpse guarded by prey often can't be reclaimed, so
+  `skills/warrior.py::BuyArmor` buys a replacement **PlateChest** (0x1415 @ 243g — the
+  biggest slice of armor rating) from an `armorer_spot` Armorer. It mirrors `BuyWeapon`,
+  including a worn-aware ownership check (`capabilities.py::_make_armor_buy_ready` reads
+  `PLATE_ARMOR_LAYERS`, since armor is worn at per-piece layers and a pack-only check would
+  re-buy every trip). `decide_mode` prices it into the priority by what actually stops a
+  warrior living: **blade > bandages > chest plate > bank surplus > hunt**. `village.py`
+  stages an Armorer in each warrior's pocket and wires `armorer_spot`. Live-verified
+  (`scratchpad/live_armor_direct.py`): a chestless warrior with 400 gold buys a PlateChest
+  for exactly its 243g price (gold 400 → 157); the orchestrator half auto-switched to
+  `buy_armor` after the grace with the chest stripped mid-hunt (that run then hit the known
+  intermittent vendor-buy stall, so the fully-orchestrated purchase is the piece still to
+  re-confirm).
+- **Next (not built).** A blade *upgrade* trigger (buy_weapon's arrival proof requires
+  starting with none, so an upgrade needs its own achieved-variant), replacing the other
+  five plate pieces, and a second shard port if a bigger roster is ever wanted.
