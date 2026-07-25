@@ -1444,26 +1444,34 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             threads.append(t)
             t.start()
 
-        # Monitor: print a live snapshot + keep each pocket stocked. Replace every
-        # confirmed kill 1-for-1 (kills-driven, no accumulating swarm), and if a
-        # warrior goes several cycles with NO kill its prey has wandered off — refresh
-        # a fresh batch so it never idles waiting on prey that drifted away.
+        # Monitor: print a live snapshot + keep prey IN MELEE. The key: spawn prey
+        # adjacent to the warrior's LIVE position (from its cached last observation), not a
+        # fixed stand — an aggressive Ettin appearing next to the warrior engages and stays
+        # in melee, instead of wandering off a stand the warrior has drifted away from.
+        # Replace each confirmed kill; if idle (no kill for ~2 cycles) top up. Bounded (only
+        # spawns on a kill or when idle), so no accumulating swarm.
+        adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
         while any(t.is_alive() for t in threads):
             time.sleep(3.0)
             for w in warriors:
-                gx, gy, gz = w["spot"]
+                lo = w["life"].body.last_obs
+                if lo is None or lo.player.dead:
+                    continue
+                px, py, pz = lo.player.pos.x, lo.player.pos.y, lo.player.pos.z
                 kills = w["life"].kills
-                for _ in range(max(0, kills - w["respawned"])):
-                    gm.command_at(f"[Add {prey}", gx + 1, gy, gz)
-                    w["respawned"] += 1
-                w["idle"] = w.get("idle", 0) + 1 if kills == w.get("last_kills", 0) else 0
+                killed_since = kills - w.get("last_kills", 0)
                 w["last_kills"] = kills
-                if w["idle"] >= 3:  # ~9s with no kill: the prey drifted — restock adjacent
-                    adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                    for k in range(prey_target):
-                        dx, dy = adj[k % len(adj)]
-                        gm.command_at(f"[Add {prey}", gx + dx, gy + dy, gz)
+                need = max(killed_since, 0)
+                if killed_since > 0:
                     w["idle"] = 0
+                else:
+                    w["idle"] = w.get("idle", 0) + 1
+                    if w["idle"] >= 2:  # ~6s with no kill: put fresh prey ON the warrior
+                        need = prey_target
+                        w["idle"] = 0
+                for k in range(need):
+                    dx, dy = adj[k % len(adj)]
+                    gm.command_at(f"[Add {prey}", px + dx, py + dy, pz)
             with lock:
                 snap = [status[i] for i in sorted(status)]
             modes = " ".join(f"Bram{w['i']}:{w['life'].mode}" for w in warriors)
