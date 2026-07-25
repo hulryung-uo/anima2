@@ -136,7 +136,20 @@ robustness cliff plus one shipped improvement. Full write-up:
   `ThreadedCognition` raced and intermittently never proposed the goal), and stage one
   vendor at a time on one calibrated tile (two nearby wandering NPCs confuse the
   closest-mobile vendor pick).
-- **Next fix (not built).** The autonomous ORCHESTRATOR that decides *when* to switch a
-  live agent between the hunt planner and this economy leg (weaponless / low-supply →
-  re-arm → resume), so the composition runs unattended in `village.py`, not just in the
-  proof driver.
+- **Autonomous orchestrator (shipped).** `warrior_life.py::WarriorLife` is the piece that
+  decides *when* to leave the hunt loop to re-arm and resumes on its own. `decide_mode`
+  (a pure, testable function over the observation + vendor routes) picks hunt vs economy —
+  re-arm a lost blade first, then restock bandages, then bank surplus, else hunt; a ghost
+  yields to `RecoverDeath`. `WarriorLife` runs two agents over one body (hunt + economy)
+  with SEPARATE memories that coordinate only through the world (the hunt agent wields the
+  blade the economy agent bought because it SEES it in the pack — sharing one memory was
+  live-caught corrupting the buy FSM with the hunt agent's leftover state), plus a
+  hysteresis (`ECON_GRACE`) so a 1-2 tick mid-equip "weaponless" blip doesn't interrupt
+  `EquipWeapon`/`EquipArmor` and strand the gear. Live-verified
+  (`scratchpad/live_warrior_orchestrator.py`, GATE PASSED): a warrior hunting with Katana +
+  6/6 plate has its blade stripped mid-life, and with NO manual driver it auto-switches to
+  economy, re-buys a Katana (gold 120→87), and auto-switches back to hunt with the blade
+  re-wielded — a death turned into a self-recovered setback.
+- **Next (not built).** Wire `WarriorLife` into `village.py` so the swordsman lives this
+  full autonomous loop in the standing village, and add richer economy triggers (e.g.
+  upgrade the blade, buy armor to replace pieces lost on a corpse).
