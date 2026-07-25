@@ -188,12 +188,21 @@ robustness cliff plus one shipped improvement. Full write-up:
   |---|---|
   | 1 | out+316.0, 2 kills |
   | 2 | out+181.0 + out+158.0, 2 kills — both hunting in parallel |
-  | 3 | out+0.0 ×3, 0 kills — all near-frozen |
+  | 3 (before the GM budget) | out+0.0 ×3, 0 kills — all frozen at steps=0 |
+  | 3 (after) | out+301.0, 2 kills — all three alive and moving |
 
-  So **2 concurrent warriors is the working ceiling here**; at 3 the shared bridge/server
-  saturates and no warrior gets enough cadence to fight (consistent with the known
-  "bridge drops connections on long multi-agent runs" limit). That is an infrastructure
-  ceiling, not a logic defect — the same code hunts fine at 1-2.
+- **Raising the ceiling — budget the GM work.** The 3-warrior wall was measured, not
+  guessed: every GM call costs a full pump on the ONE shared control connection, served by
+  the same single-threaded shard the warriors play on, and the monitor's restocking was the
+  choke point — `_spawn_pinned` = `[Add` + `find_mobile_near` (up to **3** pumps at the
+  default retries) + `[Set CantWalk` ≈ 2s, so 3 warriors × 2 prey ≈ **12s of GM work inside
+  a 3s cycle**, monopolizing the server until every warrior bridge starved. Three fixes keep
+  GM traffic flat as the roster grows: `find_mobile_near(retries=1)` (the creature was just
+  `[Add`-ed at a known tile — ~2s → ~0.8s), a **per-cycle GM budget** (2 spawns) applied
+  **round-robin** over the roster so every warrior is still served regularly, and a monitor
+  interval that grows with the roster plus a 0.7s stagger between worker starts so the
+  bridges' pump windows interleave. Result: 3 warriors went from *all frozen, 0 kills* to
+  *all active, 2 kills, out+301*.
 - **Next (not built).** Richer economy triggers (upgrade the blade, buy armor to replace
-  pieces lost on a corpse), and raising the concurrent-warrior ceiling (slower pump /
-  staggered ticking / a second shard port).
+  pieces lost on a corpse), and pushing past 3 warriors (the same budget knobs plus a
+  second shard port would be the next levers).
