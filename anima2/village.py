@@ -1421,10 +1421,16 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             gm.stage_npc("Banker", gx, gy + 12, gz, exclude=serial)
             # Prey spawned ADJACENT to the stand so Hunt engages immediately (before the
             # warrior can drift), each on its own tile around the warrior.
+            # Prey spawned adjacent AND PINNED (`CantWalk`) so a wounded creature stands
+            # and fights instead of fleeing out of reach at low HP (live-caught: real
+            # Attacks took an Ettin to 3 HP, then it fled from distance 1 to 13).
             adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
             for k in range(prey_target):
                 dx, dy = adj[k % len(adj)]
                 gm.command_at(f"[Add {prey}", gx + dx, gy + dy, gz)
+                mob = gm.find_mobile_near(gx + dx, gy + dy, exclude=serial)
+                if mob is not None:
+                    gm.command_on("[Set CantWalk true", mob.serial)
             routes = {"weapon_vendor_spot": [(gx + 12, gy)],
                       "healer_spot": [(gx - 12, gy)],
                       "banker_spot": [(gx, gy + 12)]}
@@ -1444,13 +1450,25 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             threads.append(t)
             t.start()
 
-        # Monitor: print a live snapshot + keep prey IN MELEE. The key: spawn prey
-        # adjacent to the warrior's LIVE position (from its cached last observation), not a
-        # fixed stand — an aggressive Ettin appearing next to the warrior engages and stays
-        # in melee, instead of wandering off a stand the warrior has drifted away from.
-        # Replace each confirmed kill; if idle (no kill for ~2 cycles) top up. Bounded (only
-        # spawns on a kill or when idle), so no accumulating swarm.
+        # Monitor: print a live snapshot + keep prey IN MELEE. Two things matter:
+        #  (a) spawn prey adjacent to the warrior's LIVE position (from its cached last
+        #      observation), not a fixed stand the warrior has drifted away from; and
+        #  (b) PIN each spawned creature (`[Set CantWalk true`, the same pin `stage_npc`
+        #      uses for vendors) — a live action trace showed combat works fine (the
+        #      Ettin's HP fell 9->5->3 under real Attacks) but a wounded ServUO creature
+        #      FLEES at low HP and outruns the warrior (distance 1 -> 13), so the kill was
+        #      never landed. Pinned prey stands and fights, so a won fight actually
+        #      finishes.
+        # Bounded: replace each confirmed kill, top up only when idle — no swarm.
         adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
+            gm.command_at(f"[Add {prey}", px + dx, py + dy, pz)
+            mob = gm.find_mobile_near(px + dx, py + dy,
+                                      exclude={w["life"].hunt_agent.body.ready["player"]["serial"]
+                                               for w in warriors})
+            if mob is not None:
+                gm.command_on("[Set CantWalk true", mob.serial)
         while any(t.is_alive() for t in threads):
             time.sleep(3.0)
             for w in warriors:
@@ -1471,7 +1489,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                         w["idle"] = 0
                 for k in range(need):
                     dx, dy = adj[k % len(adj)]
-                    gm.command_at(f"[Add {prey}", px + dx, py + dy, pz)
+                    _spawn_pinned(px, py, pz, dx, dy)
             with lock:
                 snap = [status[i] for i in sorted(status)]
             modes = " ".join(f"Bram{w['i']}:{w['life'].mode}" for w in warriors)
