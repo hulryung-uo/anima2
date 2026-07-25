@@ -1434,6 +1434,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             gm.stage_npc("Weaponsmith", gx + 12, gy, gz, exclude=all_serials)
             gm.stage_npc("Healer", gx - 12, gy, gz, exclude=all_serials)
             gm.stage_npc("Banker", gx, gy + 12, gz, exclude=all_serials)
+            gm.stage_npc("Armorer", gx, gy - 12, gz, exclude=all_serials)
             # Prey spawned ADJACENT to the stand so Hunt engages immediately (before the
             # warrior can drift), each on its own tile around the warrior.
             # Prey spawned adjacent AND PINNED (`CantWalk`) so a wounded creature stands
@@ -1448,7 +1449,8 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                     gm.command_on("[Set CantWalk true", mob.serial)
             routes = {"weapon_vendor_spot": [(gx + 12, gy)],
                       "healer_spot": [(gx - 12, gy)],
-                      "banker_spot": [(gx, gy + 12)]}
+                      "banker_spot": [(gx, gy + 12)],
+                      "armorer_spot": [(gx, gy - 12)]}
             life = WarriorLife(body=body,
                                persona=Persona(name=f"Bram{i}", combat_disposition="aggressive"),
                                routes=routes)

@@ -34,8 +34,11 @@ from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.warrior import (
     BANDAGE_GRAPHIC,
+    PLATE_ARMOR_LAYERS,
+    PLATE_CHEST_GRAPHIC,
     SWORD_GRAPHICS,
     WEAPON_LAYER,
+    BuyArmor,
     BuyBandage,
     BuyWeapon,
 )
@@ -46,6 +49,9 @@ WEAPON_PRICE = BuyWeapon.tool_price_estimate
 LOW_BANDAGES = BuyBandage.buy_reorder
 #: One bandage batch's cost (the affordability floor for a restock).
 BANDAGE_BATCH_COST = BuyBandage.buy_amount * BuyBandage.buy_price_estimate
+#: A replacement plate chest — the biggest slice of armor rating, and the piece a death
+#: most needs replaced when the corpse can't be reclaimed.
+ARMOR_PRICE = BuyArmor.tool_price_estimate
 #: Bank looted gold once the pack holds more than this, keeping a working reserve
 #: (enough to re-arm a blade + a bandage batch) so banking never strands the warrior.
 BANK_ABOVE = 400
@@ -78,13 +84,29 @@ def _has_weapon(obs: Observation) -> bool:
     )
 
 
+def _has_chest(obs: Observation) -> bool:
+    """A plate chest worn at its body layer OR sitting in the pack (just bought)."""
+    bp = _backpack(obs)
+    player = obs.player.serial
+    return any(
+        i.graphic == PLATE_CHEST_GRAPHIC
+        and (
+            (i.container == player and i.layer == PLATE_ARMOR_LAYERS[PLATE_CHEST_GRAPHIC])
+            or (bp is not None and i.container == bp)
+        )
+        for i in obs.items
+    )
+
+
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """Pick ``("hunt", None)`` or ``("economy", capability_id)`` from the live state.
 
-    Priority — re-arm a lost blade first (you cannot hunt without one), then restock
-    bandages, then bank surplus, else hunt. Each economy branch also requires its
-    vendor route to be configured AND the gold to afford it, so a penniless or
-    unrouted warrior just keeps hunting rather than stalling at a shop it can't use.
+    Priority reflects what actually stops a warrior living: a lost blade first (you cannot
+    hunt without one), then bandages (you cannot survive a fight without them), then a lost
+    chest plate (you can fight, but unarmored against rich prey is fatal — a living test
+    proved it), then banking surplus, else hunt. Each economy branch also requires its
+    vendor route to be configured AND the gold to afford it, so a penniless or unrouted
+    warrior just keeps hunting rather than stalling at a shop it can't use.
     """
     if obs.player.dead:
         return "hunt", None  # RecoverDeath (a hunt-planner reflex) owns the death window
@@ -94,6 +116,8 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     if _pack_amount(obs, BANDAGE_GRAPHIC) < LOW_BANDAGES and gold >= BANDAGE_BATCH_COST \
             and _valid_spot(memory.get("healer_spot")):
         return "economy", "buy_bandage"
+    if not _has_chest(obs) and gold >= ARMOR_PRICE and _valid_spot(memory.get("armorer_spot")):
+        return "economy", "buy_armor"
     if gold >= BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None

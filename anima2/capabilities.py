@@ -45,7 +45,13 @@ from .skills.market import (
     _bank_reserve,
 )
 from .skills.smelt import INGOT_GRAPHICS
-from .skills.warrior import WEAPON_LAYER, BuyBandage, BuyWeapon
+from .skills.warrior import (
+    PLATE_ARMOR_LAYERS,
+    WEAPON_LAYER,
+    BuyArmor,
+    BuyBandage,
+    BuyWeapon,
+)
 from .skills.woodwork import (
     BOARD_GRAPHIC,
     LOG_GRAPHIC,
@@ -1040,6 +1046,38 @@ def _make_weapon_buy_ready(
     return ready
 
 
+def _make_armor_buy_ready(
+    owned_graphics: frozenset[int], price_estimate: int, vendor_spot_key: str
+) -> Callable[[SkillContext], bool]:
+    """A WORN-aware `_make_toolbuy_ready` for armor — the same shape as
+    `_make_weapon_buy_ready`, but each piece sits at its OWN body layer
+    (`PLATE_ARMOR_LAYERS`) rather than the one-handed weapon layer. Fires only when the
+    warrior owns the piece neither worn nor in the pack (it was lost on a corpse)."""
+
+    def ready(ctx: SkillContext) -> bool:
+        player = ctx.obs.player.serial
+        backpack = _backpack_serial(ctx)
+        owned = any(
+            item.graphic in owned_graphics
+            and (
+                (backpack is not None and item.container == backpack)
+                or (item.container == player
+                    and item.layer == PLATE_ARMOR_LAYERS.get(item.graphic))
+            )
+            for item in ctx.obs.items
+        )
+        return bool(
+            _valid_spot(ctx.memory.get(vendor_spot_key))
+            and backpack is not None
+            and not owned
+            and _pack_gold(ctx) >= TOOL_BUY_AMOUNT * price_estimate
+            and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+            and _toolbuy_can_yield(ctx)
+        )
+
+    return ready
+
+
 def _make_toolbuy_achieved(
     owned_graphics: frozenset[int],
 ) -> Callable[[SkillContext], bool]:
@@ -1632,6 +1670,21 @@ _BUY_WEAPON = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+_BUY_ARMOR = CapabilityBinding(
+    capability_id="buy_armor",
+    profession="swordsman",
+    skill_type=BuyArmor,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_armor_buy_ready(
+        BuyArmor.owned_tool_graphics, BuyArmor.tool_price_estimate,
+        BuyArmor.vendor_spot_key,
+    ),
+    achieved=_make_toolbuy_achieved(BuyArmor.owned_tool_graphics),
+    progress=_toolbuy_progress,
+    can_yield=_toolbuy_can_yield,
+    default_deadline_ticks=180,
+)
+
 _BUY_BANDAGE = CapabilityBinding(
     capability_id="buy_bandage",
     profession="swordsman",
@@ -1964,8 +2017,10 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         (_SWORDSMAN_BANK_GOLD.profession, _SWORDSMAN_BANK_GOLD.capability_id): _SWORDSMAN_BANK_GOLD,
         (_BUY_WEAPON.profession, _BUY_WEAPON.capability_id): _BUY_WEAPON,
         # The resupply leg that lets a warrior RE-ARM after a death (buy blade +
-        # bandages with looted gold) instead of fighting on naked and dry.
+        # bandages + a replacement chest plate with looted gold) instead of fighting on
+        # naked and dry.
         (_BUY_BANDAGE.profession, _BUY_BANDAGE.capability_id): _BUY_BANDAGE,
+        (_BUY_ARMOR.profession, _BUY_ARMOR.capability_id): _BUY_ARMOR,
     }
 )
 

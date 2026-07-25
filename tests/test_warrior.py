@@ -130,6 +130,42 @@ def test_buy_bandage_config_restocks_bandages_from_the_healer():
     assert BuyBandage.vendor_spot_key == "healer_spot"           # a Healer, own key
 
 
+def test_buy_armor_config_replaces_the_chest_plate_at_the_armorer():
+    from anima2.skills.warrior import BuyArmor
+
+    assert BuyArmor.offer_graphic == PLATE_CHEST_GRAPHIC == 0x1415
+    assert BuyArmor.owned_tool_graphics == frozenset({PLATE_CHEST_GRAPHIC})
+    assert BuyArmor.tool_price_estimate == 243          # SBPlateArmor @243g
+    assert BuyArmor.vendor_spot_key == "armorer_spot"   # an Armorer, its own key
+
+
+def test_armor_buy_readiness_is_worn_aware_so_a_suited_warrior_never_re_buys():
+    # Armor is WORN (each piece at its own body layer), so a pack-only check would have
+    # the warrior buying a new chest plate every trip. Exercise the registered gate.
+    from anima2.capabilities import CAPABILITIES
+    from anima2.skills.market import GOLD_GRAPHIC
+
+    ready = CAPABILITIES[("swordsman", "buy_armor")].ready
+    chest_layer = PLATE_ARMOR_LAYERS[PLATE_CHEST_GRAPHIC]
+
+    def _gold(amount):
+        return ItemView(serial=0xA00, graphic=GOLD_GRAPHIC, amount=amount, pos=Position(),
+                        container=BACKPACK, layer=0, distance=0)
+
+    def _ctx_armorer(items):
+        return _ctx(items, memory={"armorer_spot": ((100, 100),)})
+
+    # Lost the chest (died, corpse unreclaimed) + can afford one -> ready.
+    assert ready(_ctx_armorer([_backpack(), _gold(300)])) is True
+    # Wearing a chest -> NOT ready (the whole point of the worn-aware check).
+    worn = _item(0x800, PLATE_CHEST_GRAPHIC, container=PLAYER, layer=chest_layer)
+    assert ready(_ctx_armorer([_backpack(), _gold(300), worn])) is False
+    # A just-bought chest still in the pack also counts as owned -> not ready.
+    assert ready(_ctx_armorer([_backpack(), _gold(300), _item(0x801, PLATE_CHEST_GRAPHIC)])) is False
+    # Chestless but too poor -> not ready (keep hunting instead of stalling at a shop).
+    assert ready(_ctx_armorer([_backpack(), _gold(100)])) is False
+
+
 def test_owned_weapon_is_worn_aware_so_the_warrior_never_double_buys():
     from anima2.capabilities import _owned_weapon
 
@@ -160,10 +196,10 @@ def test_swordsman_wires_both_hunt_and_the_economy_capabilities():
     # The economy planner (capability mode) builds — its manifest must pass, which
     # it only does because pre-work reflexes are excluded from capability mode.
     econ = sword.planner(capability_goals=True)
-    assert set(econ.capability_ids) == {"bank_gold", "buy_weapon", "buy_bandage"}
+    assert set(econ.capability_ids) == {"bank_gold", "buy_weapon", "buy_bandage", "buy_armor"}
     econ_names = [type(s).__name__ for s in econ.skills]
     assert "EquipWeapon" not in econ_names and "EquipArmor" not in econ_names
-    assert {cid for (p, cid) in CAPABILITIES if p == "swordsman"} == {"bank_gold", "buy_weapon", "buy_bandage"}
+    assert {cid for (p, cid) in CAPABILITIES if p == "swordsman"} == {"bank_gold", "buy_weapon", "buy_bandage", "buy_armor"}
 
 
 def test_all_six_plate_layers_match_the_live_verified_values():

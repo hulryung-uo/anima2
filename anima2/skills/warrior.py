@@ -348,6 +348,32 @@ class BuyWeapon(BuyToolCapability):
     vendor_spot_key = "weapon_vendor_spot"
 
 
+class BuyArmor(BuyToolCapability):
+    """Warrior config: buy a replacement PlateChest from the `armorer_spot` Armorer with
+    earned gold when the warrior has lost its chest plate. Death drops the whole suit onto
+    the corpse, and a corpse guarded by prey often can't be reclaimed — without this the
+    warrior fights on unarmored, which a living test proved is fatal against rich prey
+    (three Ettins kill an unarmored warrior before it lands a kill). The CHEST is the
+    single biggest slice of armor rating, so one buy restores most of the protection.
+
+    Mirrors `BuyWeapon` exactly: armor is WORN, so its readiness
+    (`capabilities.py::_make_armor_buy_ready`) uses the same worn-aware "do I own one?"
+    check, and the arrival proof is the stock pack-only one (a bought piece lands in the
+    pack; `EquipArmor` wears it once the warrior is back in hunt mode).
+    """
+
+    name = "buy_armor"
+    description = "Buy a replacement plate chest from the configured armorer and return."
+    #: Owning a chest (worn OR in the pack) means armored enough — don't re-buy.
+    owned_tool_graphics = frozenset({PLATE_CHEST_GRAPHIC})
+    #: The for-sale PlateChest art the Armorer stocks (0x1415 @ 243g).
+    offer_graphic = PLATE_CHEST_GRAPHIC
+    #: This shard's live plate-chest price (SBPlateArmor/SBBlacksmith).
+    tool_price_estimate = 243
+    #: The warrior's armorer — a SEPARATE key from the weapon vendor and healer.
+    vendor_spot_key = "armorer_spot"
+
+
 class BuyBandage(BuyMaterialCapability):
     """Warrior config: buy a batch of bandages (0x0E21, a STACKING material) from the
     `healer_spot` Healer when the warrior's stack runs low — the resupply leg that

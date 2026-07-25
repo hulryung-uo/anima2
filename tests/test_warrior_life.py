@@ -6,8 +6,15 @@ from anima2.contract import ItemView, Observation, PlayerView, Position
 from anima2.persona import Persona
 from anima2.skills.harvest import BACKPACK_LAYER
 from anima2.skills.hunt import GOLD_GRAPHIC
-from anima2.skills.warrior import BANDAGE_GRAPHIC, KATANA_GRAPHIC, WEAPON_LAYER
+from anima2.skills.warrior import (
+    BANDAGE_GRAPHIC,
+    KATANA_GRAPHIC,
+    PLATE_ARMOR_LAYERS,
+    PLATE_CHEST_GRAPHIC,
+    WEAPON_LAYER,
+)
 from anima2.warrior_life import (
+    ARMOR_PRICE,
     BANDAGE_BATCH_COST,
     BANK_ABOVE,
     LOW_BANDAGES,
@@ -17,7 +24,8 @@ from anima2.warrior_life import (
 
 PLAYER = 1
 BP = 0x50
-ROUTES = {"weapon_vendor_spot": ((10, 10),), "healer_spot": ((10, 10),), "banker_spot": ((10, 10),)}
+ROUTES = {"weapon_vendor_spot": ((10, 10),), "healer_spot": ((10, 10),),
+          "banker_spot": ((10, 10),), "armorer_spot": ((10, 10),)}
 
 
 def _item(serial, graphic, amount=1, *, container=BP, layer=0):
@@ -34,6 +42,11 @@ def _backpack():
     return _item(BP, 0x0E75, container=PLAYER, layer=BACKPACK_LAYER)
 
 
+def _worn_chest():
+    return _item(0x800, PLATE_CHEST_GRAPHIC, container=PLAYER,
+                 layer=PLATE_ARMOR_LAYERS[PLATE_CHEST_GRAPHIC])
+
+
 def _worn_katana():
     return _item(0x700, KATANA_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
 
@@ -47,7 +60,7 @@ def _bandages(n):
 
 
 def test_armed_and_supplied_warrior_hunts():
-    obs = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(100)])
+    obs = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(100)])
     assert decide_mode(obs, dict(ROUTES)) == ("hunt", None)
 
 
@@ -69,12 +82,13 @@ def test_weaponless_but_broke_keeps_hunting():
 
 
 def test_low_bandages_restocks():
-    obs = _obs([_backpack(), _worn_katana(), _bandages(LOW_BANDAGES - 1), _gold(BANDAGE_BATCH_COST)])
+    obs = _obs([_backpack(), _worn_katana(), _worn_chest(),
+                _bandages(LOW_BANDAGES - 1), _gold(BANDAGE_BATCH_COST)])
     assert decide_mode(obs, dict(ROUTES)) == ("economy", "buy_bandage")
 
 
 def test_surplus_gold_banks():
-    obs = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(BANK_ABOVE + 1)])
+    obs = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(BANK_ABOVE + 1)])
     assert decide_mode(obs, dict(ROUTES)) == ("economy", "bank_gold")
 
 
@@ -85,8 +99,38 @@ def test_weaponless_takes_priority_over_low_bandages():
 
 def test_a_packed_katana_counts_as_armed():
     # A just-bought Katana in the pack (not yet worn) means armed -> don't re-buy.
-    obs = _obs([_backpack(), _item(0x701, KATANA_GRAPHIC), _bandages(50), _gold(100)])
+    obs = _obs([_backpack(), _item(0x701, KATANA_GRAPHIC), _worn_chest(),
+                _bandages(50), _gold(100)])
     assert decide_mode(obs, dict(ROUTES)) == ("hunt", None)
+
+
+def test_lost_chest_plate_triggers_an_armor_rebuy():
+    # Died, corpse unreclaimed -> no chest. Fighting rich prey unarmored is fatal (a
+    # living test proved it), so with gold + an armorer the warrior goes and replaces it.
+    obs = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(ARMOR_PRICE)])
+    assert decide_mode(obs, dict(ROUTES)) == ("economy", "buy_armor")
+
+
+def test_chestless_but_broke_or_unrouted_keeps_hunting():
+    # Can't afford a chest -> keep hunting and earn toward one, don't stall at the shop.
+    poor = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(ARMOR_PRICE - 1)])
+    assert decide_mode(poor, dict(ROUTES)) == ("hunt", None)
+    # No armorer route configured -> nothing to divert to.
+    routes = {k: v for k, v in ROUTES.items() if k != "armorer_spot"}
+    rich = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(ARMOR_PRICE)])
+    assert decide_mode(rich, routes) == ("hunt", None)
+
+
+def test_blade_and_bandages_outrank_armor():
+    # Priority: you cannot hunt without a blade, nor survive without bandages; armor is
+    # the third need, ahead of banking.
+    no_blade = _obs([_backpack(), _bandages(50), _gold(500)])          # also chestless
+    assert decide_mode(no_blade, dict(ROUTES)) == ("economy", "buy_weapon")
+    dry = _obs([_backpack(), _worn_katana(), _bandages(1), _gold(500)])  # also chestless
+    assert decide_mode(dry, dict(ROUTES)) == ("economy", "buy_bandage")
+    # ...and armor outranks banking a surplus.
+    rich = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(BANK_ABOVE + 1)])
+    assert decide_mode(rich, dict(ROUTES)) == ("economy", "buy_armor")
 
 
 def test_a_dead_warrior_yields_to_recover_death():
