@@ -159,16 +159,21 @@ robustness cliff plus one shipped improvement. Full write-up:
   decides the mode from the last CACHED observation — issuing its own extra `observe()`
   around the inner agent's tick breaks that agent's non-blocking route/reflex cadence
   (live-caught: with the extra pump the warrior never equipped or engaged; with the cache
-  it equips and enters hunt mode). Live status: the warriors come online, stage, equip
-  (Katana + plate), and autonomously enter hunt mode. Prey PROXIMITY is now solved — the
-  monitor spawns prey adjacent to each warrior's LIVE position (read from its WarriorLife's
-  cached `last_obs`), so an aggressive Ettin reaches melee (a mindist trace confirms
-  mindist=1, HP ticking down in melee) instead of wandering off a fixed stand the warrior
-  drifted from.
-- **Residual (open).** Even adjacent (mindist=1), the two-agent WarriorLife warrior does
-  not yet deal effective damage — kills=0 while adjacent, then the Ettin loses interest and
-  wanders — whereas the SINGLE-agent standalone proofs (rich/thrive) kill + bank fine. So
-  the open issue is combat ENGAGEMENT under the orchestrator (likely `Hunt`'s
-  approach-vs-attack / WarMode not landing in the two-rate + wrapped-body context), NOT
-  prey proximity. Fixing that (and richer economy triggers — blade upgrade, replace
-  corpse-lost armor) is the next work.
+  it equips and enters hunt mode).   Three fixes were needed to make village warriors genuinely hunt, each found by a live
+  trace rather than guessed:
+  1. **Caching body** (above) — the orchestrator must not add its own `observe()` around
+     the inner agent's tick, or the warrior never equips or engages.
+  2. **Live-position prey** — spawn prey adjacent to the warrior's *current* position (read
+     from the cached `last_obs`), not a fixed stand it has drifted away from. A `mindist`
+     trace confirmed prey then reach melee (mindist=1) instead of idling out of reach.
+  3. **Pinned prey** — an action-stream trace proved combat itself works (war mode + real
+     `Attack`s, the Ettin's HP falling 9→5→3), but a wounded ServUO creature **flees** at
+     low HP and outruns the warrior (distance 1→13), so an almost-won fight never landed.
+     Pinning each spawned creature with `[Set CantWalk true` — the same pin `stage_npc`
+     already applies to wandering vendors — makes it stand and fight.
+
+  Live result: `--warriors 1 --ticks 200` now finishes with a real kill and **out+160.0**
+  (looted gold), where every run before these fixes reported 0 kills and 0.0 reward. The
+  swordsman lives the full autonomous loop in the standing village.
+- **Next (not built).** Richer economy triggers (upgrade the blade, buy armor to replace
+  pieces lost on a corpse) and multi-warrior village runs.

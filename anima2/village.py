@@ -1477,17 +1477,15 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                     continue
                 px, py, pz = lo.player.pos.x, lo.player.pos.y, lo.player.pos.z
                 kills = w["life"].kills
-                killed_since = kills - w.get("last_kills", 0)
                 w["last_kills"] = kills
-                need = max(killed_since, 0)
-                if killed_since > 0:
-                    w["idle"] = 0
-                else:
-                    w["idle"] = w.get("idle", 0) + 1
-                    if w["idle"] >= 2:  # ~6s with no kill: put fresh prey ON the warrior
-                        need = prey_target
-                        w["idle"] = 0
-                for k in range(need):
+                # PRESENCE-based top-up (not a timer): count the live hostiles actually
+                # near THIS warrior and refill to `prey_target`. A pinned creature can
+                # still end up out of reach if the warrior drifts, and a kill removes one
+                # — this keeps exactly `prey_target` fightable creatures on top of the
+                # warrior at all times, and spawns nothing when the pocket is stocked.
+                near = sum(1 for m in lo.mobiles
+                           if m.serial != lo.player.serial and m.hits > 0 and m.distance <= 3)
+                for k in range(max(0, prey_target - near)):
                     dx, dy = adj[k % len(adj)]
                     _spawn_pinned(px, py, pz, dx, dy)
             with lock:
