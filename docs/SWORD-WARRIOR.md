@@ -150,6 +150,19 @@ robustness cliff plus one shipped improvement. Full write-up:
   6/6 plate has its blade stripped mid-life, and with NO manual driver it auto-switches to
   economy, re-buys a Katana (gold 120→87), and auto-switches back to hunt with the blade
   re-wielded — a death turned into a self-recovered setback.
-- **Next (not built).** Wire `WarriorLife` into `village.py` so the swordsman lives this
-  full autonomous loop in the standing village, and add richer economy triggers (e.g.
-  upgrade the blade, buy armor to replace pieces lost on a corpse).
+- **Village integration (wired).** `village.py::run_warrior_village` + `--warriors N` run
+  N swordsmen living the loop via `WarriorLife` in the standing village: each is staged at
+  its own pocket with a Weaponsmith/Healer/Banker (pushed well out so they don't distract
+  Greet/Wander), full plate + Katana + bandages, starter gold deleted, and a kills-driven
+  prey supply; each runs through the unchanged `_run_worker` (WarriorLife duck-types as an
+  Agent). The load-bearing fix here: WarriorLife wraps the body in a `_CachingBody` and
+  decides the mode from the last CACHED observation — issuing its own extra `observe()`
+  around the inner agent's tick breaks that agent's non-blocking route/reflex cadence
+  (live-caught: with the extra pump the warrior never equipped or engaged; with the cache
+  it equips and enters hunt mode). Live status: the warriors come online, stage, equip
+  (Katana + plate), and autonomously enter hunt mode; effective KILL throughput in the
+  village still needs prey-engagement tuning (prey wander off the pocket faster than the
+  two-rate warrior closes to melee — the same prey-supply tuning the endurance test hit).
+- **Next (not built).** Sharpen village prey engagement (a tighter respawn that keeps prey
+  in melee reach), and richer economy triggers (upgrade the blade, buy armor to replace
+  pieces lost on a corpse).
