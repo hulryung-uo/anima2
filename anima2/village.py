@@ -1383,7 +1383,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             continue
         bodies.append((i, body))
         print(f"  {account}: Bram{i} the swordsman")
-        time.sleep(1.0)
+        time.sleep(3.0)
     if not bodies:
         print("no warriors came online")
         return
@@ -1393,12 +1393,23 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
     warriors: list[dict] = []
     try:
         gm.hide()
+        # PASS 1 — place every warrior and clear every pocket BEFORE any vendor or prey
+        # exists. Wiping is per-pocket but its radius overlaps a neighbour's stand
+        # (spacing 25, wipe 20), so doing it inline would delete the PREVIOUS warrior's
+        # freshly staged vendors (they sit at +/-12) and prey. Two passes keep each
+        # warrior's furniture safe no matter how many warriors there are.
+        placed: list[tuple[int, object, int, tuple[int, int, int]]] = []
         for i, body in bodies:
             serial = body.ready["player"]["serial"]
             sx, sy = hx + i * spacing, hy
             gx, gy, gz = gm.stage(serial, sx, sy, skills=prof.skills, items=items)
             for r in (20, 12, 6):  # clear stray mobiles so a fresh pocket, not a swarm
                 gm.command_area("[WipeNPCs", gx - r, gy - r, gx + r, gy + r, gz)
+            placed.append((i, body, serial, (gx, gy, gz)))
+
+        # PASS 2 — now that every pocket is clear, dress each warrior and stage its own
+        # vendors + prey; nothing wipes after this point.
+        for i, body, serial, (gx, gy, gz) in placed:
             for c in ("[Set Str 150", "[Set Dex 125", "[Set Hits 150", "[Set HitsMax 150"):
                 gm.command_on(c, serial)
             gm.command_on(f'[Set Name "Bram{i}"', serial)
@@ -1416,9 +1427,13 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # near the stand they'd distract Greet/Wander (the warrior drifts to greet a
             # friendly NPC when no prey is adjacent) and each buy's "closest mobile to its
             # spot" pick needs them well-separated anyway.
-            gm.stage_npc("Weaponsmith", gx + 12, gy, gz, exclude=serial)
-            gm.stage_npc("Healer", gx - 12, gy, gz, exclude=serial)
-            gm.stage_npc("Banker", gx, gy + 12, gz, exclude=serial)
+            # Exclude EVERY warrior serial (not just this one): with several warriors the
+            # widened mobile search can otherwise resolve to a different agent standing
+            # nearby — the same hazard `run_village` guards with `all_agent_serials`.
+            all_serials = {b.ready["player"]["serial"] for _i, b in bodies}
+            gm.stage_npc("Weaponsmith", gx + 12, gy, gz, exclude=all_serials)
+            gm.stage_npc("Healer", gx - 12, gy, gz, exclude=all_serials)
+            gm.stage_npc("Banker", gx, gy + 12, gz, exclude=all_serials)
             # Prey spawned ADJACENT to the stand so Hunt engages immediately (before the
             # warrior can drift), each on its own tile around the warrior.
             # Prey spawned adjacent AND PINNED (`CantWalk`) so a wounded creature stands
@@ -1428,7 +1443,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             for k in range(prey_target):
                 dx, dy = adj[k % len(adj)]
                 gm.command_at(f"[Add {prey}", gx + dx, gy + dy, gz)
-                mob = gm.find_mobile_near(gx + dx, gy + dy, exclude=serial)
+                mob = gm.find_mobile_near(gx + dx, gy + dy, exclude=all_serials)
                 if mob is not None:
                     gm.command_on("[Set CantWalk true", mob.serial)
             routes = {"weapon_vendor_spot": [(gx + 12, gy)],
