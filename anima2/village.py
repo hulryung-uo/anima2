@@ -1464,6 +1464,9 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                                  daemon=True)
             threads.append(t)
             t.start()
+            # Stagger the starts so the warriors' pump windows interleave on the shared
+            # shard instead of every bridge asking for service on the same beat.
+            time.sleep(0.7)
 
         # Monitor: print a live snapshot + keep prey IN MELEE. Two things matter:
         #  (a) spawn prey adjacent to the warrior's LIVE position (from its cached last
@@ -1478,31 +1481,53 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
         def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
+            # Every GM call costs a full pump (~pump_ms) on the ONE shared control
+            # connection, and the single-threaded shard serves that connection in the same
+            # loop as the warriors' own. `retries=1` is the big win here: the creature was
+            # just `[Add`-ed at a known tile, so one observation finds it — the default 3
+            # retries tripled this helper's cost (~2s -> ~0.8s) and, multiplied by warriors
+            # x prey, was what starved the warrior bridges at 3+ warriors.
             gm.command_at(f"[Add {prey}", px + dx, py + dy, pz)
-            mob = gm.find_mobile_near(px + dx, py + dy,
+            mob = gm.find_mobile_near(px + dx, py + dy, retries=1,
                                       exclude={w["life"].hunt_agent.body.ready["player"]["serial"]
                                                for w in warriors})
             if mob is not None:
                 gm.command_on("[Set CantWalk true", mob.serial)
+        # GM-work BUDGET per monitor cycle. The control connection is shared and every GM
+        # call costs a pump on the same single-threaded shard the warriors are playing on,
+        # so unbounded per-warrior restocking scales GM traffic linearly with the roster
+        # and starves the warriors themselves (measured: 3 warriors x 2 prey ~= 12s of GM
+        # work inside a 3s cycle -> every warrior frozen). Two guards keep it flat:
+        #  - at most `_GM_SPAWNS_PER_CYCLE` spawns per cycle, ROUND-ROBIN over the roster
+        #    (a starting offset that advances each cycle), so every warrior is served
+        #    regularly without any single cycle blowing the budget; and
+        #  - a cycle interval that grows with the roster.
+        _GM_SPAWNS_PER_CYCLE = 2
+        rr = 0
         while any(t.is_alive() for t in threads):
-            time.sleep(3.0)
-            for w in warriors:
+            time.sleep(3.0 + 1.0 * (len(warriors) - 1))
+            budget = _GM_SPAWNS_PER_CYCLE
+            order = [warriors[(rr + n) % len(warriors)] for n in range(len(warriors))]
+            rr = (rr + 1) % len(warriors)
+            for w in order:
+                if budget <= 0:
+                    break
                 lo = w["life"].body.last_obs
                 if lo is None or lo.player.dead:
                     continue
                 px, py, pz = lo.player.pos.x, lo.player.pos.y, lo.player.pos.z
-                kills = w["life"].kills
-                w["last_kills"] = kills
+                w["last_kills"] = w["life"].kills
                 # PRESENCE-based top-up (not a timer): count the live hostiles actually
-                # near THIS warrior and refill to `prey_target`. A pinned creature can
+                # near THIS warrior and refill toward `prey_target`. A pinned creature can
                 # still end up out of reach if the warrior drifts, and a kill removes one
-                # — this keeps exactly `prey_target` fightable creatures on top of the
-                # warrior at all times, and spawns nothing when the pocket is stocked.
+                # — this keeps fightable creatures on top of the warrior, and spawns
+                # nothing when the pocket is stocked.
                 near = sum(1 for m in lo.mobiles
                            if m.serial != lo.player.serial and m.hits > 0 and m.distance <= 3)
-                for k in range(max(0, prey_target - near)):
+                for k in range(min(budget, max(0, prey_target - near))):
                     dx, dy = adj[k % len(adj)]
                     _spawn_pinned(px, py, pz, dx, dy)
+                    budget -= 1
             with lock:
                 snap = [status[i] for i in sorted(status)]
             modes = " ".join(f"Bram{w['i']}:{w['life'].mode}" for w in warriors)
