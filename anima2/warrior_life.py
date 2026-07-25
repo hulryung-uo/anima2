@@ -124,6 +124,9 @@ class _CachingBody:
     def __init__(self, inner) -> None:
         self.inner = inner
         self.last_obs: Observation | None = None
+        #: True once this tick's real observation has been taken, so a SECOND observe in
+        #: the same tick is served from cache instead of costing another pump.
+        self._fresh = False
 
     @property
     def connected(self) -> bool:
@@ -134,8 +137,20 @@ class _CachingBody:
         return self.inner.ready
 
     def observe(self) -> Observation:
+        """One real pump per tick. An agent runner typically observes twice per tick (the
+        agent's own observe inside `tick()`, then the runner's for status/telemetry); on a
+        single-threaded shard shared by several live agents those pumps are the scarce
+        resource, so the second observe of a tick returns THIS tick's cached world state
+        rather than paying for another. `WarriorLife.tick()` opens each tick by clearing
+        the flag, so every tick still starts from a genuinely fresh observation."""
+        if self._fresh and self.last_obs is not None:
+            return self.last_obs
         self.last_obs = self.inner.observe()
+        self._fresh = True
         return self.last_obs
+
+    def begin_tick(self) -> None:
+        self._fresh = False
 
     def act(self, action) -> None:
         self.inner.act(action)
@@ -179,6 +194,7 @@ class WarriorLife:
         # around the inner agent's own tick breaks its route/reflex cadence; live-caught).
         # The one-tick lag on the mode decision is immaterial (modes change slowly) and
         # `self.mode` starts at "hunt", so the very first action is a hunt action.
+        self.body.begin_tick()  # this tick's first observe pumps for real
         action = (self.econ_agent if self.mode == "economy" else self.hunt_agent).tick()
         obs = self.body.last_obs
         if obs is None:

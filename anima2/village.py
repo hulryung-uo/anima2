@@ -1453,6 +1453,15 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                                persona=Persona(name=f"Bram{i}", combat_disposition="aggressive"),
                                routes=routes)
             warriors.append({"i": i, "life": life, "spot": (gx, gy, gz), "respawned": 0})
+        # Staging is serial and GM-heavy, so with a big roster the FIRST-staged bodies sit
+        # idle for a long time before anyone starts playing. Warm every body (and report
+        # its liveness) right before the threads start, so a body that went stale during
+        # staging is visible here instead of silently never acting.
+        for w in warriors:
+            body = w["life"].hunt_agent.body
+            for _ in range(2):
+                body.observe()
+            print(f"  Bram{w['i']}: connected={body.connected}")
         print(f"staged {len(warriors)} warrior(s). the hunt begins.\n")
 
         status: dict[int, str] = {}
@@ -1502,11 +1511,17 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         #    (a starting offset that advances each cycle), so every warrior is served
         #    regularly without any single cycle blowing the budget; and
         #  - a cycle interval that grows with the roster.
-        _GM_SPAWNS_PER_CYCLE = 2
+        # The budget scales with the roster but stays a bounded FRACTION of the cycle: a
+        # spawn costs ~0.8s of GM pumps, the cycle is `3 + (N-1)`s, and we let GM use at
+        # most about half of it — so restocking keeps up with a bigger roster without the
+        # control plane ever monopolizing the shard again. (A fixed budget of 2 would need
+        # ~5 cycles / ~35s for one full pass at 5 warriors.)
+        cycle_s = 3.0 + 1.0 * (len(warriors) - 1)
+        gm_spawns_per_cycle = max(2, int(cycle_s / 2))
         rr = 0
         while any(t.is_alive() for t in threads):
-            time.sleep(3.0 + 1.0 * (len(warriors) - 1))
-            budget = _GM_SPAWNS_PER_CYCLE
+            time.sleep(cycle_s)
+            budget = gm_spawns_per_cycle
             order = [warriors[(rr + n) % len(warriors)] for n in range(len(warriors))]
             rr = (rr + 1) % len(warriors)
             for w in order:
