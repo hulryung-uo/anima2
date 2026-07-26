@@ -82,6 +82,38 @@ exactly 60g** (tick 4). Provenance is airtight — the mage was staged with **ze
 zero reagents**, so every coin it spent came from the crafter and every reagent it holds
 was bought with that money.
 
+## A new tactic: kiting
+
+The first behaviour that makes a caster genuinely *play* differently from a swordsman. A
+warrior **wants** contact — its damage happens in melee. A mage's damage happens at range,
+so every tile a creature closes is pure loss: it takes hits while its own output is
+unchanged. Nothing in the planner expressed that, because `Survive` only retreats once the
+mage is **already** below 40% HP — far too late for a frail caster.
+
+`skills/mage.py::KeepDistance` steps away from a hostile that has closed to melee, reusing
+`Survive`'s retreat geometry for a *tactical* (not desperate) step. The band is deliberately
+narrow: it fires only within `too_close` (2) and stops the moment the gap is open, so the
+mage alternates "step back, cast, step back, cast" rather than fleeing; the budget is capped
+(3 steps) and recovers once the gap has been held; and it yields while a target cursor is up
+so a half-finished cast is never abandoned. Planner order: `KeepDistance > CastAttack > Hunt`.
+
+### Live gate (`scratchpad/live_kite_mech.py`) — PASSED
+
+| arm | melee_frac | max_dist |
+|---|---|---|
+| NO-KITE | **1.00** (melee every tick) | 1 |
+| KITE | **0.03** (melee on 1 of 37 ticks) | **3** |
+
+The mage steps off within ten ticks and holds distance 3 — a ~33× cut in melee exposure.
+
+**Why this gate and not the first one.** A first A/B against a free-roaming Ettin was
+*inconclusive*, and the reason is worth recording: the two runs differed mostly in what the
+**monster** did (one fled when wounded, the other charged), so its "pass" rested on
+melee_frac 0.57 → 0.50 while HP loss got *worse*, 0 → 36 — a verdict about the creature, not
+the tactic. Re-running against a **pinned, adjacent** Ettin that can neither chase nor flee
+makes the mage's own stepping the only thing that can change the gap, which is what turns a
+noisy comparison into a decisive one.
+
 ## Next (not built)
 
 A `MageLife` orchestrator (the mage's counterpart to `warrior_life.py::WarriorLife`) so the
