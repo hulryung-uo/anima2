@@ -158,6 +158,18 @@ MOBILE_SEARCH_RADIUS = 4
 FIND_MOBILE_TIMEOUT = 10
 # How many ticks to wait for a response (the popup menu, or the 0x9E
 # SellList) before re-asking — mirrors `craft.py`'s `_REOPEN_AFTER`.
+#
+# How many times to CLOSE AND REOPEN a vendor's BUY window when it does not show the
+# offer we came for. Live-traced root cause: the window is assembled by pairing the
+# 0x74 price list with the 0x3C container contents BY ARRIVAL ORDER, and a vendor with
+# a large inventory surfaces only a PARTIAL subset (~15 entries, measured) — which
+# never grows, and whose membership varies between openings. A Weaponsmith that
+# genuinely stocks a Katana therefore shows one only some of the time, which is exactly
+# the intermittent "vendor stall" that has blocked buys and sells across every
+# capability. Abandoning the whole trip on the first unlucky opening turns a retryable
+# miss into a dead transaction; reopening re-rolls the subset. The real fix belongs in
+# the BODY (anima-core's buy-window pairing) — this is the honest brain-side mitigation.
+OFFER_REOPEN_ATTEMPTS = 4
 ASK_RETRY = 10
 # Total ticks the `popup` stage will stay in play — across every re-request
 # cycle `_popup_click`'s own `ASK_RETRY` wait/re-ask loop makes — before
@@ -769,8 +781,17 @@ class BlacksmithMarket(Blacksmith):
                 return SkillResult(Status.RUNNING, None, reward)
             entry = self._offer_by_graphic(buy, self.buy_offer_graphic)
             if entry is None:
-                # The vendor's for-sale list doesn't expose a single resolvable
-                # material offer — bail rather than loop or buy the wrong item.
+                # This OPENING of the window doesn't show our offer. That is usually
+                # not "the vendor lacks it" but the partial-subset problem described at
+                # `OFFER_REOPEN_ATTEMPTS` — so re-roll the window a bounded number of
+                # times before giving the trip up.
+                tries = int(ctx.memory.get("buy_offer_reopens", 0))
+                if tries < OFFER_REOPEN_ATTEMPTS:
+                    ctx.memory["buy_offer_reopens"] = tries + 1
+                    ctx.memory["buy_stage"] = "popup"
+                    ctx.memory.pop("buy_popup_wait", None)
+                    ctx.memory.pop("buy_ask_wait", None)
+                    return SkillResult(Status.RUNNING, None, reward)
                 self._stash_reward(ctx, reward)
                 return None
             # Buy the fixed batch, clamped to what the vendor actually stocks
@@ -954,7 +975,16 @@ class BlacksmithMarket(Blacksmith):
                 return SkillResult(Status.RUNNING, None, reward)
             entry = self._offer_by_graphic(buy, self.offer_graphic)
             if entry is None:
-                # No single resolvable tool offer — bail rather than mis-buy.
+                # Same partial-subset re-roll as the material buy (see
+                # `OFFER_REOPEN_ATTEMPTS`): a missing offer usually means an unlucky
+                # window, not a vendor that lacks the item.
+                tries = int(ctx.memory.get("toolbuy_offer_reopens", 0))
+                if tries < OFFER_REOPEN_ATTEMPTS:
+                    ctx.memory["toolbuy_offer_reopens"] = tries + 1
+                    ctx.memory["toolbuy_stage"] = "popup"
+                    ctx.memory.pop("toolbuy_popup_wait", None)
+                    ctx.memory.pop("toolbuy_ask_wait", None)
+                    return SkillResult(Status.RUNNING, None, reward)
                 self._stash_reward(ctx, reward)
                 return None
             amount = min(TOOL_BUY_AMOUNT, entry.amount)

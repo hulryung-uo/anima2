@@ -1530,7 +1530,20 @@ def test_buy_capability_never_buys_a_non_iron_item_and_bails():
         "cap_buy_goal_id": 17, "cap_buy_route": (VENDOR,),
         "cap_buy_start_ingots": 0, "cap_buy_start_gold": 100,
     }
-    res = BuyIngots().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), shop_buy=buy, goal_id=17))
+    skill = BuyIngots()
+    ctx_args = dict(memory=mem, pos=Position(*VENDOR, 0), shop_buy=buy, goal_id=17)
+    # A window WITHOUT our offer is usually an unlucky partial subset rather than a vendor
+    # that lacks the material (see market.OFFER_REOPEN_ATTEMPTS), so re-roll it a bounded
+    # number of times — never buying anything else meanwhile...
+    from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
+    for _ in range(OFFER_REOPEN_ATTEMPTS):
+        mem["buy_stage"] = "window"                  # the reopened window, still unlucky
+        res = skill.step(_ctx(items, **ctx_args))
+        assert not isinstance(res.action, BuyItems)  # never mis-buys the shield
+        assert mem["buy_stage"] == "popup"           # reopen, not abandon
+    # ...and only then give the trip up.
+    mem["buy_stage"] = "window"
+    res = skill.step(_ctx(items, **ctx_args))
     assert not isinstance(res.action, BuyItems)
     assert mem["mkt_phase"] == "buy_return"
     assert "cap_buy_sent_goal_id" not in mem
@@ -1819,7 +1832,20 @@ def test_toolbuy_capability_never_buys_a_non_tongs_item_and_bails():
         "cap_toolbuy_goal_id": 17, "cap_toolbuy_route": (VENDOR,),
         "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
     }
-    res = BuyTool().step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), shop_buy=buy, goal_id=17))
+    skill = BuyTool()
+    ctx_args = dict(memory=mem, pos=Position(*VENDOR, 0), shop_buy=buy, goal_id=17)
+    # A window WITHOUT our offer is usually an unlucky partial subset, not a vendor that
+    # lacks the item (see market.OFFER_REOPEN_ATTEMPTS) — so re-roll it a bounded number
+    # of times, never buying anything else meanwhile...
+    from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
+    for _ in range(OFFER_REOPEN_ATTEMPTS):
+        mem["toolbuy_stage"] = "window"               # the reopened window, still unlucky
+        res = skill.step(_ctx(items, **ctx_args))
+        assert not isinstance(res.action, BuyItems)   # never mis-buys the shield
+        assert mem["toolbuy_stage"] == "popup"        # reopen, not abandon
+    # ...and only then give the trip up.
+    mem["toolbuy_stage"] = "window"
+    res = skill.step(_ctx(items, **ctx_args))
     assert not isinstance(res.action, BuyItems)
     assert mem["mkt_phase"] == "toolbuy_return"
     assert "cap_toolbuy_sent_goal_id" not in mem
