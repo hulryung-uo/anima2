@@ -28,6 +28,7 @@ from .curriculum import (
 )
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
+from .skills.mage import CastAttack
 from .skills.warrior import EquipArmor, EquipWeapon, WarriorSurvive
 from .skills.base import SkillContext, SkillResult, Status
 
@@ -602,5 +603,25 @@ PROFESSIONS: dict[str, Profession] = {
         pre_work_skills=(EquipWeapon, EquipArmor),
         # Heal to a safe margin before wading back in (living-test hardening).
         survive_factory=WarriorSurvive,
+    ),
+    # The magic counterpart to the swordsman: same hunter shape (Hunt engages + loots,
+    # Survive bandages), but it fights with SPELLS instead of a blade — `CastAttack` sits
+    # where the warrior's equip reflexes sit, just above the work skill, so while a
+    # hostile is in range the mage spends its ticks casting. Damage scales with Magery /
+    # Evaluating Intelligence, so unlike the warrior nothing needs to be WORN; what it
+    # needs instead is MANA (Int) and REAGENTS, which is what makes its economy leg
+    # (`buy_reagent`) the thing that keeps it fighting.
+    "mage": Profession(
+        key="mage",
+        persona_name="Elara",
+        skills={"Magery": 90, "EvalInt": 90, "Meditation": 80, "Anatomy": 60, "Healing": 60},
+        # A spellbook, a deep reagent pouch (Magic Arrow burns one ash per cast), and
+        # bandages — a mage is frail, so it still heals the mundane way.
+        items=["Spellbook", "SulfurousAsh 100", "Bandage 100"],
+        needs_workplace=True,
+        workplace=HUNTING_SPOT,
+        work_skill=Hunt,
+        combat_disposition="aggressive",
+        pre_work_skills=(CastAttack,),
     ),
 }
