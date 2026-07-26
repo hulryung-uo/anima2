@@ -1560,6 +1560,35 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
     print(f"\nthe day's hunt is done. total kills across the village: {total_kills}")
 
 
+class _TapBody:
+    """Record the last observation an agent took, without adding any traffic of its own.
+
+    The roster's status line shows reward/steps, but a craft capability confirms no reward
+    (a solo artisan made 5 tongs with `total_reward() == 0.0`), so those columns cannot say
+    whether the pipeline is moving. This tap lets the monitor read what each agent last saw
+    and report the things that actually matter: tongs made, gold carried, reagents bought.
+    """
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.last_obs = None
+
+    @property
+    def connected(self) -> bool:
+        return self.inner.connected
+
+    @property
+    def ready(self):
+        return self.inner.ready
+
+    def observe(self):
+        self.last_obs = self.inner.observe()
+        return self.last_obs
+
+    def act(self, action) -> None:
+        self.inner.act(action)
+
+
 class _ThrottledAgent:
     """Tick an agent only 1 tick in `every`, yielding the rest of the shard to someone else.
 
@@ -1610,9 +1639,34 @@ class _ThrottledAgent:
         return getattr(self.inner, "mode", None)
 
 
+def _pipeline_progress(tin_tap, mage) -> str:
+    """What the pipeline has actually moved, read off each agent's last observation."""
+    from .skills.harvest import BACKPACK_LAYER
+    from .skills.hunt import GOLD_GRAPHIC
+    from .skills.mage import SULFUROUS_ASH_GRAPHIC
+
+    TONGS = 0x0FBB
+
+    def _pack(obs, graphic):
+        if obs is None:
+            return 0
+        bp = next((i.serial for i in obs.items
+                   if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
+        return sum(i.amount for i in obs.items
+                   if i.graphic == graphic and i.container == bp) if bp else 0
+
+    t_obs = tin_tap.last_obs
+    m_obs = getattr(mage.body, "last_obs", None)
+    ground = sum(i.amount for i in (m_obs.items if m_obs else [])
+                 if i.graphic == GOLD_GRAPHIC and i.container is None)
+    return (f"artisan[tongs={_pack(t_obs, TONGS)} gold={_pack(t_obs, GOLD_GRAPHIC)}] "
+            f"purse_on_ground={ground} "
+            f"mage[gold={_pack(m_obs, GOLD_GRAPHIC)} ash={_pack(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
+
+
 def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                             ticks: int = 400, account_prefix: str = "animapipe",
-                            prey: str = "Ettin", mage_tick_every: int = 3) -> None:
+                            prey: str = "Ettin", mage_tick_every: int = 8) -> None:
     """Run the WHOLE production pipeline unattended: an artisan and a mage, side by side.
 
     This is the goal's arc turned into a standing village rather than a scripted proof. The
@@ -1705,8 +1759,9 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
 
         # The ARTISAN: its own capability planner, choosing by readiness (no client).
         tin_prof = PROFESSIONS["tinker"]
+        tin_tap = _TapBody(bodies["tinker"])
         tinker = Agent(
-            body=bodies["tinker"], persona=Persona(name="Tinker"),
+            body=tin_tap, persona=Persona(name="Tinker"),
             planner=tin_prof.planner(capability_goals=True),
             cognition=CapabilityCognition(None, "tinker"), cognition_interval=1,
             profession="tinker", goal_policy=CapabilityPolicy("tinker"),
@@ -1741,7 +1796,8 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
             with lock:
                 snap = [status[i] for i in sorted(status)]
             mode = mage.mode
-            print(f"— artisan+mage village [mage:{mode}] —\n  " + "\n  ".join(snap))
+            print(f"— artisan+mage village [mage:{mode}] {_pipeline_progress(tin_tap, mage)} —"
+                  f"\n  " + "\n  ".join(snap))
         for t in threads:
             t.join()
     finally:
@@ -1761,6 +1817,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pipeline", action="store_true",
                     help="run an artisan+mage village: the crafter funds the mage, unattended")
+    ap.add_argument("--mage-tick-every", type=int, default=8,
+                    help="tick the mage 1 in N (budgets the shared shard toward the "
+                         "round-trip-hungry craft loop; measured: the artisan is starved "
+                         "outright by an unthrottled mage)")
     ap.add_argument("--warriors", type=int, default=0,
                     help="run N swordsmen living the autonomous hunt<->re-arm loop (WarriorLife); "
                          "supersedes the trade-village roster when > 0")
@@ -1845,7 +1905,8 @@ def main() -> None:
     args = ap.parse_args()
     if args.pipeline:
         run_artisan_mage_village(host=args.host, port=args.port, ticks=args.ticks,
-                                 account_prefix=args.account_prefix)
+                                 account_prefix=args.account_prefix,
+                                 mage_tick_every=args.mage_tick_every)
         return
 
     if args.warriors > 0:
