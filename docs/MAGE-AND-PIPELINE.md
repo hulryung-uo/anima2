@@ -114,9 +114,35 @@ the tactic. Re-running against a **pinned, adjacent** Ettin that can neither cha
 makes the mage's own stepping the only thing that can change the gap, which is what turns a
 noisy comparison into a decisive one.
 
+## MageLife — the mage lives on its own
+
+`mage_life.py::MageLife` is the mage's counterpart to `WarriorLife`, and deliberately the
+**same orchestrator**: two agents over one body, separate memories coordinating only through
+the world, a caching body so the mode decision costs no extra pump, and the switch
+hysteresis. Each of those was live-caught the hard way building the warrior's version, so
+the mage inherits the fixes rather than rediscovering them — `warrior_life.py` gained one
+pluggable `decide` hook (defaulting to the warrior's own rule, so its behaviour is
+unchanged) and `MageLife` is a thin subclass.
+
+What differs is the **decision**, because a mage stops being able to fight for a different
+reason: a warrior loses its blade or armor, a mage runs out of **reagents** (without ash
+`CastAttack` is inert and a frail caster is left swinging its fists):
+
+    reagents  >  collect a delivered purse  >  bank surplus  >  hunt
+
+That second line is where the production pipeline **closes into the mage's own life**: a
+crafter drops its earnings at the mage's funding spot, and the mage — unprompted — walks
+over, picks them up (`fetch_gold`), and turns them into the ability to cast.
+
+### Live gate (`scratchpad/live_mage_life.py`) — PASSED, 5/5
+A mage hunting with a full pouch has its reagents stripped at tick 20 (the caster's
+equivalent of losing its blade). With no manual driver it waits out the grace,
+**auto-switches to the economy leg at tick 26** targeting `buy_reagent`, **restocks 20 ash
+for 60 gold at tick 29** (200 → 140), and is **back to hunting able to cast again at tick
+30**.
+
 ## Next (not built)
 
-A `MageLife` orchestrator (the mage's counterpart to `warrior_life.py::WarriorLife`) so the
-mage switches between hunting and restocking on its own; more spells (a heal, a stronger
-bolt as Magery grows); and the crafter deciding *when* to fund the fighter rather than
-being driven to it.
+More spells (a heal, a stronger bolt as Magery grows); the crafter deciding *when* to fund
+the fighter rather than being driven to it; and a village roster that runs a crafter and a
+mage side by side so the whole pipeline turns unattended.
