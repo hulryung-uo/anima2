@@ -14,11 +14,12 @@ the warrior's Swordsmanship/Tactics/Anatomy rise from live swings (ServUO
 The economy loop reuses the generalized capability machinery: `bank_gold`
 (`market.py::BankGold`) banks looted gold; `BuyWeapon` (below, a config subclass
 of `market.py::BuyToolCapability`, exactly like the lumberjack's `BuyHatchet`)
-buys a fresh sword from the WeaponSmith with earned gold.
+buys a fresh sword with earned gold — from an `IronWorker`, NOT a `Weaponsmith`
+(see `BuyWeapon`: a Weaponsmith stocks swords on a 1-in-3 roll fixed at spawn).
 
-Weapon data (ServUO `Scripts/VendorInfo/SBWeaponSmith.cs` + `Scripts/Items/
+Weapon data (ServUO `Scripts/VendorInfo/SBSwordWeapon.cs` + `Scripts/Items/
 Weapons/`): every sword below is a one-handed Swordsmanship weapon (equip LAYER 1);
-prices are the WeaponSmith's for-sale gold.
+prices are the vendor's for-sale gold.
 """
 
 from __future__ import annotations
@@ -337,6 +338,13 @@ class BuyWeapon(BuyToolCapability):
 
     name = "buy_weapon"
     description = "Buy a katana from the configured weapon vendor and return."
+    #: STAGE AN `IronWorker`, NOT A `Weaponsmith`. ServUO's `SBWeaponSmith` picks its extra
+    #: stock with `switch (Utility.Random(3))`, and only ONE of those three groups holds
+    #: swords — so a given Weaponsmith carries a Katana on a 1-in-3 roll fixed at spawn,
+    #: and the rest of the time its window is the 15 unconditional maces/staves/polearms
+    #: with no blade at all. That is the whole of the "intermittent vendor stall" that
+    #: dogged every buy here. `IronWorker` actively installs `SBSwordWeapon`, whose Katana
+    #: entry is UNCONDITIONAL, so it always stocks one.
     #: Any sword counts as "already armed" (the buy trigger is owning NONE).
     owned_tool_graphics = SWORD_GRAPHICS
     #: The exact for-sale Katana art the sword vendor stocks (0x13FF @ 33g) —
