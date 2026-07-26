@@ -217,6 +217,11 @@ class _CachingBody:
 class WarriorLife:
     """Autonomous hunt <-> re-arm orchestrator for a swordsman (see module docstring)."""
 
+    #: The mode decision. A subclass points this at its own profession's rule; the
+    #: rest of the orchestrator (two agents, separate memories, the hysteresis, the
+    #: caching body, the Agent-compatible surface) is profession-agnostic.
+    decide = staticmethod(decide_mode)
+
     def __init__(self, body, persona: Persona, profession: str = "swordsman",
                  routes: dict | None = None) -> None:
         prof = PROFESSIONS[profession]
@@ -257,7 +262,7 @@ class WarriorLife:
         obs = self.body.last_obs
         if obs is None:
             return action
-        mode, cap = decide_mode(obs, self.routes)
+        mode, cap = self.decide(obs, self.routes)
         # Hysteresis: only commit to the economy after the condition PERSISTS for
         # ECON_GRACE ticks, so a transient mid-equip "weaponless" blip doesn't yank the
         # warrior off wielding a blade it already owns (which would strand it on the
