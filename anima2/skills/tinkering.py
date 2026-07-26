@@ -42,8 +42,9 @@ from __future__ import annotations
 
 from .carpentry import SAW_GRAPHIC, SAW_GRAPHICS
 from .craft import CraftItemCapability
-from .market import BuyMaterialCapability, BuyToolCapability, SellItemCapability
+from .hunt import GOLD_GRAPHIC
 from .woodwork import DeliverBoards
+from .market import BuyMaterialCapability, BuyToolCapability, SellItemCapability
 
 # --- Tinkering tool + item graphics (ServUO-confirmed) -----------------------
 # TinkerTools (ServUO `Scripts/Items/Tools/Tools.cs`: `TinkerTools : base(0x1EB8)`,
@@ -294,3 +295,24 @@ class DeliverHatchet(DeliverBoards):
     #: A DISTINCT drop key so the tinker delivers the hatchet to the LUMBERJACK's
     #: slot (not the carpenter's), keeping exactly one spare at each counterpart.
     drop_key = "lumber_drop"
+
+
+class DeliverGold(DeliverBoards):
+    """Tinker config: carry the proceeds of its craft-and-sell loop to the fighter it
+    bankrolls, and drop them at that fighter's funding spot (`mage_drop`).
+
+    This is the giving half of the production pipeline: the tinker makes tongs, sells them
+    for gold (`craft_tongs` -> `sell_tongs`), and this hands that gold to a combat
+    character, which picks it up (`mage.py::FetchGold`) and turns it into reagents — i.e.
+    into the ability to fight. Same ground-drop machinery the lumberjack already uses to
+    hand boards to the carpenter (`DeliverBoards`); only the art, the drop key, and the
+    "worth a trip" threshold differ.
+    """
+
+    name = "deliver_gold"
+    description = "Carry earned gold to the funded fighter's drop spot for one verified goal."
+    delivered_graphics = frozenset({GOLD_GRAPHIC})
+    drop_key = "mage_drop"
+    #: Worth a trip: enough for a reagent batch (20 ash @3g) several times over, so the
+    #: crafter walks over with a meaningful purse rather than a handful of coins.
+    deliver_threshold = 120

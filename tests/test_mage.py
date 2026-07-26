@@ -189,3 +189,37 @@ def test_mage_profession_casts_above_its_work_skill():
     assert names[names.index("Hunt") - 1] == "CastAttack"
     # Survive still outranks casting — heal before trading blows.
     assert names.index("Survive") < names.index("CastAttack")
+
+
+def test_the_production_pipeline_is_wired_end_to_end():
+    """The goal's arc: a production skill makes wares, they sell for gold, and that gold
+    raises a fighter. Each link is a registered capability, and the hand-off reuses the
+    lumberjack/carpenter ground drop+pickup machinery pointed at gold."""
+    from anima2.capabilities import CAPABILITIES
+    from anima2.skills.hunt import GOLD_GRAPHIC
+    from anima2.skills.mage import FetchGold
+    from anima2.skills.tinkering import DeliverGold
+
+    tinker = {cid for (p, cid) in CAPABILITIES if p == "tinker"}
+    mage = {cid for (p, cid) in CAPABILITIES if p == "mage"}
+    # MAKE -> SELL -> (bank) is the tinker's proven loop; deliver_gold is the new hand-off.
+    assert {"craft_tongs", "sell_tongs", "bank_gold", "deliver_gold"} <= tinker
+    # The fighter collects that purse, turns it into reagents, and banks the surplus.
+    assert mage == {"fetch_gold", "buy_reagent", "bank_gold"}
+
+    # The hand-off moves GOLD, and the two halves agree on where.
+    assert DeliverGold.delivered_graphics == frozenset({GOLD_GRAPHIC})
+    assert FetchGold.fetched_graphics == frozenset({GOLD_GRAPHIC})
+    assert DeliverGold.drop_key == "mage_drop"
+    # Worth a trip: a purse that buys several reagent batches, not a handful of coins.
+    from anima2.skills.mage import BuyReagent
+    assert DeliverGold.deliver_threshold >= BuyReagent.buy_amount * BuyReagent.buy_price_estimate
+
+
+def test_the_mage_economy_planner_builds():
+    from anima2.profession import PROFESSIONS
+
+    econ = PROFESSIONS["mage"].planner(capability_goals=True)
+    assert set(econ.capability_ids) == {"fetch_gold", "buy_reagent", "bank_gold"}
+    # Pre-work reflexes stay out of capability mode (the manifest's fixed shape).
+    assert "CastAttack" not in [type(s).__name__ for s in econ.skills]

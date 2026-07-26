@@ -28,8 +28,10 @@ from __future__ import annotations
 
 from ..contract import CastSpell, TargetObject
 from .base import Skill, SkillContext, SkillResult, Status
+from .carpentry import FetchBoards
 from .combat import is_hostile
 from .harvest import BACKPACK_LAYER
+from .hunt import GOLD_GRAPHIC
 from .market import BuyMaterialCapability
 
 #: Magic Arrow — the first-circle attack spell. ServUO registers it at index 04 and the
@@ -192,3 +194,18 @@ class BuyReagent(BuyMaterialCapability):
     #: This shard's live price (SBMage sells SulfurousAsh @3g).
     buy_price_estimate = 3
     vendor_spot_key = "mage_vendor_spot"
+
+
+class FetchGold(FetchBoards):
+    """Mage config: pick up the gold a CRAFTER dropped at the mage's funding spot.
+
+    This is the receiving half of the production pipeline the goal asks for — a crafter
+    makes wares, sells them, and delivers the proceeds; the mage collects that gold and
+    turns it into reagents (`buy_reagent`), i.e. into the ability to fight. It is the same
+    ground-pickup machinery the carpenter already uses for delivered boards
+    (`FetchBoards`), pointed at gold instead: only the art differs.
+    """
+
+    name = "fetch_gold"
+    description = "Pick up delivered gold from the ground into the pack for one verified goal."
+    fetched_graphics = frozenset({GOLD_GRAPHIC})

@@ -45,6 +45,8 @@ from .skills.market import (
     _bank_reserve,
 )
 from .skills.smelt import INGOT_GRAPHICS
+from .skills.mage import BuyReagent, CastAttack, FetchGold  # noqa: F401
+from .skills.tinkering import DeliverGold
 from .skills.warrior import (
     PLATE_ARMOR_LAYERS,
     SWORD_RANK,
@@ -1378,6 +1380,32 @@ def _deliver_ready(ctx: SkillContext) -> bool:
     )
 
 
+def _make_fetch_ready(graphic: int, below: int):
+    """A ground-pickup readiness gate for ANY art: something of it is on the ground in
+    reach and the pack holds less than `below`. The generalized twin of `_fetch_ready`."""
+
+    def ready(ctx: SkillContext) -> bool:
+        obs = ctx.obs
+        on_ground = any(
+            item.graphic == graphic and item.container is None
+            and item.distance <= PICKUP_RADIUS
+            for item in obs.items
+        )
+        return bool(
+            _backpack_serial(ctx) is not None
+            and on_ground
+            and _pack_graphic(ctx, graphic) < below
+            and ctx.memory.get("mkt_phase", "craft") == "craft"
+            and obs.pending_target is None
+            and not obs.gumps
+            and obs.popup is None
+            and obs.shop_buy is None
+            and obs.shop_sell is None
+        )
+
+    return ready
+
+
 def _deliver_achieved(ctx: SkillContext) -> bool:
     goal_id = ctx.goal_id
     needed = ctx.memory.get("cap_deliver_needed")
@@ -2029,6 +2057,64 @@ _DELIVER_HATCHET = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+
+# --- The production pipeline: a crafter's earnings fund a fighter ---------------
+# The goal's own arc — make things with a production skill, sell them for gold, and use
+# that gold to raise a character who can fight. The crafting half is the tinker's proven
+# craft_tongs -> sell_tongs -> bank_gold loop; these two bindings are the HAND-OFF, built
+# on the same ground drop/pickup machinery the lumberjack and carpenter already use for
+# boards: the tinker carries its purse to the fighter's funding spot (`deliver_gold`), and
+# the fighter picks it up (`fetch_gold`) and spends it on the supplies that let it fight
+# (`buy_reagent`).
+_DELIVER_GOLD = CapabilityBinding(
+    capability_id="deliver_gold",
+    profession="tinker",
+    skill_type=DeliverGold,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_deliver_ready(DeliverGold),
+    achieved=_make_deliver_achieved(DeliverGold),
+    progress=_deliver_progress,
+    can_yield=_deliver_can_yield,
+    default_deadline_ticks=180,
+)
+
+_FETCH_GOLD = CapabilityBinding(
+    capability_id="fetch_gold",
+    profession="mage",
+    skill_type=FetchGold,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    # Collect delivered gold whenever the purse is below a few reagent batches' worth.
+    ready=_make_fetch_ready(_GOLD_GRAPHIC, BuyReagent.buy_amount * BuyReagent.buy_price_estimate * 3),
+    achieved=_fetch_achieved,
+    progress=_fetch_progress,
+    can_yield=_fetch_can_yield,
+    default_deadline_ticks=180,
+)
+
+_BUY_REAGENT = CapabilityBinding(
+    capability_id="buy_reagent",
+    profession="mage",
+    skill_type=BuyReagent,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_buy_ready_for(BuyReagent),
+    achieved=_buy_achieved,
+    progress=_buy_progress,
+    can_yield=_buy_can_yield,
+    default_deadline_ticks=180,
+)
+
+_MAGE_BANK_GOLD = CapabilityBinding(
+    capability_id="bank_gold",
+    profession="mage",
+    skill_type=BankGold,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_bank_ready,
+    achieved=_bank_achieved,
+    progress=_bank_progress,
+    can_yield=_bank_can_yield,
+    default_deadline_ticks=120,
+)
+
 CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
     {
         (_SELL_DAGGERS.profession, _SELL_DAGGERS.capability_id): _SELL_DAGGERS,
@@ -2072,6 +2158,9 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         (_TINKER_BANK_GOLD.profession, _TINKER_BANK_GOLD.capability_id): _TINKER_BANK_GOLD,
         (_BUY_IRON.profession, _BUY_IRON.capability_id): _BUY_IRON,
         (_BUY_TINKER_TOOL.profession, _BUY_TINKER_TOOL.capability_id): _BUY_TINKER_TOOL,
+        # The crafter's funding leg: carry the craft-and-sell proceeds to the
+        # fighter it bankrolls (the production pipeline's giving half).
+        (_DELIVER_GOLD.profession, _DELIVER_GOLD.capability_id): _DELIVER_GOLD,
         # The sword-warrior's economy leg (driven in capability mode between hunts):
         # bank looted gold, and buy a replacement Katana if left unarmed.
         (_SWORDSMAN_BANK_GOLD.profession, _SWORDSMAN_BANK_GOLD.capability_id): _SWORDSMAN_BANK_GOLD,
@@ -2084,6 +2173,11 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         # Growth, not survival: trade UP to a better blade once the necessities are
         # covered and there is surplus gold beyond a re-arm reserve.
         (_UPGRADE_WEAPON.profession, _UPGRADE_WEAPON.capability_id): _UPGRADE_WEAPON,
+        # The mage's economy: collect the delivered purse, turn it into reagents (the
+        # ability to cast), and bank the surplus.
+        (_FETCH_GOLD.profession, _FETCH_GOLD.capability_id): _FETCH_GOLD,
+        (_BUY_REAGENT.profession, _BUY_REAGENT.capability_id): _BUY_REAGENT,
+        (_MAGE_BANK_GOLD.profession, _MAGE_BANK_GOLD.capability_id): _MAGE_BANK_GOLD,
     }
 )
 
