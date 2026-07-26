@@ -1560,9 +1560,59 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
     print(f"\nthe day's hunt is done. total kills across the village: {total_kills}")
 
 
+class _ThrottledAgent:
+    """Tick an agent only 1 tick in `every`, yielding the rest of the shard to someone else.
+
+    The artisan+mage roster measured the real constraint: on a single-threaded shard a
+    GUMP-DRIVEN craft FSM (many server round-trips per item) is starved by a hunting agent,
+    while hunting itself is mostly LOCAL decisions and loses very little from a slower
+    cadence. A second shard port cannot fix this — a second ServUO instance owns its own
+    `Saves/` world, so the two agents would be in different universes and could never hand
+    gold to each other, which is the whole pipeline. Budgeting the one shard between them
+    is the lever that fits.
+
+    Duck-types as an `Agent` (like `WarriorLife`) so `_run_worker` drives it unchanged.
+    """
+
+    def __init__(self, inner, every: int = 3) -> None:
+        self.inner = inner
+        self.every = max(1, int(every))
+        self._n = 0
+
+    def tick(self):
+        self._n += 1
+        if self._n % self.every:
+            return None  # yield this tick: no observe, no action, no server traffic
+        return self.inner.tick()
+
+    @property
+    def body(self):
+        return self.inner.body
+
+    @property
+    def persona(self):
+        return self.inner.persona
+
+    @property
+    def episodes(self):
+        return self.inner.episodes
+
+    @property
+    def memory(self):
+        return self.inner.memory
+
+    @property
+    def ticks(self) -> int:
+        return self.inner.ticks
+
+    @property
+    def mode(self):
+        return getattr(self.inner, "mode", None)
+
+
 def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                             ticks: int = 400, account_prefix: str = "animapipe",
-                            prey: str = "Ettin") -> None:
+                            prey: str = "Ettin", mage_tick_every: int = 3) -> None:
     """Run the WHOLE production pipeline unattended: an artisan and a mage, side by side.
 
     This is the goal's arc turned into a standing village rather than a scripted proof. The
@@ -1618,7 +1668,12 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                               items=["Spellbook", "SulfurousAsh 30", "Bandage 50"])
         for r in (20, 12, 6):
             gm.command_area("[WipeNPCs", mx - r, my - r, mx + r, my + r, mz)
-        tx, ty, tz = gm.stage(serials["tinker"], hx + 2, hy,
+        # The artisan works WELL AWAY from the hunting pocket. Sat beside it, the mage's
+        # prey simply attacks the artisan instead, and the capability planner's `Survive`
+        # reflex preempts crafting — live-caught: an artisan 2 tiles from a pinned Ettin
+        # produced nothing for 900 ticks, while the same artisan alone crafted by tick 25.
+        # Its `deliver_gold` walk covers the distance when the purse is worth a trip.
+        tx, ty, tz = gm.stage(serials["tinker"], hx + 14, hy,
                               skills=PROFESSIONS["tinker"].skills,
                               items=["TinkerTools 999", "IronIngot 60"])
         for role, (px, py) in (("mage", (mx, my)), ("tinker", (tx, ty))):
@@ -1666,7 +1721,9 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                         persona=Persona(name="Mage", combat_disposition="aggressive"),
                         routes={"mage_vendor_spot": [(mx - 8, my)],
                                 "banker_spot": [(mx, my + 8)]})
-        agents = [("tinker", tinker), ("mage", mage)]
+        # Budget the one shard: the mage yields most ticks so the artisan's
+        # round-trip-hungry craft FSM actually gets served (see _ThrottledAgent).
+        agents = [("tinker", tinker), ("mage", _ThrottledAgent(mage, mage_tick_every))]
         print(f"staged: artisan@({tx},{ty}) with iron | mage@({mx},{my}) broke, hunting\n")
 
         status: dict[int, str] = {}
@@ -1683,7 +1740,7 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
             time.sleep(4.0)
             with lock:
                 snap = [status[i] for i in sorted(status)]
-            mode = mage.mode if hasattr(mage, "mode") else "?"
+            mode = mage.mode
             print(f"— artisan+mage village [mage:{mode}] —\n  " + "\n  ".join(snap))
         for t in threads:
             t.join()
