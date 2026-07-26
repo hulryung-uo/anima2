@@ -186,10 +186,39 @@ reasoning — the mage's blindness to un-attacked prey, and this one. When a liv
 
 ## Next (not built)
 
-Chase the intermittent vendor stall (it now blocks the pipeline's `sell_tongs` link and has
-blocked buys throughout); give the artisan's autonomous cognition a notion of *finishing a
+**The intermittent vendor stall is now located** — see below; the remaining fix is body-side.
+Give the artisan's autonomous cognition a notion of *finishing a chain* rather than always
+re-picking the first ready capability; give the artisan's autonomous cognition a notion of *finishing a
 chain* rather than always re-picking the first ready capability; more spells (a heal, a
 stronger bolt as Magery grows).
+
+## The vendor stall, located
+
+The stall that has blocked buys and sells across every capability (~50% of attempts) and
+currently stops the pipeline at `sell_tongs` was tracked down with three live traces:
+
+1. **Where it dies.** Stage tracing of repeated identical purchases: a success runs
+   `popup → window(shop open) → confirm`; a stall runs `popup → window(shop open) →
+   [state cleared]` — the trip is abandoned one tick after the window opens, window still up.
+2. **Why.** Instrumenting the window: `shopwin(entries=15, katana=False)`. It is fully
+   populated and simply lacks the offer. The graphics dump confirms it — 15 entries of axes,
+   maces, staves and polearms, **no sword of any kind**, from a Weaponsmith whose ServUO
+   `SBWeaponSmith` definitely stocks a Katana @33g.
+3. **Whether waiting helps.** Watching an open window for 20 ticks: the list never grows —
+   `entries=15`, constant.
+
+So the vendor's for-sale list reaches us as a **partial ~15-entry subset** of its real stock.
+`scene.rs` documents the mechanism: the 0x74 price list is paired with the 0x3C container
+contents **by arrival order**, so a large inventory surfaces only what got paired. Whether
+the wanted item is inside varies between vendor spawns — exactly the "intermittent"
+behaviour. **The brain cannot buy stock the body never shows it**, so the real fix belongs
+in the body (anima-core's buy-window pairing), per Brain ⊥ Body.
+
+Brain-side, the FSM no longer throws the whole trip away on one unlucky window: both buy
+paths re-open it up to `OFFER_REOPEN_ATTEMPTS` (4) times first. Measured honestly, **this did
+not fix the stall** — the re-rolls fire (`popup: 9, window: 5` per attempt, versus 1/1
+before) but the subset is stable per vendor instance. It stays as bounded, cheap defence
+against a genuinely incomplete window; it is not a fix.
 
 **On the "second shard port" idea:** it cannot serve this pipeline. A second ServUO instance
 owns its own `Saves/` world, so the artisan and the mage would live in different universes
