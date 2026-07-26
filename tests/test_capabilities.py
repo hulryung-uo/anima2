@@ -244,6 +244,7 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("swordsman", "buy_weapon"),
         ("swordsman", "buy_bandage"),
         ("swordsman", "buy_armor"),
+        ("swordsman", "upgrade_weapon"),
     ]
     assert len(keys) == len(set(keys))
     assert not isinstance(CAPABILITIES, list)

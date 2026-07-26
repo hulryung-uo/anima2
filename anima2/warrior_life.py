@@ -37,10 +37,12 @@ from .skills.warrior import (
     PLATE_ARMOR_LAYERS,
     PLATE_CHEST_GRAPHIC,
     SWORD_GRAPHICS,
+    SWORD_RANK,
     WEAPON_LAYER,
     BuyArmor,
     BuyBandage,
     BuyWeapon,
+    UpgradeWeapon,
 )
 
 #: Buy a fresh blade when weaponless and this much pack gold is on hand.
@@ -52,6 +54,11 @@ BANDAGE_BATCH_COST = BuyBandage.buy_amount * BuyBandage.buy_price_estimate
 #: A replacement plate chest — the biggest slice of armor rating, and the piece a death
 #: most needs replaced when the corpse can't be reclaimed.
 ARMOR_PRICE = BuyArmor.tool_price_estimate
+#: Gold an optional blade upgrade must leave behind (a chest plate's worth), so growth
+#: never spends the coin a life-critical re-arm would need.
+UPGRADE_RESERVE = ARMOR_PRICE
+#: The rank of the blade the vendor offers — a worn sword below this can be traded up.
+UPGRADE_TARGET_RANK = SWORD_RANK.get(UpgradeWeapon.offer_graphic, 0)
 #: Bank looted gold once the pack holds more than this, keeping a working reserve
 #: (enough to re-arm a blade + a bandage batch) so banking never strands the warrior.
 BANK_ABOVE = 400
@@ -98,6 +105,24 @@ def _has_chest(obs: Observation) -> bool:
     )
 
 
+def _worn_blade_rank(obs: Observation) -> int | None:
+    """Rank of the sword currently WIELDED, or `None` if bare-handed."""
+    ranks = [
+        SWORD_RANK.get(i.graphic, 0)
+        for i in obs.items
+        if i.graphic in SWORD_GRAPHICS
+        and i.layer == WEAPON_LAYER and i.container == obs.player.serial
+    ]
+    return max(ranks) if ranks else None
+
+
+def _pack_has_sword(obs: Observation) -> bool:
+    bp = _backpack(obs)
+    return bp is not None and any(
+        i.graphic in SWORD_GRAPHICS and i.container == bp for i in obs.items
+    )
+
+
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """Pick ``("hunt", None)`` or ``("economy", capability_id)`` from the live state.
 
@@ -118,6 +143,15 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
         return "economy", "buy_bandage"
     if not _has_chest(obs) and gold >= ARMOR_PRICE and _valid_spot(memory.get("armorer_spot")):
         return "economy", "buy_armor"
+    # Growth, once the necessities are covered: trade a weaker worn blade up to the
+    # vendor's best, but only with surplus beyond a re-arm reserve, and only while the
+    # pack holds no sword (the arrival proof requires it to start empty of them).
+    worn_rank = _worn_blade_rank(obs)
+    if (worn_rank is not None and worn_rank < UPGRADE_TARGET_RANK
+            and not _pack_has_sword(obs)
+            and gold >= WEAPON_PRICE + UPGRADE_RESERVE
+            and _valid_spot(memory.get("weapon_vendor_spot"))):
+        return "economy", "upgrade_weapon"
     if gold >= BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None

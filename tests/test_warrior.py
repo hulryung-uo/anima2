@@ -139,6 +139,50 @@ def test_buy_armor_config_replaces_the_chest_plate_at_the_armorer():
     assert BuyArmor.vendor_spot_key == "armorer_spot"   # an Armorer, its own key
 
 
+def test_upgrade_weapon_buys_the_same_katana_as_buy_weapon():
+    from anima2.skills.warrior import BuyWeapon as _BW
+    from anima2.skills.warrior import UpgradeWeapon
+
+    # Same purchase, different TRIGGER — the config is inherited unchanged.
+    assert issubclass(UpgradeWeapon, _BW)
+    assert UpgradeWeapon.offer_graphic == KATANA_GRAPHIC
+    assert UpgradeWeapon.tool_price_estimate == _BW.tool_price_estimate
+    assert UpgradeWeapon.vendor_spot_key == _BW.vendor_spot_key
+    assert UpgradeWeapon.name == "upgrade_weapon"
+
+
+def test_upgrade_readiness_fires_only_for_a_weaker_worn_blade_with_surplus():
+    from anima2.capabilities import CAPABILITIES, _UPGRADE_RESERVE
+    from anima2.skills.market import GOLD_GRAPHIC
+    from anima2.skills.warrior import UpgradeWeapon
+
+    ready = CAPABILITIES[("swordsman", "upgrade_weapon")].ready
+    rich = UpgradeWeapon.tool_price_estimate + _UPGRADE_RESERVE  # afford it AND keep a reserve
+
+    def _gold(amount):
+        return ItemView(serial=0xA00, graphic=GOLD_GRAPHIC, amount=amount, pos=Position(),
+                        container=BACKPACK, layer=0, distance=0)
+
+    def _ctx_vendor(items):
+        return _ctx(items, memory={"weapon_vendor_spot": ((100, 100),)})
+
+    worn_cutlass = _item(0x700, CUTLASS_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
+    worn_katana = _item(0x701, KATANA_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
+
+    # A weaker blade worn + surplus gold -> trade up.
+    assert ready(_ctx_vendor([_backpack(), worn_cutlass, _gold(rich)])) is True
+    # Already wielding the best blade -> nothing to upgrade to.
+    assert ready(_ctx_vendor([_backpack(), worn_katana, _gold(rich)])) is False
+    # Bare-handed is `buy_weapon`'s job, never an upgrade.
+    assert ready(_ctx_vendor([_backpack(), _gold(rich)])) is False
+    # Enough for the blade but NOT the reserve -> don't spend a re-arm's worth on growth.
+    assert ready(_ctx_vendor([_backpack(), worn_cutlass,
+                              _gold(UpgradeWeapon.tool_price_estimate)])) is False
+    # A sword already in the pack breaks the arrival proof's start-empty premise.
+    assert ready(_ctx_vendor([_backpack(), worn_cutlass, _item(0x702, CUTLASS_GRAPHIC),
+                              _gold(rich)])) is False
+
+
 def test_armor_buy_readiness_is_worn_aware_so_a_suited_warrior_never_re_buys():
     # Armor is WORN (each piece at its own body layer), so a pack-only check would have
     # the warrior buying a new chest plate every trip. Exercise the registered gate.
@@ -196,10 +240,10 @@ def test_swordsman_wires_both_hunt_and_the_economy_capabilities():
     # The economy planner (capability mode) builds — its manifest must pass, which
     # it only does because pre-work reflexes are excluded from capability mode.
     econ = sword.planner(capability_goals=True)
-    assert set(econ.capability_ids) == {"bank_gold", "buy_weapon", "buy_bandage", "buy_armor"}
+    assert set(econ.capability_ids) == {"bank_gold", "buy_weapon", "buy_bandage", "buy_armor", "upgrade_weapon"}
     econ_names = [type(s).__name__ for s in econ.skills]
     assert "EquipWeapon" not in econ_names and "EquipArmor" not in econ_names
-    assert {cid for (p, cid) in CAPABILITIES if p == "swordsman"} == {"bank_gold", "buy_weapon", "buy_bandage", "buy_armor"}
+    assert {cid for (p, cid) in CAPABILITIES if p == "swordsman"} == {"bank_gold", "buy_weapon", "buy_bandage", "buy_armor", "upgrade_weapon"}
 
 
 def test_all_six_plate_layers_match_the_live_verified_values():

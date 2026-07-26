@@ -47,10 +47,12 @@ from .skills.market import (
 from .skills.smelt import INGOT_GRAPHICS
 from .skills.warrior import (
     PLATE_ARMOR_LAYERS,
+    SWORD_RANK,
     WEAPON_LAYER,
     BuyArmor,
     BuyBandage,
     BuyWeapon,
+    UpgradeWeapon,
 )
 from .skills.woodwork import (
     BOARD_GRAPHIC,
@@ -1046,6 +1048,44 @@ def _make_weapon_buy_ready(
     return ready
 
 
+def _make_weapon_upgrade_ready(
+    owned_graphics: frozenset[int], offer_graphic: int, price_estimate: int,
+    vendor_spot_key: str, reserve: int,
+) -> Callable[[SkillContext], bool]:
+    """Readiness for replacing a WEAKER worn blade with a better one — the counterpart to
+    `_make_weapon_buy_ready` (which only fires when the warrior is completely unarmed).
+
+    Fires when: the best sword the warrior owns ranks BELOW the vendor's offer
+    (`SWORD_RANK`), the pack holds NO sword (the stock arrival proof requires the pack to
+    start empty of them, and it is the normal state since `EquipWeapon` wears the best
+    blade owned), and the warrior can afford the upgrade AND still keep `reserve` gold —
+    so a nice-to-have upgrade never spends the coin a life-critical re-arm would need."""
+
+    def ready(ctx: SkillContext) -> bool:
+        backpack = _backpack_serial(ctx)
+        if backpack is None or not _valid_spot(ctx.memory.get(vendor_spot_key)):
+            return False
+        player = ctx.obs.player.serial
+        pack_swords = [i for i in ctx.obs.items
+                       if i.graphic in owned_graphics and i.container == backpack]
+        if pack_swords:
+            return False  # a packed sword breaks the arrival proof's start-empty premise
+        worn = [i for i in ctx.obs.items
+                if i.graphic in owned_graphics
+                and i.layer == WEAPON_LAYER and i.container == player]
+        if not worn:
+            return False  # unarmed is `buy_weapon`'s job, not an upgrade
+        best_owned = max(SWORD_RANK.get(i.graphic, 0) for i in worn)
+        return bool(
+            best_owned < SWORD_RANK.get(offer_graphic, 0)
+            and _pack_gold(ctx) >= TOOL_BUY_AMOUNT * price_estimate + reserve
+            and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
+            and _toolbuy_can_yield(ctx)
+        )
+
+    return ready
+
+
 def _make_armor_buy_ready(
     owned_graphics: frozenset[int], price_estimate: int, vendor_spot_key: str
 ) -> Callable[[SkillContext], bool]:
@@ -1670,6 +1710,26 @@ _BUY_WEAPON = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
+#: Gold an upgrade must leave behind — enough to still replace a lost chest plate, so a
+#: nice-to-have blade never spends the coin a life-critical re-arm would need.
+_UPGRADE_RESERVE = BuyArmor.tool_price_estimate
+
+_UPGRADE_WEAPON = CapabilityBinding(
+    capability_id="upgrade_weapon",
+    profession="swordsman",
+    skill_type=UpgradeWeapon,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_weapon_upgrade_ready(
+        UpgradeWeapon.owned_tool_graphics, UpgradeWeapon.offer_graphic,
+        UpgradeWeapon.tool_price_estimate, UpgradeWeapon.vendor_spot_key,
+        _UPGRADE_RESERVE,
+    ),
+    achieved=_make_toolbuy_achieved(UpgradeWeapon.owned_tool_graphics),
+    progress=_toolbuy_progress,
+    can_yield=_toolbuy_can_yield,
+    default_deadline_ticks=180,
+)
+
 _BUY_ARMOR = CapabilityBinding(
     capability_id="buy_armor",
     profession="swordsman",
@@ -2021,6 +2081,9 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         # naked and dry.
         (_BUY_BANDAGE.profession, _BUY_BANDAGE.capability_id): _BUY_BANDAGE,
         (_BUY_ARMOR.profession, _BUY_ARMOR.capability_id): _BUY_ARMOR,
+        # Growth, not survival: trade UP to a better blade once the necessities are
+        # covered and there is surplus gold beyond a re-arm reserve.
+        (_UPGRADE_WEAPON.profession, _UPGRADE_WEAPON.capability_id): _UPGRADE_WEAPON,
     }
 )
 

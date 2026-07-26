@@ -348,6 +348,25 @@ class BuyWeapon(BuyToolCapability):
     vendor_spot_key = "weapon_vendor_spot"
 
 
+class UpgradeWeapon(BuyWeapon):
+    """Warrior config: buy a Katana to REPLACE a weaker blade. Same purchase as
+    `BuyWeapon` (same vendor, same offer) — what differs is the trigger: `buy_weapon`
+    fires only when the warrior is completely unarmed, while this fires when it is armed
+    but with a sub-Katana blade (e.g. the Cutlass it looted after losing its own) and has
+    surplus gold. `EquipWeapon` then wields the better blade, since it always re-wields
+    the highest-ranked sword owned.
+
+    The stock arrival proof (`capabilities.py::_make_toolbuy_achieved`) applies unchanged:
+    it requires the PACK to have started with no sword, which holds for an upgrade because
+    the weaker blade is WORN, not packed. (A spare sword sitting in the pack would fail
+    that proof — the readiness therefore requires an empty pack-of-swords too, which is the
+    normal state since `EquipWeapon` wears the best one it owns.)
+    """
+
+    name = "upgrade_weapon"
+    description = "Buy a better sword to replace a weaker worn blade, and return."
+
+
 class BuyArmor(BuyToolCapability):
     """Warrior config: buy a replacement PlateChest from the `armorer_spot` Armorer with
     earned gold when the warrior has lost its chest plate. Death drops the whole suit onto

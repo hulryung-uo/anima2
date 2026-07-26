@@ -133,6 +133,39 @@ def test_blade_and_bandages_outrank_armor():
     assert decide_mode(rich, dict(ROUTES)) == ("economy", "buy_armor")
 
 
+def test_a_weaker_worn_blade_is_traded_up_once_there_is_surplus():
+    from anima2.skills.warrior import CUTLASS_GRAPHIC
+    from anima2.warrior_life import UPGRADE_RESERVE
+
+    def _worn_cutlass():
+        return _item(0x702, CUTLASS_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
+
+    surplus = WEAPON_PRICE + UPGRADE_RESERVE
+    # Armed with a weaker blade, fed, armored, and rich enough to keep a re-arm reserve.
+    obs = _obs([_backpack(), _worn_cutlass(), _worn_chest(), _bandages(50), _gold(surplus)])
+    assert decide_mode(obs, dict(ROUTES)) == ("economy", "upgrade_weapon")
+    # One coin short of the reserve -> growth waits; keep hunting.
+    lean = _obs([_backpack(), _worn_cutlass(), _worn_chest(), _bandages(50), _gold(surplus - 1)])
+    assert decide_mode(lean, dict(ROUTES)) == ("hunt", None)
+    # Already wielding the best blade -> no upgrade (banks the surplus instead).
+    best = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(BANK_ABOVE + 1)])
+    assert decide_mode(best, dict(ROUTES)) == ("economy", "bank_gold")
+
+
+def test_survival_needs_outrank_a_blade_upgrade():
+    from anima2.skills.warrior import CUTLASS_GRAPHIC
+    from anima2.warrior_life import UPGRADE_RESERVE
+
+    worn_cutlass = _item(0x702, CUTLASS_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
+    rich = _gold(WEAPON_PRICE + UPGRADE_RESERVE + BANK_ABOVE)
+    # Dry on bandages while holding a weaker blade -> restock first, upgrade later.
+    dry = _obs([_backpack(), worn_cutlass, _worn_chest(), _bandages(1), rich])
+    assert decide_mode(dry, dict(ROUTES)) == ("economy", "buy_bandage")
+    # Chestless -> armor first, upgrade later.
+    bare = _obs([_backpack(), worn_cutlass, _bandages(50), rich])
+    assert decide_mode(bare, dict(ROUTES)) == ("economy", "buy_armor")
+
+
 def test_a_dead_warrior_yields_to_recover_death():
     # Dead + weaponless (gear dropped): the hunt planner's RecoverDeath reflex owns the
     # death window; do NOT divert to the economy while a ghost.
