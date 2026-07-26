@@ -192,33 +192,46 @@ re-picking the first ready capability; give the artisan's autonomous cognition a
 chain* rather than always re-picking the first ready capability; more spells (a heal, a
 stronger bolt as Magery grows).
 
-## The vendor stall, located
+## The vendor stall, solved — and a diagnosis I had to retract
 
-The stall that has blocked buys and sells across every capability (~50% of attempts) and
-currently stops the pipeline at `sell_tongs` was tracked down with three live traces:
+The stall that blocked buys and sells across every capability (~50% of attempts) is fixed,
+but the honest version of the story matters more than the fix.
 
-1. **Where it dies.** Stage tracing of repeated identical purchases: a success runs
-   `popup → window(shop open) → confirm`; a stall runs `popup → window(shop open) →
-   [state cleared]` — the trip is abandoned one tick after the window opens, window still up.
-2. **Why.** Instrumenting the window: `shopwin(entries=15, katana=False)`. It is fully
-   populated and simply lacks the offer. The graphics dump confirms it — 15 entries of axes,
-   maces, staves and polearms, **no sword of any kind**, from a Weaponsmith whose ServUO
-   `SBWeaponSmith` definitely stocks a Katana @33g.
-3. **Whether waiting helps.** Watching an open window for 20 ticks: the list never grows —
-   `entries=15`, constant.
+**What I first concluded (wrong).** Live tracing showed a stall dies one tick after the buy
+window opens: a success runs `popup → window → confirm`, a stall runs `popup → window →
+[state cleared]`. Instrumenting the window explained why — `shopwin(entries=15,
+katana=False)`: fully populated, offer absent, and the list never grew over 20 ticks. From
+the bridge's own comment (0x74 prices paired with 0x3C contents **by arrival order**) I
+concluded the window surfaced a *partial subset* of the vendor's stock and that the fix
+belonged in the body (anima-core). **That was wrong.**
 
-So the vendor's for-sale list reaches us as a **partial ~15-entry subset** of its real stock.
-`scene.rs` documents the mechanism: the 0x74 price list is paired with the 0x3C container
-contents **by arrival order**, so a large inventory surfaces only what got paired. Whether
-the wanted item is inside varies between vendor spawns — exactly the "intermittent"
-behaviour. **The brain cannot buy stock the body never shows it**, so the real fix belongs
-in the body (anima-core's buy-window pairing), per Brain ⊥ Body.
+**What was actually happening.** Reading the server settled it:
 
-Brain-side, the FSM no longer throws the whole trip away on one unlucky window: both buy
-paths re-open it up to `OFFER_REOPEN_ATTEMPTS` (4) times first. Measured honestly, **this did
-not fix the stall** — the re-rolls fire (`popup: 9, window: 5` per attempt, versus 1/1
-before) but the subset is stable per vendor instance. It stays as bounded, cheap defence
-against a genuinely incomplete window; it is not a fix.
+```csharp
+// ServUO Scripts/VendorInfo/SBWeaponSmith.cs
+switch (Utility.Random(3)) { case 0: { ...Cutlass, Katana, Broadsword, Longsword... }
+                             case 1: { ...a different group... }
+                             case 2: { ...another... } }
+```
+
+A `Weaponsmith` carries the **sword** group on a **1-in-3 roll fixed when the NPC spawns**.
+Roll otherwise and its window is exactly the 15 unconditional maces/staves/polearms — and
+those 15 graphics matched the ones traced live, one for one. So the window was never
+truncated (15 *was* the complete list), it never grew because there was nothing more to
+send, reopening never helped because the roll is fixed at spawn, and it looked
+"intermittent" because every staged vendor re-rolls. **anima-core's pairing is correct and
+needed no change.**
+
+**The fix:** shop where the item is actually sold. `IronWorker` installs `SBSwordWeapon`,
+whose Katana entry is *unconditional*. The same tracer that produced the stalls now reports
+**4/4 purchases, each completing `popup → window → confirm` in three ticks**.
+
+The bounded window-reopen added along the way stays — harmless and correct for a genuinely
+incomplete window — but it is not what fixed this, and is not claimed as such.
+
+**Method note.** This is the third correction in this document reached by measuring rather
+than reasoning, and the sharpest: a plausible mechanism (packet pairing) fit every symptom,
+and was still wrong. Reading the *server's* own source is what settled it.
 
 **On the "second shard port" idea:** it cannot serve this pipeline. A second ServUO instance
 owns its own `Saves/` world, so the artisan and the mage would live in different universes
