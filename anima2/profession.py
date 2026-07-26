@@ -28,7 +28,7 @@ from .curriculum import (
 )
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
-from .skills.mage import CastAttack
+from .skills.mage import CastAttack, KeepDistance
 from .skills.warrior import EquipArmor, EquipWeapon, WarriorSurvive
 from .skills.base import SkillContext, SkillResult, Status
 
@@ -622,6 +622,9 @@ PROFESSIONS: dict[str, Profession] = {
         workplace=HUNTING_SPOT,
         work_skill=Hunt,
         combat_disposition="aggressive",
-        pre_work_skills=(CastAttack,),
+        # KITE then CAST: opening the gap wins the tick, and casting resumes the
+        # moment it is open — a caster's damage happens at range, so every tile a
+        # creature closes is pure loss (unlike a warrior, which WANTS contact).
+        pre_work_skills=(KeepDistance, CastAttack),
     ),
 }

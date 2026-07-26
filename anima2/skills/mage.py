@@ -26,7 +26,10 @@ registry index + 1 (`PacketHandlers.CastSpell` does `ReadInt16() - 1`).
 
 from __future__ import annotations
 
-from ..contract import CastSpell, TargetObject
+import math
+
+from ..contract import CastSpell, TargetObject, Walk
+from ..geometry import direction_toward
 from .base import Skill, SkillContext, SkillResult, Status
 from .carpentry import FetchBoards
 from .combat import is_hostile
@@ -172,6 +175,90 @@ class CastAttack(Skill):
             i.graphic in self.reagent_graphics and i.container == backpack
             for i in ctx.obs.items
         )
+
+
+class KeepDistance(Skill):
+    """Kite: step away from a hostile that has closed to melee, so the mage can keep
+    casting from range instead of trading blows it cannot win.
+
+    This is what actually makes a caster play differently from a swordsman. The warrior
+    WANTS contact — its damage happens in melee. The mage's damage happens at range, and
+    every tile a creature closes is pure loss: it takes hits while its own output stays the
+    same. Nothing in the planner expressed that before — `Survive` only retreats once the
+    mage is ALREADY badly wounded (below 40% HP), which is far too late for a frail caster.
+
+    The band is deliberately narrow. It only fires when a hostile is within `too_close`,
+    and it stops the moment the gap reaches `too_close + 1` — so the mage alternates
+    "step back, cast, step back, cast" rather than fleeing the fight outright. Placed
+    ABOVE `CastAttack`, so opening the gap wins the tick, and casting resumes as soon as
+    the gap is open. It also yields while a target cursor is up, so a half-finished cast is
+    never abandoned mid-incantation.
+    """
+
+    name = "keep_distance"
+    description = "Step away from a hostile that has closed to melee, to keep casting from range."
+
+    #: Retreat while a hostile is this close or closer (melee reach is 1).
+    too_close: int = 2
+    #: Never back up more than this many steps in a row — a mage that keeps walking is a
+    #: mage that never casts, and open ground runs out.
+    max_steps: int = 3
+    #: The retreat budget resets once the gap has been held open for this many ticks.
+    reset_ticks: int = 3
+
+    _STEPS = "mage_kite_steps"
+    _CLEAR = "mage_kite_clear"
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        if ctx.persona.combat_disposition == "pacifist":
+            return False
+        if ctx.obs.pending_target is not None:
+            return False  # a cast is mid-flight — answer its cursor before moving
+        crowding = self._crowding(ctx)
+        if not crowding:
+            # The gap is open: let the retreat budget recover so the next rush can be
+            # backed away from too.
+            clear = int(ctx.memory.get(self._CLEAR, 0)) + 1
+            ctx.memory[self._CLEAR] = clear
+            if clear >= self.reset_ticks:
+                ctx.memory[self._STEPS] = 0
+                ctx.memory[self._CLEAR] = 0
+            return False
+        ctx.memory[self._CLEAR] = 0
+        return int(ctx.memory.get(self._STEPS, 0)) < self.max_steps
+
+    def step(self, ctx: SkillContext) -> SkillResult:
+        crowding = self._crowding(ctx)
+        if not crowding:
+            return SkillResult(Status.SUCCESS, None)
+        steps = int(ctx.memory.get(self._STEPS, 0))
+        if steps >= self.max_steps:
+            # Out of room to back up — stand and fight; `CastAttack` still works in melee,
+            # and `Survive` owns the "actually in danger" case.
+            return SkillResult(Status.FAILURE, None)
+        ctx.memory[self._STEPS] = steps + 1
+        return SkillResult(Status.RUNNING, Walk(self._away_direction(ctx, crowding), run=True))
+
+    def _crowding(self, ctx: SkillContext) -> list:
+        return [
+            m for m in ctx.obs.mobiles
+            if is_hostile(m) and m.distance <= self.too_close
+        ]
+
+    @staticmethod
+    def _away_direction(ctx: SkillContext, hostiles: list) -> int:
+        """Step directly away from the crowd's centroid — the same retreat geometry
+        `Survive` uses when it flees, reused here for a tactical (not desperate) step."""
+        here = ctx.obs.player.pos
+        cx = sum(m.pos.x for m in hostiles) / len(hostiles)
+        cy = sum(m.pos.y for m in hostiles) / len(hostiles)
+        dx, dy = here.x - cx, here.y - cy
+        if math.hypot(dx, dy) < 1e-6:
+            dx, dy = 0.0, -1.0  # standing on the centroid: commit north
+        step_x = 1 if dx > 0 else -1 if dx < 0 else 0
+        step_y = 1 if dy > 0 else -1 if dy < 0 else 0
+        target = type(here)(here.x + step_x, here.y + step_y, here.z)
+        return direction_toward(here, target)
 
 
 class BuyReagent(BuyMaterialCapability):

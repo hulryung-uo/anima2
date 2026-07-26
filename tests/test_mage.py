@@ -223,3 +223,70 @@ def test_the_mage_economy_planner_builds():
     assert set(econ.capability_ids) == {"fetch_gold", "buy_reagent", "bank_gold"}
     # Pre-work reflexes stay out of capability mode (the manifest's fixed shape).
     assert "CastAttack" not in [type(s).__name__ for s in econ.skills]
+
+
+def _kite_ctx(foe_distance, *, memory=None, pending=None, disposition="aggressive"):
+    foe = MobileView(serial=FOE, name="Ettin", pos=Position(5 + foe_distance, 5, 0), body=1,
+                     notoriety=3, hits=40, hits_max=60, distance=foe_distance)
+    return _ctx([_backpack(), _ash()], [foe], memory=memory, pending=pending,
+                disposition=disposition)
+
+
+def test_kiting_steps_away_only_while_a_foe_is_in_melee():
+    """A caster's damage happens at range, so a creature in melee must be backed away from
+    — unlike a warrior, which wants contact. `Survive` only retreats once already badly
+    wounded (below 40% HP), far too late for a frail mage; this is the tactical version."""
+    from anima2.contract import Walk
+    from anima2.skills.mage import KeepDistance
+
+    kite = KeepDistance()
+    mem: dict = {}
+    # Adjacent -> back away.
+    ctx = _kite_ctx(1, memory=mem)
+    assert kite.can_run(ctx) is True
+    assert isinstance(kite.step(ctx).action, Walk)
+    # Gap opened past the band -> stop kiting (so CastAttack gets the tick).
+    assert kite.can_run(_kite_ctx(kite.too_close + 1, memory=mem)) is False
+
+
+def test_kiting_is_bounded_so_the_mage_never_just_walks_away():
+    from anima2.skills.mage import KeepDistance
+
+    kite = KeepDistance()
+    mem: dict = {}
+    for _ in range(kite.max_steps):
+        ctx = _kite_ctx(1, memory=mem)
+        assert kite.can_run(ctx) is True
+        kite.step(ctx)
+    # Budget spent: stand and fight (CastAttack still works in melee; Survive owns danger).
+    assert kite.can_run(_kite_ctx(1, memory=mem)) is False
+
+
+def test_kiting_budget_recovers_once_the_gap_is_held():
+    from anima2.skills.mage import KeepDistance
+
+    kite = KeepDistance()
+    mem: dict = {}
+    for _ in range(kite.max_steps):
+        kite.step(_kite_ctx(1, memory=mem))
+    assert kite.can_run(_kite_ctx(1, memory=mem)) is False       # spent
+    for _ in range(kite.reset_ticks):
+        kite.can_run(_kite_ctx(6, memory=mem))                    # gap held open
+    assert kite.can_run(_kite_ctx(1, memory=mem)) is True         # ready for the next rush
+
+
+def test_kiting_never_abandons_a_cast_mid_incantation():
+    # A target cursor is up: answer it (CastAttack's job) before moving a tile.
+    from anima2.skills.mage import KeepDistance
+
+    cursor = TargetCursor(target_type=0, cursor_id=1, cursor_flag=1)
+    assert KeepDistance().can_run(_kite_ctx(1, pending=cursor)) is False
+
+
+def test_the_mage_kites_before_it_casts():
+    from anima2.profession import PROFESSIONS
+
+    names = [type(s).__name__ for s in PROFESSIONS["mage"].planner().skills]
+    assert names.index("KeepDistance") < names.index("CastAttack") < names.index("Hunt")
+    # Survival still outranks tactics — heal before repositioning.
+    assert names.index("Survive") < names.index("KeepDistance")
