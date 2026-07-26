@@ -1560,8 +1560,150 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
     print(f"\nthe day's hunt is done. total kills across the village: {total_kills}")
 
 
+def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
+                            ticks: int = 400, account_prefix: str = "animapipe",
+                            prey: str = "Ettin") -> None:
+    """Run the WHOLE production pipeline unattended: an artisan and a mage, side by side.
+
+    This is the goal's arc turned into a standing village rather than a scripted proof. The
+    tinker crafts tongs, sells them, and carries the purse to the mage's funding spot; the
+    mage collects it, buys reagents, and hunts with spells — each deciding for itself, with
+    no driver telling either one what to do next:
+
+      - the ARTISAN runs its capability planner under a `CapabilityCognition` with NO
+        client, which picks the first OBSERVATION-READY capability. The readiness gates are
+        therefore the whole policy: craft while it has iron, sell while it has tongs,
+        deliver once the purse is worth a trip, re-buy iron when it runs low.
+      - the MAGE runs `MageLife`, which switches itself between hunting and resupply
+        (reagents > collect a delivered purse > bank > hunt).
+
+    Both are driven by `_run_worker` unchanged (`MageLife` duck-types as an `Agent`, and the
+    artisan simply IS one).
+    """
+    from .capability_cognition import CapabilityCognition
+    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle
+    from .mage_life import MageLife
+    from .profession import HUNTING_SPOT
+    from .skills.harvest import BACKPACK_LAYER
+    from .skills.hunt import GOLD_GRAPHIC
+
+    hx, hy = HUNTING_SPOT
+    print(f"raising an artisan+mage village at {host}:{port}")
+    bodies = {}
+    for role, acct in (("tinker", f"{account_prefix}t{fresh_suffix()}"),
+                       ("mage", f"{account_prefix}m{fresh_suffix()}")):
+        try:
+            bodies[role] = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400)
+            print(f"  {acct}: the {role}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  {acct} ({role}): login failed ({e})")
+        time.sleep(3.0)
+    if len(bodies) < 2:
+        print("the pipeline needs both an artisan and a mage; aborting")
+        for b in bodies.values():
+            b.close() if hasattr(b, "close") else None
+        return
+
+    login_throttle(GM_RELOGIN_COOLDOWN_S)
+    gm = GmControl.spawn(host, port).__enter__()
+    agents = []
+    try:
+        gm.hide()
+        serials = {r: b.ready["player"]["serial"] for r, b in bodies.items()}
+        all_serials = set(serials.values())
+        # The mage stands at the hunting pocket; the artisan works one tile away, so its
+        # delivery walk is short and its drop lands where the mage will look for it.
+        mx, my, mz = gm.stage(serials["mage"], hx, hy,
+                              skills=PROFESSIONS["mage"].skills,
+                              items=["Spellbook", "SulfurousAsh 30", "Bandage 50"])
+        for r in (20, 12, 6):
+            gm.command_area("[WipeNPCs", mx - r, my - r, mx + r, my + r, mz)
+        tx, ty, tz = gm.stage(serials["tinker"], hx + 2, hy,
+                              skills=PROFESSIONS["tinker"].skills,
+                              items=["TinkerTools 999", "IronIngot 60"])
+        for role, (px, py) in (("mage", (mx, my)), ("tinker", (tx, ty))):
+            gm.command_on(f'[Set Name "{role.capitalize()}"', serials[role])
+        for c in ("[Set Int 100", "[Set Mana 100", "[Set ManaMax 100",
+                  "[Set Str 80", "[Set Hits 80", "[Set HitsMax 80"):
+            gm.command_on(c, serials["mage"])
+        # Provenance: the MAGE starts broke, so every coin it spends came from the artisan.
+        st = [bodies["mage"].observe() for _ in range(3)][-1]
+        pack = next((i.serial for i in st.items
+                     if i.layer == BACKPACK_LAYER and i.container == serials["mage"]), None)
+        for i in st.items:
+            if i.container == pack and i.graphic == GOLD_GRAPHIC:
+                gm.command_on("[Delete", i.serial)
+        # A staged spellbook is EMPTY; ServUO refuses a cast whose spell is not in the book.
+        book = next((i for i in st.items if i.graphic in (0x0EFA, 0x0EFB)
+                     and i.container in (pack, serials["mage"])), None)
+        if book is not None:
+            gm.command_on("[AllSpells", book.serial)
+        # Vendors, pushed apart so each buy resolves to the intended NPC.
+        gm.stage_npc("Tinker", tx + 8, ty, tz, exclude=all_serials)      # sells tongs, buys iron
+        gm.stage_npc("Mage", mx - 8, my, mz, exclude=all_serials)        # sells reagents
+        gm.stage_npc("Banker", mx, my + 8, mz, exclude=all_serials)
+        # Prey for the mage, pinned so a wounded creature stands and fights.
+        gm.command_at(f"[Add {prey}", mx + 1, my - 2, mz)
+        mob = gm.find_mobile_near(mx + 1, my - 2, retries=1, exclude=all_serials)
+        if mob is not None:
+            gm.command_on("[Set CantWalk true", mob.serial)
+
+        # The ARTISAN: its own capability planner, choosing by readiness (no client).
+        tin_prof = PROFESSIONS["tinker"]
+        tinker = Agent(
+            body=bodies["tinker"], persona=Persona(name="Tinker"),
+            planner=tin_prof.planner(capability_goals=True),
+            cognition=CapabilityCognition(None, "tinker"), cognition_interval=1,
+            profession="tinker", goal_policy=CapabilityPolicy("tinker"),
+        )
+        tinker.memory.update({
+            "craft_spot": (tx, ty),
+            "vendor_spot": [(tx + 8, ty)],     # sell tongs / buy iron
+            "mage_drop": (mx, my),             # where the purse goes
+        })
+        # The MAGE: its own orchestrator, switching itself between hunting and resupply.
+        mage = MageLife(body=bodies["mage"],
+                        persona=Persona(name="Mage", combat_disposition="aggressive"),
+                        routes={"mage_vendor_spot": [(mx - 8, my)],
+                                "banker_spot": [(mx, my + 8)]})
+        agents = [("tinker", tinker), ("mage", mage)]
+        print(f"staged: artisan@({tx},{ty}) with iron | mage@({mx},{my}) broke, hunting\n")
+
+        status: dict[int, str] = {}
+        lock = threading.Lock()
+        threads = []
+        for i, (role, agent) in enumerate(agents):
+            t = threading.Thread(target=_run_worker,
+                                 args=(agent, ticks, i, status, lock, role), daemon=True)
+            threads.append(t)
+            t.start()
+            time.sleep(0.7)
+
+        while any(t.is_alive() for t in threads):
+            time.sleep(4.0)
+            with lock:
+                snap = [status[i] for i in sorted(status)]
+            mode = mage.mode if hasattr(mage, "mode") else "?"
+            print(f"— artisan+mage village [mage:{mode}] —\n  " + "\n  ".join(snap))
+        for t in threads:
+            t.join()
+    finally:
+        try:
+            gm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+        for b in bodies.values():
+            try:
+                b.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+    print("\nthe pipeline village has closed for the day.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--pipeline", action="store_true",
+                    help="run an artisan+mage village: the crafter funds the mage, unattended")
     ap.add_argument("--warriors", type=int, default=0,
                     help="run N swordsmen living the autonomous hunt<->re-arm loop (WarriorLife); "
                          "supersedes the trade-village roster when > 0")
@@ -1644,6 +1786,11 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
+    if args.pipeline:
+        run_artisan_mage_village(host=args.host, port=args.port, ticks=args.ticks,
+                                 account_prefix=args.account_prefix)
+        return
+
     if args.warriors > 0:
         run_warrior_village(args.warriors, host=args.host, port=args.port,
                             ticks=args.ticks, account_prefix=args.account_prefix)
