@@ -141,8 +141,40 @@ equivalent of losing its blade). With no manual driver it waits out the grace,
 for 60 gold at tick 29** (200 → 140), and is **back to hunting able to cast again at tick
 30**.
 
+## The artisan+mage roster — and what running it unattended revealed
+
+`village.py::run_artisan_mage_village` (CLI `--pipeline`) turns the pipeline from a scripted
+proof into a standing roster: it stages an artisan and a mage side by side with their
+vendors, prey, and provenance (the mage starts broke, its spellbook filled), then runs both
+unattended in one process through the unchanged `_run_worker` — the artisan on its own
+capability planner under a `CapabilityCognition` with **no client** (it picks the first
+*observation-ready* capability, so the readiness gates **are** the policy), and the mage
+under `MageLife`.
+
+Both halves run autonomously, and the mage side works: across a 900-tick unattended run it
+hunts, casts, and greets on its own with no driver.
+
+### Finding: crafting is far more contention-sensitive than hunting
+
+In the shared village the artisan produced **nothing** in 900 ticks. Two live checks pin the
+cause, and it is **not** the craft logic:
+
+- a readiness diagnostic with the **exact** village staging reports its capabilities ready:
+  `('craft_tongs', 'deliver_gold')`;
+- the **same** artisan — same staging, same autonomous cognition — running **alone** crafts
+  immediately: **5 tongs from 6 iron by tick 25**, already advancing to `sell_tongs`.
+
+So the craft loop is sound; sharing the single-threaded shard with a hunting mage starves
+it. This is the same ceiling measured for the warrior village, but much sharper here,
+because a **gump-driven craft FSM needs many server round-trips per item** while hunting is
+mostly local decisions. (The solo run's sell then hit the separately-documented intermittent
+vendor stall, so its reward read 0.0 even though the tongs were made.)
+
+Lifting it needs the shard-side lever already identified for the warriors — a second port,
+or a shard that services connections in parallel — not more agent tuning.
+
 ## Next (not built)
 
 More spells (a heal, a stronger bolt as Magery grows); the crafter deciding *when* to fund
-the fighter rather than being driven to it; and a village roster that runs a crafter and a
-mage side by side so the whole pipeline turns unattended.
+the fighter rather than being driven to it; and a second shard port so the artisan and the
+mage stop competing for one server thread.
