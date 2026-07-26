@@ -154,27 +154,45 @@ under `MageLife`.
 Both halves run autonomously, and the mage side works: across a 900-tick unattended run it
 hunts, casts, and greets on its own with no driver.
 
-### Finding: crafting is far more contention-sensitive than hunting
+### What running it revealed (and one conclusion I had to retract)
 
-In the shared village the artisan produced **nothing** in 900 ticks. Two live checks pin the
-cause, and it is **not** the craft logic:
+The roster's status line shows reward and steps, and a **craft capability confirms no
+reward** — a solo artisan made 5 tongs with `total_reward() == 0.0`. Reading `out+0.0` as
+"the artisan produced nothing" was therefore wrong, and an earlier conclusion here (that
+shard contention starves crafting in the village) is **retracted**.
 
-- a readiness diagnostic with the **exact** village staging reports its capabilities ready:
-  `('craft_tongs', 'deliver_gold')`;
-- the **same** artisan — same staging, same autonomous cognition — running **alone** crafts
-  immediately: **5 tongs from 6 iron by tick 25**, already advancing to `sell_tongs`.
+`village.py` now carries `_TapBody` (records each agent's last observation, adding no
+traffic of its own) and `_pipeline_progress`, so the monitor reports what actually matters:
 
-So the craft loop is sound; sharing the single-threaded shard with a hunting mage starves
-it. This is the same ceiling measured for the warrior village, but much sharper here,
-because a **gump-driven craft FSM needs many server round-trips per item** while hunting is
-mostly local decisions. (The solo run's sell then hit the separately-documented intermittent
-vendor stall, so its reward read 0.0 even though the tongs were made.)
+    artisan[tongs=N gold=N]  purse_on_ground=N  mage[gold=N ash=N]
 
-Lifting it needs the shard-side lever already identified for the warriors — a second port,
-or a shard that services connections in parallel — not more agent tuning.
+With that instrumentation the live picture is unambiguous: **`artisan[tongs=5 gold=1000]`**
+— the artisan crafts in the village exactly as it does alone. What it does **not** do is
+advance past crafting: no sale, so no purse on the ground, so nothing for the mage to
+collect. Two candidates, both visible in the readout and neither of them contention:
+
+- the separately-documented **intermittent vendor stall** (`sell_tongs` is a vendor
+  interaction, and those stall ~50% of the time across every buy/sell capability);
+- `CapabilityCognition(None)` always picks the **first** observation-ready capability, and
+  `craft_tongs` stays ready while iron remains — so a "make while you can" gate can crowd
+  out the later links of its own chain.
+
+The roster also budgets the shared shard (`_ThrottledAgent`, `--mage-tick-every`, default
+8), which remains sensible: hunting is mostly local decisions, crafting is round-trip bound.
+
+**Method note.** Two conclusions in this document were reached by instrumenting rather than
+reasoning — the mage's blindness to un-attacked prey, and this one. When a live agent
+"isn't doing anything", measure the thing itself before believing a proxy.
 
 ## Next (not built)
 
-More spells (a heal, a stronger bolt as Magery grows); the crafter deciding *when* to fund
-the fighter rather than being driven to it; and a second shard port so the artisan and the
-mage stop competing for one server thread.
+Chase the intermittent vendor stall (it now blocks the pipeline's `sell_tongs` link and has
+blocked buys throughout); give the artisan's autonomous cognition a notion of *finishing a
+chain* rather than always re-picking the first ready capability; more spells (a heal, a
+stronger bolt as Magery grows).
+
+**On the "second shard port" idea:** it cannot serve this pipeline. A second ServUO instance
+owns its own `Saves/` world, so the artisan and the mage would live in different universes
+and could never hand gold to each other; and a second listener port on one instance would
+not help either, since the bottleneck is the single world thread, not the socket. It would
+help agents that never interact (the 5-warrior roster), not this one.
