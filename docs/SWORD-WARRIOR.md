@@ -228,6 +228,22 @@ robustness cliff plus one shipped improvement. Full write-up:
   `buy_armor` after the grace with the chest stripped mid-hunt (that run then hit the known
   intermittent vendor-buy stall, so the fully-orchestrated purchase is the piece still to
   re-confirm).
-- **Next (not built).** A blade *upgrade* trigger (buy_weapon's arrival proof requires
-  starting with none, so an upgrade needs its own achieved-variant), replacing the other
-  five plate pieces, and a second shard port if a bigger roster is ever wanted.
+- **Blade upgrade (shipped).** `buy_weapon` only fires when the warrior is *completely*
+  unarmed, so one that lost its Katana and looted a Cutlass kept the worse blade forever.
+  The documented blocker — the arrival proof's `start_tools == 0` — turned out not to be
+  one: that gate counts **pack** swords, and an upgrading warrior *wears* its weaker blade
+  with an empty pack, so the stock proof applies unchanged and only a readiness was needed.
+  `UpgradeWeapon(BuyWeapon)` makes the same purchase with a different trigger, and
+  `_make_weapon_upgrade_ready` fires when the best WORN blade ranks below the offer
+  (`SWORD_RANK`), the pack holds no sword (keeping that premise true), and the warrior can
+  afford it **while keeping a chest plate's worth in reserve** — growth never spends the
+  coin a life-critical re-arm needs. Live-verified
+  (`scratchpad/live_upgrade_direct.py`): a Cutlass-wearing warrior with 400 gold buys a
+  Katana for exactly 33g (400 → 367), the case `buy_weapon` cannot serve.
+
+  **Full economy priority:** blade → bandages → chest plate → blade upgrade → bank → hunt.
+- **Known live flakiness.** Vendor buys stall intermittently (~50% of runs, across every
+  buy capability, seen since the re-arm proof). The same script passes on a retry and the
+  offline gates pin the logic, but an end-to-end orchestrated purchase can need a rerun.
+- **Next (not built).** Replacing the other five plate pieces, chasing the intermittent
+  vendor-buy stall, and a second shard port if a bigger roster is ever wanted.
