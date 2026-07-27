@@ -208,3 +208,83 @@ def test_goto_wedged_in_greedy_mode_fails_terminally():
     # Terminal cleanup: no transient greedy bookkeeping left behind.
     assert "goto_stall" not in mem
     assert "goto_last_pos" not in mem
+
+
+# --- Wander's optional leash ------------------------------------------------------
+#
+# Unbounded wandering silently breaks anything that needs an agent to be where it
+# lives. Live-caught in the artisan+mage pipeline: with its prey dead the mage
+# wandered ~15 tiles off its plaza, so it never observed the 140-gold purse the
+# artisan had just delivered to its funding spot, and the production chain stopped
+# closing even though every capability involved was behaving correctly.
+
+from anima2.geometry import chebyshev  # noqa: E402
+from anima2.skills.movement import Wander  # noqa: E402
+
+
+def _wctx(pos: tuple[int, int], memory: dict) -> SkillContext:
+    obs = Observation(player=PlayerView(serial=1, pos=Position(*pos)))
+    return SkillContext(obs=obs, persona=Persona(name="T"), memory=memory)
+
+
+def _walk_until_settled(start, memory, ticks=40):
+    """Drive Wander for a while, moving one tile per emitted step (an unobstructed
+    world), and report every tile visited."""
+    from anima2.geometry import DIRECTION_DELTAS
+
+    x, y = start
+    seen = [(x, y)]
+    skill = Wander()
+    for _ in range(ticks):
+        res = skill.step(_wctx((x, y), memory))
+        dx, dy = DIRECTION_DELTAS[res.action.dir]
+        x, y = x + dx, y + dy
+        seen.append((x, y))
+    return seen
+
+
+def test_wander_without_a_home_is_unchanged():
+    # The no-op guarantee: no `wander_home`, no leash, same steady drift as always.
+    mem: dict = {}
+    seen = _walk_until_settled((100, 100), mem)
+    assert max(abs(px - 100) for px, _ in seen) > Wander.leash, (
+        "an unleashed wander must still be free to walk away"
+    )
+
+
+def test_a_leashed_wander_stays_near_home():
+    home = (100, 100)
+    mem = {"wander_home": home}
+    seen = _walk_until_settled(home, mem, ticks=60)
+    worst = max(chebyshev(Position(px, py), Position(*home)) for px, py in seen)
+    # It may cross the leash — the check happens on the step AFTER — but it must be
+    # pulled back rather than drifting away forever.
+    assert worst <= Wander.leash + 2, f"wandered {worst} tiles from home"
+    assert chebyshev(Position(*seen[-1]), Position(*home)) <= Wander.leash + 2
+
+
+def test_a_leashed_wander_walks_back_when_it_starts_outside():
+    # The live case: already far away when the leash is applied.
+    home = (100, 100)
+    mem = {"wander_home": home}
+    start = (140, 100)
+    seen = _walk_until_settled(start, mem, ticks=25)
+    assert chebyshev(Position(*seen[-1]), Position(*home)) < chebyshev(
+        Position(*start), Position(*home)), "a leashed wanderer must close on home"
+
+
+def test_a_malformed_home_is_ignored_rather_than_crashing():
+    # Memory is scratch space many things write to; a bad value must not wedge the
+    # default "be alive" skill.
+    for bad in (None, (), (1,), "100,100", (1.5, 2.0), (True, False), [None, None]):
+        res = Wander().step(_wctx((100, 100), {"wander_home": bad}))
+        assert isinstance(res.action, Walk)
+
+
+def test_a_blocked_leashed_wanderer_still_rotates_free():
+    # Steering home every tick would pin an agent against an obstacle forever, so the
+    # leash yields to the stuck-rotation once movement actually stalls.
+    mem = {"wander_home": (100, 100)}
+    skill = Wander()
+    dirs = [skill.step(_wctx((140, 100), mem)).action.dir for _ in range(6)]
+    assert len(set(dirs)) > 1, "a wedged leashed wanderer must try another direction"

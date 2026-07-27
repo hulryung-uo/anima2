@@ -8,10 +8,36 @@ from .base import Skill, SkillContext, SkillResult, Status
 
 
 class Wander(Skill):
-    """Step in a steady direction, turning when blocked. The default 'be alive' skill."""
+    """Step in a steady direction, turning when blocked. The default 'be alive' skill.
+
+    Optionally **leashed**: with a `wander_home` (x, y) in memory, idle wandering is
+    bounded to `leash` tiles of that point and any step taken beyond it heads back.
+    Unset — the default — nothing changes, byte for byte.
+
+    The leash exists because unbounded wandering silently breaks things that depend on
+    an agent being *where it lives*. Live-caught in the artisan+mage pipeline: the mage
+    had no prey left, wandered ~15 tiles off its plaza, and so never observed the purse
+    the artisan had just delivered to its funding spot. Nothing was broken — `fetch_gold`
+    correctly requires seeing gold on the ground — but the agent had walked out of its
+    own economy, and the chain simply stopped closing.
+    """
 
     name = "wander"
     description = "Walk around aimlessly, changing direction when movement stalls."
+    #: How far from `wander_home` idle wandering may stray, when a home is set at all.
+    leash: int = 8
+
+    def _homeward(self, ctx: SkillContext, cur: tuple[int, int]) -> int | None:
+        """The direction back to `wander_home`, or None when unleashed/inside it."""
+        home = ctx.memory.get("wander_home")
+        if not (isinstance(home, (tuple, list)) and len(home) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in home)):
+            return None
+        here = ctx.obs.player.pos
+        target = Position(home[0], home[1], here.z)
+        if chebyshev(here, target) <= self.leash:
+            return None
+        return direction_toward(here, target)
 
     def step(self, ctx: SkillContext) -> SkillResult:
         d = ctx.memory.get("wander_dir", 2)  # default East
@@ -21,7 +47,12 @@ class Wander(Skill):
         # single no-move tick isn't "blocked". Give each direction a real step
         # (turn + move) before rotating — otherwise we'd spin in place forever.
         stuck = ctx.memory.get("wander_stuck", 0) + 1 if last == cur else 0
-        if stuck >= 2:
+        # Only steer home while actually moving: once blocked, the rotation below is
+        # what frees us, and overriding it every tick would pin us against the obstacle.
+        homeward = self._homeward(ctx, cur) if stuck == 0 else None
+        if homeward is not None:
+            d = homeward
+        elif stuck >= 2:
             d = (d + 1) % 8
             stuck = 0
         ctx.memory["wander_dir"] = d

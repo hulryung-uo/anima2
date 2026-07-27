@@ -1693,6 +1693,24 @@ def _pipeline_progress(tin_tap, mage) -> str:
             f"mage[gold={_pack(m_obs, GOLD_GRAPHIC)} ash={_pack(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
 
 
+#: The pipeline village's ground, CALIBRATED LIVE rather than guessed — every tile below
+#: was confirmed by walking real steps to it and back with the same greedy stepping the
+#: shop trip and the delivery walk actually use (`market._market_walk_toward` /
+#: `woodwork.DeliverBoards`), with a control leg on known-good ground proving the probe
+#: itself worked. This mirrors how `VENDOR_SPOT`/`BANKER_SPOT` were originally curated,
+#: and exists because an unreachable vendor is indistinguishable from a broken brain:
+#: the artisan selected `sell_tongs` correctly on every tick and still never sold.
+#: The artisan's own stand + vendor route are simply the ground `live_sell_goal.py`
+#: already sells on; the mage's tiles were probed fresh (the plaza south of the smithy).
+ARTISAN_STAND = TRADE_SMITH_SPOT       #: proven by the standalone sell gate
+ARTISAN_VENDOR_ROUTE = VENDOR_SPOT     #: curated 2-waypoint route; its end is the vendor
+MAGE_DROP = (2609, 476)                #: greedy-reachable from BOTH stands (probed)
+MAGE_STAND = (2609, 477)               #: open plaza — 9 of 12 probed neighbours walkable
+MAGE_VENDOR = (2608, 477)              #: reagents, one tile from the mage's stand
+MAGE_BANKER = (2610, 477)
+PREY_SPOT = (2609, 480)                #: 3 tiles from the mage, 6 from the artisan
+
+
 def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                             ticks: int = 400, account_prefix: str = "animapipe",
                             prey: str = "Ettin", mage_tick_every: int = 8) -> None:
@@ -1714,13 +1732,11 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
     artisan simply IS one).
     """
     from .capability_cognition import CapabilityCognition
-    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle
+    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .mage_life import MageLife
-    from .profession import HUNTING_SPOT
     from .skills.harvest import BACKPACK_LAYER
     from .skills.hunt import GOLD_GRAPHIC
 
-    hx, hy = HUNTING_SPOT
     print(f"raising an artisan+mage village at {host}:{port}")
     bodies = {}
     for role, acct in (("tinker", f"{account_prefix}t{fresh_suffix()}"),
@@ -1744,21 +1760,26 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         gm.hide()
         serials = {r: b.ready["player"]["serial"] for r, b in bodies.items()}
         all_serials = set(serials.values())
-        # The mage stands at the hunting pocket; the artisan works one tile away, so its
-        # delivery walk is short and its drop lands where the mage will look for it.
-        mx, my, mz = gm.stage(serials["mage"], hx, hy,
-                              skills=PROFESSIONS["mage"].skills,
-                              items=["Spellbook", "SulfurousAsh 30", "Bandage 50"])
-        for r in (20, 12, 6):
-            gm.command_area("[WipeNPCs", mx - r, my - r, mx + r, my + r, mz)
-        # The artisan works WELL AWAY from the hunting pocket. Sat beside it, the mage's
-        # prey simply attacks the artisan instead, and the capability planner's `Survive`
-        # reflex preempts crafting — live-caught: an artisan 2 tiles from a pinned Ettin
-        # produced nothing for 900 ticks, while the same artisan alone crafted by tick 25.
-        # Its `deliver_gold` walk covers the distance when the purse is worth a trip.
-        tx, ty, tz = gm.stage(serials["tinker"], hx + 14, hy,
+        # The ARTISAN stands on the trade smithy's own calibrated tile, with its vendor
+        # reached by the hand-curated `VENDOR_SPOT` route — the exact ground
+        # `live_sell_goal.py` already sells on. This replaces an earlier, guessed
+        # `hunting_spot + 14` stand on the Minoc ridge, where the artisan chose
+        # `sell_tongs` correctly every tick and still never sold a thing: BOTH legs that
+        # matter here walk GREEDILY (the shop trip in `market._market_walk_toward`, the
+        # delivery in `woodwork.DeliverBoards`), so an unwalkable stand is indistinguish-
+        # able from a stalled brain. A probe that walked real steps settled it — from the
+        # old ridge stand the character moved 0 tiles in 16 tries in all four directions,
+        # while a control on this pocket moved normally.
+        tx, ty, tz = gm.stage(serials["tinker"], *ARTISAN_STAND,
                               skills=PROFESSIONS["tinker"].skills,
                               items=["TinkerTools 999", "IronIngot 60"])
+        wipe_area(gm, tx, ty, radius=10, z=tz)
+        # The MAGE works the open plaza south of the artisan (9 of 12 probed neighbours
+        # walkable, versus a walled-in west and north), close enough that the delivery
+        # walk is a few tiles and the drop lands where the mage already looks.
+        mx, my, mz = gm.stage(serials["mage"], *MAGE_STAND,
+                              skills=PROFESSIONS["mage"].skills,
+                              items=["Spellbook", "SulfurousAsh 30", "Bandage 50"])
         for role, (px, py) in (("mage", (mx, my)), ("tinker", (tx, ty))):
             gm.command_on(f'[Set Name "{role.capitalize()}"', serials[role])
         for c in ("[Set Int 100", "[Set Mana 100", "[Set ManaMax 100",
@@ -1784,13 +1805,17 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                      and i.container in (pack, serials["mage"])), None)
         if book is not None:
             gm.command_on("[AllSpells", book.serial)
-        # Vendors, pushed apart so each buy resolves to the intended NPC.
-        gm.stage_npc("Tinker", tx + 8, ty, tz, exclude=all_serials)      # sells tongs, buys iron
-        gm.stage_npc("Mage", mx - 8, my, mz, exclude=all_serials)        # sells reagents
-        gm.stage_npc("Banker", mx, my + 8, mz, exclude=all_serials)
-        # Prey for the mage, pinned so a wounded creature stands and fights.
-        gm.command_at(f"[Add {prey}", mx + 1, my - 2, mz)
-        mob = gm.find_mobile_near(mx + 1, my - 2, retries=1, exclude=all_serials)
+        # Vendors, each on probed-walkable ground and far enough apart that a buy resolves
+        # to the intended NPC. The artisan's Tinker sits at the calibrated route's end.
+        gm.stage_npc("Tinker", *ARTISAN_VENDOR_ROUTE[-1], tz, exclude=all_serials)
+        gm.stage_npc("Mage", *MAGE_VENDOR, mz, exclude=all_serials)      # sells reagents
+        gm.stage_npc("Banker", *MAGE_BANKER, mz, exclude=all_serials)
+        # Prey for the mage, pinned so a wounded creature stands and fights. Pinning also
+        # keeps the artisan safe: `CantWalk` means it cannot close the tiles between them,
+        # which is what an earlier live catch needed (an artisan 2 tiles from a pinned
+        # Ettin produced nothing for 900 ticks — inside melee reach even while pinned).
+        gm.command_at(f"[Add {prey}", *PREY_SPOT, mz)
+        mob = gm.find_mobile_near(*PREY_SPOT, retries=1, exclude=all_serials)
         if mob is not None:
             gm.command_on("[Set CantWalk true", mob.serial)
 
@@ -1812,14 +1837,21 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         )
         tinker.memory.update({
             "craft_spot": (tx, ty),
-            "vendor_spot": [(tx + 8, ty)],     # sell tongs / buy iron
-            "mage_drop": (mx, my),             # where the purse goes
+            # A ROUTE, not a point: a single straight-line greedy walk cannot reach this
+            # vendor from the smith's stand — the very reason `VENDOR_SPOT` was curated.
+            "vendor_spot": list(ARTISAN_VENDOR_ROUTE),   # sell tongs / buy iron
+            "mage_drop": MAGE_DROP,                      # where the purse goes
         })
         # The MAGE: its own orchestrator, switching itself between hunting and resupply.
         mage = MageLife(body=bodies["mage"],
                         persona=Persona(name="Mage", combat_disposition="aggressive"),
-                        routes={"mage_vendor_spot": [(mx - 8, my)],
-                                "banker_spot": [(mx, my + 8)]})
+                        routes={"mage_vendor_spot": [MAGE_VENDOR],
+                                "banker_spot": [MAGE_BANKER]})
+        # Leash the mage to its plaza. Without this it wanders off once the prey is dead
+        # and never observes the purse the artisan delivers — live-caught here: a correct
+        # `deliver_gold` handed over 140 gold that simply sat on the ground, because by
+        # then the mage was ~15 tiles away and `fetch_gold` (rightly) needs to SEE it.
+        mage.memory["wander_home"] = MAGE_STAND
         # Budget the one shard: the mage yields most ticks so the artisan's
         # round-trip-hungry craft FSM actually gets served (see _ThrottledAgent).
         agents = [("tinker", tinker), ("mage", _ThrottledAgent(mage, mage_tick_every))]
