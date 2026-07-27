@@ -184,6 +184,52 @@ The roster also budgets the shared shard (`_ThrottledAgent`, `--mage-tick-every`
 reasoning — the mage's blindness to un-attacked prey, and this one. When a live agent
 "isn't doing anything", measure the thing itself before believing a proxy.
 
+## Why the mage kept dying — and what the HP trace settled
+
+The mage died repeatedly once its starting reagent pouch was made small (deliberately, so
+`buy_reagent` gets exercised at all). The tempting fix was to hand it more ash. The HP
+trace says that would have hidden a real defect:
+
+```
+hp=82/90 ash=10      hp=84/90 ash=0     <- pouch empties here
+hp=82/90 ash=7       hp=78/90 ash=0
+hp=83/90 ash=1       hp=70/90 ash=0
+                     hp=59/90 ash=0  ... DEAD
+```
+
+While it could cast, its HP **rose**: kiting worked and the prey never landed a blow. The
+tick the pouch hit zero, HP collapsed. Nothing about the placement or the creature changed
+at that tick — only the mage's ability to fight.
+
+`Hunt` walks to whatever it decided to fight. That is right for the bare-handed hunter it
+was written for, whose **fists are its attack**, and fatal for a caster, whose attack is the
+spell. `skills/mage.py::ArmedHunt` gates engagement on what `CastAttack` itself requires —
+reagents AND mana — so a disarmed caster stops closing:
+
+| distance to foe | `ArmedHunt` | `KeepDistance` | behaviour |
+|---|---|---|---|
+| 1–2 (melee reach) | refuses | fires | backs out |
+| 3 (safe) | refuses | stops | waits |
+
+Looting stays ungated: retiring a corpse already earned is free, and the gold on it buys
+the next reagent batch — gating it would starve the loop that *ends* the disarmed state.
+The bare-handed hunter keeps plain `Hunt`, pinned by a test so the fix cannot leak into a
+profession it would break.
+
+### Two more things the same investigation surfaced
+
+- **`Survive` outranks shopping.** It sits at the top of the economy planner too, so a mage
+  under attack heals instead of walking to the vendor. Correct in isolation, but it means a
+  mage that is *permanently* threatened can neither fight (no reagents) nor resupply — the
+  live run showed it holding 140 delivered gold, switching to economy, and still never
+  buying. Whatever keeps the threat bounded is therefore load-bearing, not decoration.
+- **Staging was inferred, not verified.** The prey is meant to be pinned (`[Set CantWalk
+  true`) so it stands and fights instead of chasing. The code did
+  `if mob is not None: <send the command>` and never checked — so a prey that was never
+  found, or never actually pinned, produced a silently roaming creature, and "the mage keeps
+  dying" then looks like a brain problem instead of a staging one. The pin is now read back
+  from the server and printed either way.
+
 ## Next (not built)
 
 **The intermittent vendor stall is now located** — see below; the remaining fix is body-side.

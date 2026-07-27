@@ -178,3 +178,36 @@ def test_ports_stay_distinct_across_a_larger_roster():
 
 def test_an_empty_roster_is_not_an_error():
     assert _monitor_ports(True, []) == {}
+
+
+def test_idle_wandering_cannot_carry_the_mage_into_melee_reach():
+    # Live-caught with the prey VERIFIED pinned: a leash of 3 let the mage drift to one
+    # tile from a creature it could no longer hurt, and it was beaten to death standing
+    # next to it. `ArmedHunt` stops it ENGAGING; only the leash stops it wandering in.
+    from anima2.skills.mage import KeepDistance
+    from anima2.village import MAGE_LEASH
+
+    closest = _cheb(MAGE_DROP, PREY_SPOT) - MAGE_LEASH
+    assert closest >= KeepDistance.too_close + 1, (
+        f"idle wandering reaches within {closest} tiles of the prey — inside the band "
+        "KeepDistance is meant to hold"
+    )
+
+
+def test_the_leash_is_derived_from_the_layout_not_hand_picked():
+    # If the drop or the prey moves, the leash must follow rather than silently go stale.
+    from anima2.skills.mage import KeepDistance
+    from anima2.village import MAGE_LEASH
+
+    expected = max(1, _cheb(PREY_SPOT, MAGE_DROP) - (KeepDistance.too_close + 1))
+    assert MAGE_LEASH == expected
+    assert MAGE_LEASH >= 1, "a zero leash would pin the mage to one tile"
+
+
+def test_the_mage_can_still_reach_its_shops_while_leashed():
+    # The leash bounds IDLE wandering only, but a shop it can never walk to is useless:
+    # its economy route must stay within reach of where it actually stands.
+    from anima2.village import MAGE_LEASH
+
+    for spot in (MAGE_VENDOR, MAGE_BANKER, MAGE_DROP):
+        assert _cheb(MAGE_STAND, spot) <= MAGE_LEASH + 3, f"{spot} is out of practical reach"

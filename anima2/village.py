@@ -38,6 +38,7 @@ from .profession import (
     VENDOR_SPOT,
     Profession,
 )
+from .skills.mage import KeepDistance
 from .skill_library import SkillLibrary
 from .skill_tuning import DELIVER_THRESHOLD_CANDIDATES, ParamSpec, ParamTuner
 from .skills import MineSmeltDeliver
@@ -1748,6 +1749,12 @@ def _pipeline_progress(tin_tap, mage) -> str:
             f"ash={_pack(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
 
 
+
+def _cheb2(a: tuple[int, int], b: tuple[int, int]) -> int:
+    """Chebyshev distance between two (x, y) tiles — UO's own movement metric."""
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+
+
 #: The pipeline village's ground, CALIBRATED LIVE rather than guessed — every tile below
 #: was confirmed by walking real steps to it and back with the same greedy stepping the
 #: shop trip and the delivery walk actually use (`market._market_walk_toward` /
@@ -1764,11 +1771,18 @@ MAGE_STAND = (2609, 477)               #: open plaza — 9 of 12 probed neighbou
 MAGE_VENDOR = (2608, 477)              #: reagents, one tile from the mage's stand
 MAGE_BANKER = (2610, 477)
 PREY_SPOT = (2609, 480)                #: 3 tiles from the mage, 6 from the artisan
+#: How far the mage may idle from its drop. DERIVED, not chosen: idle wandering must never
+#: carry it inside the prey's melee reach, so the nearest tile the leash allows has to stay
+#: at least `KeepDistance.too_close + 1` away from `PREY_SPOT`. Live-caught with the prey
+#: verified pinned: a leash of 3 let the mage drift to one tile from a creature it could no
+#: longer hurt, and it was beaten to death standing next to it.
+MAGE_LEASH = max(1, _cheb2(PREY_SPOT, MAGE_DROP) - (KeepDistance.too_close + 1))
 
 
 #: First HTTP port handed to `--monitor`; each agent gets the next one up. Loopback
 #: only (the bridge hardcodes 127.0.0.1), so this never exposes a shard to the network.
 MONITOR_PORT_BASE = 8801
+
 
 
 def _monitor_ports(enabled: bool, roles: list[str]) -> dict[str, int | None]:
@@ -1896,9 +1910,18 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # which is what an earlier live catch needed (an artisan 2 tiles from a pinned
         # Ettin produced nothing for 900 ticks — inside melee reach even while pinned).
         gm.command_at(f"[Add {prey}", *PREY_SPOT, mz)
-        mob = gm.find_mobile_near(*PREY_SPOT, retries=1, exclude=all_serials)
+        mob = gm.find_mobile_near(*PREY_SPOT, retries=3, exclude=all_serials)
+        pinned = False
         if mob is not None:
             gm.command_on("[Set CantWalk true", mob.serial)
+            # Read it back FROM THE SERVER. `if mob is not None: set` used to be the whole
+            # story, so a prey that was never found — or never actually pinned — produced
+            # a silently roaming creature, and "the mage keeps dying" then looked like a
+            # brain problem instead of a staging one. Never infer staging from the fact
+            # that a command was sent.
+            pinned = str(gm.get_property_value("CantWalk", mob.serial)).lower() in ("true", "1")
+        print(f"prey: {prey} at {PREY_SPOT} — "
+              f"{'pinned' if pinned else 'NOT PINNED (it will roam and chase)'}")
 
         # The ARTISAN: its own capability planner, choosing by readiness (no client).
         tin_prof = PROFESSIONS["tinker"]
@@ -1935,7 +1958,7 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # Leash it to the DROP itself, tightly: the mage has to stay close enough to
         # notice a purse arriving, not merely close enough to be in the neighbourhood.
         mage.memory["wander_home"] = MAGE_DROP
-        mage.memory["wander_leash"] = 3
+        mage.memory["wander_leash"] = MAGE_LEASH
         # Budget the one shard: the mage yields most ticks so the artisan's
         # round-trip-hungry craft FSM actually gets served (see _ThrottledAgent).
         agents = [("tinker", tinker), ("mage", _ThrottledAgent(mage, mage_tick_every))]
