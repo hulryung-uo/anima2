@@ -1431,7 +1431,11 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # widened mobile search can otherwise resolve to a different agent standing
             # nearby — the same hazard `run_village` guards with `all_agent_serials`.
             all_serials = {b.ready["player"]["serial"] for _i, b in bodies}
-            gm.stage_npc("Weaponsmith", gx + 12, gy, gz, exclude=all_serials)
+            # An IRONWORKER, not a Weaponsmith: ServUO picks a Weaponsmith's extra stock
+            # with `Utility.Random(3)` and only one branch carries swords, so it stocks a
+            # Katana on a 1-in-3 roll fixed at spawn. IronWorker installs SBSwordWeapon,
+            # whose Katana is unconditional (see skills/warrior.py::BuyWeapon).
+            gm.stage_npc("IronWorker", gx + 12, gy, gz, exclude=all_serials)
             gm.stage_npc("Healer", gx - 12, gy, gz, exclude=all_serials)
             gm.stage_npc("Banker", gx, gy + 12, gz, exclude=all_serials)
             gm.stage_npc("Armorer", gx, gy - 12, gz, exclude=all_serials)
@@ -1558,6 +1562,31 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             pass
     total_kills = sum(w["life"].kills for w in warriors)
     print(f"\nthe day's hunt is done. total kills across the village: {total_kills}")
+
+
+class _ChainPriorityClient:
+    """Pick the ready capability that ADVANCES a production chain, not the first one.
+
+    `CapabilityCognition(None, ...)` chooses `ready[0]` — the first OBSERVATION-READY
+    capability in registry order. That is a fine default, but it cannot finish a chain
+    whose earliest link stays ready: the artisan's `craft_tongs` remains ready while iron
+    remains, so it is picked forever and the wares are never sold or delivered (measured
+    live — the artisan sat on `tongs=5` while the purse never moved).
+
+    Readiness stays the eligibility rule; this only expresses PREFERENCE among the ready.
+    The capability's own admission still gates everything, so a preference for something
+    not actually ready is simply not admitted — safe by construction.
+    """
+
+    def __init__(self, priority: tuple[str, ...]) -> None:
+        self.priority = priority
+
+    def complete(self, system: str, user: str) -> str:
+        # `CapabilityCognition._situation` lists the currently-ready ids in the prompt.
+        for capability in self.priority:
+            if capability in user:
+                return '{"schema":1,"decision":"capability","capability":"%s"}' % capability
+        return '{"schema":1,"decision":"idle"}'
 
 
 class _TapBody:
@@ -1735,13 +1764,21 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         for c in ("[Set Int 100", "[Set Mana 100", "[Set ManaMax 100",
                   "[Set Str 80", "[Set Hits 80", "[Set HitsMax 80"):
             gm.command_on(c, serials["mage"])
-        # Provenance: the MAGE starts broke, so every coin it spends came from the artisan.
+        # Provenance, both sides. The MAGE starts broke, so every coin it spends came from
+        # the artisan; and the ARTISAN starts broke too, so the only gold it can ever
+        # deliver is what it EARNED selling its wares — otherwise it would simply hand over
+        # its ~1000 starter gold and the "production funds the fighter" claim would be
+        # hollow (it also outranks crafting in the chain priority, so it would never craft).
+        for role in ("mage", "tinker"):
+            st = [bodies[role].observe() for _ in range(3)][-1]
+            pack = next((i.serial for i in st.items
+                         if i.layer == BACKPACK_LAYER and i.container == serials[role]), None)
+            for i in st.items:
+                if i.container == pack and i.graphic == GOLD_GRAPHIC:
+                    gm.command_on("[Delete", i.serial)
         st = [bodies["mage"].observe() for _ in range(3)][-1]
         pack = next((i.serial for i in st.items
                      if i.layer == BACKPACK_LAYER and i.container == serials["mage"]), None)
-        for i in st.items:
-            if i.container == pack and i.graphic == GOLD_GRAPHIC:
-                gm.command_on("[Delete", i.serial)
         # A staged spellbook is EMPTY; ServUO refuses a cast whose spell is not in the book.
         book = next((i for i in st.items if i.graphic in (0x0EFA, 0x0EFB)
                      and i.container in (pack, serials["mage"])), None)
@@ -1763,7 +1800,14 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         tinker = Agent(
             body=tin_tap, persona=Persona(name="Tinker"),
             planner=tin_prof.planner(capability_goals=True),
-            cognition=CapabilityCognition(None, "tinker"), cognition_interval=1,
+            # Finish the chain: turn wares into gold and hand the purse over BEFORE
+            # making more, then restock iron; craft only when there is nothing to move.
+            cognition=CapabilityCognition(
+                _ChainPriorityClient((
+                    "sell_tongs", "deliver_gold", "buy_iron",
+                    "craft_tongs", "buy_tinker_tool", "bank_gold",
+                )), "tinker"),
+            cognition_interval=1,
             profession="tinker", goal_policy=CapabilityPolicy("tinker"),
         )
         tinker.memory.update({
