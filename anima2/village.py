@@ -50,6 +50,15 @@ from .uomap import find_tree_clusters
 FOREST_BASE = (2520, 450)
 LUMBER_MAP = 1
 
+#: Where a SOLO woodsman works. The multi-profession village keeps its lumberjacks in
+#: the Minoc woods above to stay compact, but those woods are thin — a live survey found
+#: 284 tree statics there and a best grove of just TWO trees, which is the size that runs
+#: dry mid-session and leaves `Harvest` relocating instead of working. The Yew woods
+#: carry 1192 statics with several five-tree groves, so a lone woodsman gets sustained
+#: work and `Harvest`'s relocation has somewhere to go when a bank does thin out.
+#: (Surveyed across 7 candidate bases; this was the densest by a wide margin.)
+YEW_FOREST = (560, 1080)
+
 #: `data/insights.jsonl` relative to the process's cwd — mirrors `curriculum.
 #: py`'s `_DEFAULT_MILESTONES_LOG`/`skill_library.py`'s `_DEFAULT_LEDGER`
 #: convention exactly (created lazily, gitignored). PHASE6.md item 1.
@@ -1368,7 +1377,8 @@ def _run_online_village(
 
 def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                       ticks: int = 600, account_prefix: str = "animawood",
-                      monitor: bool = False) -> None:
+                      monitor: bool = False,
+                      forest: tuple[int, int] = YEW_FOREST) -> None:
     """Run ONE lumberjack LIVING the full autonomous loop via `WoodsmanLife`.
 
     The third profession to get a life of its own, after the swordsman and the mage, and
@@ -1391,12 +1401,13 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
     from .woodsman_life import WoodsmanLife
 
     print(f"raising a woodsman at {host}:{port}")
-    grove = next(iter(find_tree_clusters(LUMBER_MAP, *FOREST_BASE)), None)
-    if grove is None:
-        print("no grove found near the Minoc woods; aborting")
+    groves = find_tree_clusters(LUMBER_MAP, *forest)
+    if not groves:
+        print(f"no grove found near {forest}; aborting")
         return
-    (sx, sy), trees = grove
-    print(f"grove: stand ({sx},{sy}) with {len(trees)} trees in reach")
+    (sx, sy), trees = groves[0]
+    print(f"grove: stand ({sx},{sy}) with {len(trees)} trees in reach "
+          f"({len(groves)} groves near {forest})")
 
     acct = f"{account_prefix}{fresh_suffix()}"
     seat = MONITOR_PORT_BASE if monitor else None
@@ -1432,15 +1443,30 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                  "tool_vendor_spot": ("Weaponsmith", (wx - 1, wy)),
                  "banker_spot": ("Banker", (wx, wy + 1))}
         routes: dict = {}
+        placed: dict[int, str] = {}   # serial -> the key it was accepted for
         for key, (npc, (nx, ny)) in spots.items():
-            mob = gm.stage_npc(npc, nx, ny, wz, exclude=serial)
+            # Exclude the ones already placed, not just the player. `find_mobile_near`
+            # returns the nearest mobile to the requested tile, and with shops a single
+            # tile apart that is very often an NPC staged a moment ago — live-caught
+            # here: the Banker came back as the Weaponsmith's own serial and tile, which
+            # would have pointed `banker_spot` at a vendor with no bank box.
+            mob = gm.stage_npc(npc, nx, ny, wz, exclude={serial, *placed})
             if mob is None:
                 print(f"  {npc}: FAILED to stage — {key} left unset")
                 continue
+            if mob.serial in placed:
+                print(f"  {npc}: resolved to the {placed[mob.serial]} NPC — {key} left unset")
+                continue
+            placed[mob.serial] = key
             reach = max(abs(mob.pos.x - wx), abs(mob.pos.y - wy))
             routes[key] = [(mob.pos.x, mob.pos.y)]
             print(f"  {npc}: at ({mob.pos.x},{mob.pos.y}), {reach} from the stand"
                   f"{'' if reach <= SELL_REACH else '  ** OUT OF REACH **'}")
+        # Distinct shops must be distinct NPCs on distinct tiles, or a trip resolves to
+        # the wrong counter. Say so plainly rather than leaving it to be inferred.
+        tiles = [tuple(v[0]) for v in routes.values()]
+        if len(set(tiles)) != len(tiles):
+            print(f"  ** two shops share a tile: {routes} **")
     finally:
         try:
             gm.__exit__(None, None, None)
