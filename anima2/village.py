@@ -1840,7 +1840,23 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
             with lock:
                 snap = [status[i] for i in sorted(status)]
             mode = mage.mode
-            print(f"— artisan+mage village [mage:{mode}] {_pipeline_progress(tin_tap, mage)} —"
+            # Why is the artisan doing what it is doing? Show its READY set and the goal
+            # it actually holds — the difference between "not eligible" and "not chosen".
+            try:
+                from .capabilities import ready_capability_ids
+                from .skills.base import SkillContext as _SC
+                _ready = ()
+                if tin_tap.last_obs is not None:
+                    _ready = ready_capability_ids(
+                        "tinker",
+                        _SC(obs=tin_tap.last_obs, persona=tinker.persona, memory=tinker.memory),
+                    )
+                _cur = tinker.goal_stack.current
+                _goal = _cur.goal.params.get("capability") if _cur else None
+            except Exception:  # noqa: BLE001 — telemetry must never break the run
+                _ready, _goal = ("?",), "?"
+            print(f"— artisan+mage village [mage:{mode}] {_pipeline_progress(tin_tap, mage)} "
+                  f"artisan_ready={list(_ready)} artisan_goal={_goal} —"
                   f"\n  " + "\n  ".join(snap))
         for t in threads:
             t.join()
