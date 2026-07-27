@@ -371,3 +371,63 @@ def test_process_logs_goal_converts_then_marks_finished():
     assert mem["cap_process_finished_goal_id"] == 17
     assert mem["cap_process_board_delta"] == 20
     assert mem["cap_process_logs_remaining"] == 0
+
+
+# --- tool ownership -----------------------------------------------------------------
+#
+# Live-caught with a lumberjack whose Weaponsmith stood one tile away: the readiness
+# gate (`capabilities._owned_tool`, owner-filtered since it was written) correctly said
+# "you have an axe", while the SKILL reached for the axe the vendor was wearing. `Use`
+# on a stranger's tool does nothing, so the capability was ready, was selected, and
+# produced no boards for an entire run — "ready, chosen, no progress" from a cause that
+# has nothing to do with the planner.
+
+from anima2.skills.harvest import owned_tool  # noqa: E402
+
+PLAYER = 1          # the serial the fixtures give the player
+VENDOR = 0x99
+VENDOR_PACK = 0x9A
+
+
+def _vendor_mobiles():
+    return [MobileView(serial=VENDOR, name="Weaponsmith", pos=Position(6, 5, 0), body=1,
+                       notoriety=1, hits=100, hits_max=100, distance=1)]
+
+
+def test_a_neighbours_worn_tool_is_never_picked_up():
+    obs = Observation(
+        player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0)),
+        mobiles=_vendor_mobiles(),
+        # The vendor's axe sorts FIRST, which is what made this bite.
+        items=[_item(0x991, HATCHET, container=VENDOR, layer=1),
+               _item(BACKPACK, 0x0E75, container=PLAYER, layer=BACKPACK_LAYER),
+               _axe()],
+    )
+    ctx = SkillContext(obs=obs, persona=Persona(name="Bjorn"), memory={})
+    picked = ProcessLogs._axe(ctx)
+    assert picked is not None and picked.serial == AXE_SERIAL
+
+
+def test_a_tool_in_a_neighbours_backpack_is_refused_too():
+    obs = Observation(
+        player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0)),
+        mobiles=_vendor_mobiles(),
+        items=[_item(VENDOR_PACK, 0x0E75, container=VENDOR, layer=BACKPACK_LAYER),
+               _item(0x992, HATCHET, container=VENDOR_PACK)],
+    )
+    ctx = SkillContext(obs=obs, persona=Persona(name="Bjorn"), memory={})
+    assert owned_tool(ctx, AXE_GRAPHICS) is None
+
+
+def test_our_own_tool_is_still_found_in_every_legitimate_place():
+    # Pack, worn, and loose on the ground are all usable — the fix is a refusal of
+    # foreign tools, not an allow-list that could reject an ownerless one.
+    for container, layer in ((BACKPACK, 0), (PLAYER, 1), (None, 0)):
+        obs = Observation(
+            player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0)),
+            mobiles=_vendor_mobiles(),
+            items=[_item(BACKPACK, 0x0E75, container=PLAYER, layer=BACKPACK_LAYER),
+                   _item(0x993, HATCHET, container=container, layer=layer)],
+        )
+        ctx = SkillContext(obs=obs, persona=Persona(name="Bjorn"), memory={})
+        assert owned_tool(ctx, AXE_GRAPHICS) is not None, f"container={container}"

@@ -24,7 +24,7 @@ from __future__ import annotations
 from ..contract import Drop, GumpResponse, PickUp, Position, Use, Walk
 from ..geometry import chebyshev, direction_toward
 from .base import Skill, SkillContext, SkillResult, Status
-from .harvest import BACKPACK_LAYER
+from .harvest import BACKPACK_LAYER, owned_tool
 from .smelt import INGOT_GRAPHICS
 
 # Blacksmithing tool: a smith's hammer (0x13E3) opens the craft gump even away
@@ -439,7 +439,10 @@ class Blacksmith(Skill):
                     if i.layer == BACKPACK_LAYER and i.container == ctx.obs.player.serial), None)
 
     def _tool(self, ctx: SkillContext):
-        return next((i for i in ctx.obs.items if i.graphic in self.craft_tool_graphics), None)
+        # OUR tool only — see `harvest.owned_tool`. `CraftItemCapability._tool` below
+        # has always filtered by owner; this one had not, so a smith working beside a
+        # tool vendor could reach for the vendor's tongs.
+        return owned_tool(ctx, self.craft_tool_graphics)
 
 
 class CraftItemCapability(Blacksmith):

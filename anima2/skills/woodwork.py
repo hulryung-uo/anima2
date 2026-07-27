@@ -22,7 +22,7 @@ from __future__ import annotations
 from ..contract import Drop, PickUp, Position, TargetObject, Use, Walk
 from ..geometry import chebyshev, direction_toward
 from .base import Skill, SkillContext, SkillResult, Status
-from .harvest import AXE_GRAPHICS, BACKPACK_LAYER
+from .harvest import AXE_GRAPHICS, BACKPACK_LAYER, owned_tool
 from .market import BuyToolCapability, SellItemCapability
 
 
@@ -109,10 +109,10 @@ class ProcessLogs(Skill):
 
     @staticmethod
     def _axe(ctx: SkillContext):
-        # Found by graphic, mirroring the harvest/craft tool finders
-        # (`Harvest._tool` / `Blacksmith._tool`) — a lumberjack's Hatchet works
-        # from the pack or worn; `Use(serial)` double-clicks it either way.
-        return next((i for i in ctx.obs.items if i.graphic in AXE_GRAPHICS), None)
+        # OUR axe — from the pack or worn; `Use(serial)` double-clicks it either way.
+        # Owner-filtered (see `harvest.owned_tool`): an unfiltered scan hands back a
+        # neighbour's tool, and a Weaponsmith standing beside a lumberjack wears axes.
+        return owned_tool(ctx, AXE_GRAPHICS)
 
     @staticmethod
     def _backpack(ctx: SkillContext):

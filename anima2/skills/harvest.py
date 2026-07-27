@@ -342,7 +342,7 @@ class Harvest(Skill):
         return next((s.base for s in obs.skills if s.id == self.skill_id), None)
 
     def _tool(self, ctx: SkillContext):
-        return next((i for i in ctx.obs.items if i.graphic in self.tool_graphics), None)
+        return owned_tool(ctx, self.tool_graphics)
 
     @staticmethod
     def _backpack(ctx: SkillContext):
@@ -412,3 +412,35 @@ class Fish(Harvest):
     # ServUO `Fishing.cs` `fish.NoResourcesMessage`/`.PackFullMessage`.
     no_resource_clilocs = frozenset({503172})  # "The fish don't seem to be biting here."
     pack_full_clilocs = frozenset({503176})  # "You do not have room in your backpack for a fish."
+
+
+def owned_tool(ctx: SkillContext, graphics):
+    """The first tool of `graphics` that is not SOMEBODY ELSE'S, or `None`.
+
+    Stated as a refusal rather than a permission on purpose. The defect this exists to
+    stop is narrow — reaching for another mobile's tool — while the legitimate places a
+    usable tool can sit are several: our pack, worn on us, or lying loose on the ground
+    (ServUO's `BaseAxe.OnDoubleClick` only requires reach and accessibility). An
+    allow-list of those kept mis-rejecting a tool whose owner simply could not be
+    confirmed, e.g. when our own backpack is not in view.
+
+    So the rule is: reject a tool held by another mobile, or inside another mobile's
+    backpack. Everything else is allowed, exactly as before.
+
+    Live-caught with a lumberjack. Its readiness gate (`capabilities._owned_tool`, which
+    HAS always filtered by owner) correctly reported "you have an axe", while the skill
+    picked up the axe worn by the Weaponsmith standing one tile away and used that. The
+    capability was ready, was selected, and produced nothing for a whole run — the same
+    "ready, chosen, no progress" shape an unreachable vendor produces, from a different
+    cause. `Harvest._backpack`'s own docstring had warned about this class of mistake
+    for the backpack finder; the tool finders next to it never applied it.
+    """
+    owner = ctx.obs.player.serial
+    others = {m.serial for m in ctx.obs.mobiles if m.serial != owner}
+    if others:
+        # Another mobile's backpack is identified the same way ours is: layer, plus a
+        # container that is that mobile.
+        others |= {i.serial for i in ctx.obs.items
+                   if i.layer == BACKPACK_LAYER and i.container in others}
+    return next((i for i in ctx.obs.items
+                 if i.graphic in graphics and i.container not in others), None)
