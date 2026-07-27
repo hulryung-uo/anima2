@@ -1829,7 +1829,12 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # walk is a few tiles and the drop lands where the mage already looks.
         mx, my, mz = gm.stage(serials["mage"], *MAGE_STAND,
                               skills=PROFESSIONS["mage"].skills,
-                              items=["Spellbook", "SulfurousAsh 30", "Bandage 50"])
+                              # A SMALL starting pouch on purpose: with 30 the mage never
+                              # reaches its own reorder line inside a session, so the last
+                              # link of the chain (spending the artisan's gold on the
+                              # ability to cast) never gets exercised. It still has to
+                              # EARN what it spends — both agents start broke.
+                              items=["Spellbook", "SulfurousAsh 12", "Bandage 50"])
         for role, (px, py) in (("mage", (mx, my)), ("tinker", (tx, ty))):
             gm.command_on(f'[Set Name "{role.capitalize()}"', serials[role])
         for c in ("[Set Int 100", "[Set Mana 100", "[Set ManaMax 100",
