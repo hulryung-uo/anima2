@@ -185,17 +185,33 @@ def _pack_ingots(ctx: SkillContext) -> int:
 
 
 def _owned_tool(ctx: SkillContext, graphics: frozenset[int]):
-    """The first owned (backpack) tool whose art is in `graphics`, or `None` —
-    the generalized "do I have a working tool?" check. The buy_tool trigger is
-    this returning `None`; buy_tool's arrival proof is it becoming non-`None`."""
+    """The first owned tool whose art is in `graphics` — in the backpack **or worn** —
+    or `None`. The generalized "do I have a working tool?" check: the buy_tool trigger
+    is this returning `None`, and buy_tool's arrival proof is it becoming non-`None`.
+
+    Worn counts, and that is the whole point. This used to accept only a PACKED tool,
+    which quietly disagreed with everything around it: the skills that swing the tool
+    (`ProcessLogs._axe`, `Harvest._tool`) accept a worn one, the profession rules that
+    decide what to do next accept a worn one, and so does ServUO — `BaseAxe.
+    OnDoubleClick` asks for reach and accessibility, not for a backpack.
+
+    Live-caught with a lumberjack, which of course WIELDS its axe. Every part was
+    individually right and the agent did nothing for an entire run: the skill said "I
+    have an axe", the rule said "so process the logs", and this gate said "no tool", so
+    no goal was ever admitted and the leaf sat returning RUNNING with nothing to do.
+    Measured before changing — a worn axe converts 20 logs to 20 boards in two ticks.
+
+    The old behaviour also had a quieter cost: a worn tool read as no tool, so the
+    buy_tool trigger could fire and spend gold on a tool the agent was already holding.
+    """
     backpack = _backpack_serial(ctx)
-    if backpack is None:
-        return None
+    owner = ctx.obs.player.serial
     return next(
         (
             item
             for item in ctx.obs.items
-            if item.graphic in graphics and item.container == backpack
+            if item.graphic in graphics
+            and (item.container == owner or (backpack is not None and item.container == backpack))
         ),
         None,
     )

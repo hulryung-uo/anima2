@@ -1469,13 +1469,49 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
     while t.is_alive():
         time.sleep(4.0)
         obs = getattr(life.body, "last_obs", None)
-        axe = "yes" if obs is not None and any(
-            i.graphic in AXE_GRAPHICS for i in obs.items) else "NO"
+        # OUR axe, not any axe in view. Reporting "yes" for the Weaponsmith's axe is how
+        # this readout would hide the very defect that broke the first run.
+        axe = "NO"
+        if obs is not None:
+            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
+                       and i.container == obs.player.serial), None)
+            axe = "yes" if any(i.graphic in AXE_GRAPHICS
+                               and i.container in (bp, obs.player.serial, None)
+                               for i in obs.items) else "NO"
         hp = "?" if obs is None else ("DEAD" if obs.player.dead
                                       else f"{obs.player.hits}/{obs.player.hits_max}")
         with lock:
             snap = [status[i] for i in sorted(status)]
-        print(f"— woodsman [{life.mode}] goal={life.target_cap} axe={axe} hp={hp} "
+        # `target_cap` is only what the orchestrator WANTS. Show what was actually
+        # admitted, and what the capability layer considers ready — a leaf whose goal
+        # was never admitted just returns RUNNING forever, which from the outside looks
+        # exactly like a leaf that is working.
+        try:
+            from .capabilities import ready_capability_ids
+            from .skills.base import SkillContext as _SC
+            _ready = ready_capability_ids(
+                "lumberjack", _SC(obs=obs, persona=life.persona, memory=life.econ_agent.memory),
+            ) if obs is not None else ()
+            _cur = life.econ_agent.goal_stack.current
+            _admitted = _cur.goal.params.get("capability") if _cur else None
+        except Exception:  # noqa: BLE001 — telemetry must never break the run
+            _ready, _admitted = ("?",), "?"
+        # `process_logs` readiness, clause by clause. "ready=[]" says the gate refused;
+        # it does not say WHICH condition did, and the candidates differ in kind (a tool
+        # the gate cannot see, a cursor left open by another skill, a market phase never
+        # cleared). Printing the clauses is the difference between knowing and guessing.
+        why = ""
+        if obs is not None:
+            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
+                       and i.container == obs.player.serial), None)
+            in_pack = any(i.graphic in AXE_GRAPHICS and i.container == bp for i in obs.items)
+            worn = any(i.graphic in AXE_GRAPHICS and i.container == obs.player.serial
+                       for i in obs.items)
+            why = (f" [axe_in_pack={in_pack} worn={worn} "
+                   f"cursor={obs.pending_target is not None} "
+                   f"mkt={life.econ_agent.memory.get('mkt_phase', 'craft')}]")
+        print(f"— woodsman [{life.mode}] want={life.target_cap} admitted={_admitted} "
+              f"ready={list(_ready)}{why} axe={axe} hp={hp} "
               f"logs={_pack(obs, LOG_GRAPHIC)} boards={_pack(obs, BOARD_GRAPHIC)} "
               f"gold={_pack(obs, GOLD_GRAPHIC)} —")
         for line in snap:

@@ -2451,3 +2451,66 @@ def test_lumberjack_bank_gold_reuses_the_blacksmith_leaf_funcs():
     assert CAPABILITIES[("lumberjack", "sell_boards")].skill_type is _SellBoards
     assert CAPABILITIES[("lumberjack", "buy_hatchet")].skill_type is _BuyHatchet
     assert CAPABILITIES[("lumberjack", "process_logs")].skill_type is _ProcessLogsGoal
+
+
+# --- a worn tool is a tool ----------------------------------------------------------
+#
+# Live-caught with a lumberjack, which of course WIELDS its axe. `_owned_tool` used to
+# accept only a PACKED tool, disagreeing with the skills that swing it, the rules that
+# decide to use it, and ServUO itself. Every part was individually right and the agent
+# did nothing for a whole run: skill said "I have an axe", rule said "so process the
+# logs", gate said "no tool" — so no goal was admitted and the leaf sat idle.
+
+_WORN_PLAYER = 11
+_WORN_PACK = 12
+HATCHET_ART = 0x0F43
+
+
+def _tool_ctx(container: int, layer: int) -> SkillContext:
+    """A context holding exactly one hatchet, placed where the caller says."""
+    from anima2.skills.harvest import BACKPACK_LAYER
+
+    def item(serial, graphic, cont, lay):
+        return ItemView(serial=serial, graphic=graphic, amount=1, pos=Position(),
+                        container=cont, layer=lay, distance=0)
+
+    return SkillContext(
+        obs=Observation(
+            player=PlayerView(serial=_WORN_PLAYER, pos=Position(100, 100, 0)),
+            items=[item(_WORN_PACK, 0x0E75, _WORN_PLAYER, BACKPACK_LAYER),
+                   item(0x900, HATCHET_ART, container, layer)],
+        ),
+        persona=Persona(name="Bjorn"),
+        memory={},
+    )
+
+
+def test_a_worn_tool_counts_as_owned():
+    from anima2.capabilities import _owned_tool
+    from anima2.skills.woodwork import AXE_GRAPHICS
+
+    for container, layer in ((_WORN_PACK, 0), (_WORN_PLAYER, 2)):
+        assert _owned_tool(_tool_ctx(container, layer), AXE_GRAPHICS) is not None, (
+            f"container={container:#x}"
+        )
+
+
+def test_the_gate_and_the_skill_agree_about_what_a_tool_is():
+    # The defect was a DISAGREEMENT, so pin the agreement rather than either answer.
+    from anima2.capabilities import _owned_tool
+    from anima2.skills.woodwork import AXE_GRAPHICS, ProcessLogs
+
+    for container, layer in ((_WORN_PACK, 0), (_WORN_PLAYER, 2)):
+        ctx = _tool_ctx(container, layer)
+        assert (_owned_tool(ctx, AXE_GRAPHICS) is not None) == (
+            ProcessLogs._axe(ctx) is not None
+        ), f"gate and skill disagree for container={container:#x}"
+
+
+def test_a_worn_tool_no_longer_triggers_buying_another():
+    # The quieter cost of the old behaviour: a worn tool read as no tool, so the
+    # buy_tool trigger could spend gold on one the agent was already holding.
+    from anima2.capabilities import _owned_tool
+    from anima2.skills.woodwork import AXE_GRAPHICS
+
+    assert _owned_tool(_tool_ctx(_WORN_PLAYER, 2), AXE_GRAPHICS) is not None
