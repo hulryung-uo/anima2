@@ -1512,6 +1512,20 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
         # admitted, and what the capability layer considers ready — a leaf whose goal
         # was never admitted just returns RUNNING forever, which from the outside looks
         # exactly like a leaf that is working.
+        # `process_logs` readiness, clause by clause. "ready=[]" says the gate refused;
+        # it does not say WHICH condition did, and the candidates differ in kind (a tool
+        # the gate cannot see, a cursor left open by another skill, a market phase never
+        # cleared). Printing the clauses is the difference between knowing and guessing.
+        _why = ""
+        if obs is not None:
+            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
+                       and i.container == obs.player.serial), None)
+            in_pack = any(i.graphic in AXE_GRAPHICS and i.container == bp for i in obs.items)
+            worn = any(i.graphic in AXE_GRAPHICS and i.container == obs.player.serial
+                       for i in obs.items)
+            _why = (f" [axe_in_pack={in_pack} worn={worn} "
+                   f"cursor={obs.pending_target is not None} "
+                   f"mkt={life.econ_agent.memory.get('mkt_phase', 'craft')}]")
         try:
             from .capabilities import ready_capability_ids
             from .skills.base import SkillContext as _SC
@@ -1520,24 +1534,21 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
             ) if obs is not None else ()
             _cur = life.econ_agent.goal_stack.current
             _admitted = _cur.goal.params.get("capability") if _cur else None
+            # A goal that has finished its work but is not RETIRED still occupies the
+            # stack, so nothing else can be admitted — `want` and `ready` agree while
+            # `admitted` stays stale. Show the completion bookkeeping the achievement
+            # check actually reads, since "not achieved" has several distinct causes.
+            if _admitted == "process_logs":
+                m = life.econ_agent.memory
+                _gid = getattr(_cur.goal, "goal_id", None) or m.get("cap_process_goal_id")
+                _why += (f" (need={m.get('cap_process_needed')} "
+                         f"delta={m.get('cap_process_board_delta')} "
+                         f"left={m.get('cap_process_logs_remaining')} "
+                         f"fin={m.get('cap_process_finished_goal_id')} gid={_gid})")
         except Exception:  # noqa: BLE001 — telemetry must never break the run
             _ready, _admitted = ("?",), "?"
-        # `process_logs` readiness, clause by clause. "ready=[]" says the gate refused;
-        # it does not say WHICH condition did, and the candidates differ in kind (a tool
-        # the gate cannot see, a cursor left open by another skill, a market phase never
-        # cleared). Printing the clauses is the difference between knowing and guessing.
-        why = ""
-        if obs is not None:
-            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
-                       and i.container == obs.player.serial), None)
-            in_pack = any(i.graphic in AXE_GRAPHICS and i.container == bp for i in obs.items)
-            worn = any(i.graphic in AXE_GRAPHICS and i.container == obs.player.serial
-                       for i in obs.items)
-            why = (f" [axe_in_pack={in_pack} worn={worn} "
-                   f"cursor={obs.pending_target is not None} "
-                   f"mkt={life.econ_agent.memory.get('mkt_phase', 'craft')}]")
         print(f"— woodsman [{life.mode}] want={life.target_cap} admitted={_admitted} "
-              f"ready={list(_ready)}{why} axe={axe} hp={hp} "
+              f"ready={list(_ready)}{_why} axe={axe} hp={hp} "
               f"logs={_pack(obs, LOG_GRAPHIC)} boards={_pack(obs, BOARD_GRAPHIC)} "
               f"gold={_pack(obs, GOLD_GRAPHIC)} —")
         for line in snap:
