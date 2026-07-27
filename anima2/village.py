@@ -1366,6 +1366,124 @@ def _run_online_village(
                 print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
 
 
+def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
+                      ticks: int = 600, account_prefix: str = "animawood",
+                      monitor: bool = False) -> None:
+    """Run ONE lumberjack LIVING the full autonomous loop via `WoodsmanLife`.
+
+    The third profession to get a life of its own, after the swordsman and the mage, and
+    the first that does not fight for a living. Its chain is longer than either of
+    theirs — tree -> log -> board -> gold — and its tool is consumable, so what stops it
+    is different again: a broken axe, not a lost blade or an empty reagent pouch.
+
+    Staging follows this village's own hard-learned rule: vendors are placed and then
+    VERIFIED, never assumed. Both shops are put within the market skill's own reach of
+    the woodsman's stand, so the trip short-circuits `_walk_route`'s final-reach check
+    and no greedy crossing is needed — the same co-located shape the trade smithy has
+    naturally, and the shape that made the artisan's sales work after an arbitrary
+    `+8 tiles` placement had silently made them impossible.
+    """
+    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
+    from .skills.harvest import BACKPACK_LAYER
+    from .skills.hunt import GOLD_GRAPHIC
+    from .skills.market import SELL_REACH
+    from .skills.woodwork import AXE_GRAPHICS, BOARD_GRAPHIC, LOG_GRAPHIC
+    from .woodsman_life import WoodsmanLife
+
+    print(f"raising a woodsman at {host}:{port}")
+    grove = next(iter(find_tree_clusters(LUMBER_MAP, *FOREST_BASE)), None)
+    if grove is None:
+        print("no grove found near the Minoc woods; aborting")
+        return
+    (sx, sy), trees = grove
+    print(f"grove: stand ({sx},{sy}) with {len(trees)} trees in reach")
+
+    acct = f"{account_prefix}{fresh_suffix()}"
+    seat = MONITOR_PORT_BASE if monitor else None
+    try:
+        body = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400, monitor_port=seat)
+    except Exception as e:  # noqa: BLE001
+        print(f"  {acct}: login failed ({e})")
+        return
+    watch = f"  watch: http://127.0.0.1:{seat}/" if seat else ""
+    print(f"  {acct}: Bjorn the lumberjack{watch}")
+
+    login_throttle(GM_RELOGIN_COOLDOWN_S)
+    gm = GmControl.spawn(host, port).__enter__()
+    try:
+        gm.hide()
+        serial = body.ready["player"]["serial"]
+        prof = PROFESSIONS["lumberjack"]
+        wx, wy, wz = gm.stage(serial, sx, sy, skills=prof.skills, items=list(prof.items))
+        wipe_area(gm, wx, wy, radius=8, z=wz)
+        gm.command_on('[Set Name "Bjorn"', serial)
+        # Provenance: every coin it holds at the end must be one it EARNED selling boards.
+        st = [body.observe() for _ in range(3)][-1]
+        pack = next((i.serial for i in st.items
+                     if i.layer == BACKPACK_LAYER and i.container == serial), None)
+        for i in st.items:
+            if i.container == pack and i.graphic == GOLD_GRAPHIC:
+                gm.command_on("[Delete", i.serial)
+
+        # Both shops within the sell/buy reach of the stand, then READ BACK where they
+        # actually landed — an `[Add`-ed NPC settles a tile or two off the request, and a
+        # shop out of reach is indistinguishable from a broken planner from the outside.
+        spots = {"vendor_spot": ("Carpenter", (wx + 1, wy)),
+                 "tool_vendor_spot": ("Weaponsmith", (wx - 1, wy)),
+                 "banker_spot": ("Banker", (wx, wy + 1))}
+        routes: dict = {}
+        for key, (npc, (nx, ny)) in spots.items():
+            mob = gm.stage_npc(npc, nx, ny, wz, exclude=serial)
+            if mob is None:
+                print(f"  {npc}: FAILED to stage — {key} left unset")
+                continue
+            reach = max(abs(mob.pos.x - wx), abs(mob.pos.y - wy))
+            routes[key] = [(mob.pos.x, mob.pos.y)]
+            print(f"  {npc}: at ({mob.pos.x},{mob.pos.y}), {reach} from the stand"
+                  f"{'' if reach <= SELL_REACH else '  ** OUT OF REACH **'}")
+    finally:
+        try:
+            gm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    life = WoodsmanLife(body=body, persona=Persona(name="Bjorn"), routes=routes)
+    life.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
+    life.memory["wander_home"] = (wx, wy)
+    print(f"staged: Bjorn@({wx},{wy}) with a hatchet, broke\n")
+
+    status: dict[int, str] = {}
+    lock = threading.Lock()
+    t = threading.Thread(target=_run_worker, args=(life, ticks, 0, status, lock, "lumberjack"),
+                         daemon=True)
+    t.start()
+
+    def _pack(obs, graphic):
+        if obs is None:
+            return 0
+        bp = next((i.serial for i in obs.items
+                   if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
+        return sum(i.amount for i in obs.items
+                   if i.graphic == graphic and i.container == bp) if bp else 0
+
+    while t.is_alive():
+        time.sleep(4.0)
+        obs = getattr(life.body, "last_obs", None)
+        axe = "yes" if obs is not None and any(
+            i.graphic in AXE_GRAPHICS for i in obs.items) else "NO"
+        hp = "?" if obs is None else ("DEAD" if obs.player.dead
+                                      else f"{obs.player.hits}/{obs.player.hits_max}")
+        with lock:
+            snap = [status[i] for i in sorted(status)]
+        print(f"— woodsman [{life.mode}] goal={life.target_cap} axe={axe} hp={hp} "
+              f"logs={_pack(obs, LOG_GRAPHIC)} boards={_pack(obs, BOARD_GRAPHIC)} "
+              f"gold={_pack(obs, GOLD_GRAPHIC)} —")
+        for line in snap:
+            print(f"  {line}")
+    t.join(timeout=5)
+    print("\nthe woodsman's day is done")
+
+
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
                         ticks: int = 200, account_prefix: str = "animawar",
                         prey: str = "Ettin", prey_target: int = 2, spacing: int = 25,
@@ -2047,6 +2165,9 @@ def main() -> None:
         default="anima",
         help="account/password prefix for isolated or repeatable village runs",
     )
+    ap.add_argument("--woodsman", action="store_true",
+                    help="run ONE lumberjack living the full loop (chop -> process -> "
+                         "sell -> bank, and replace a broken axe) via WoodsmanLife")
     ap.add_argument("--monitor", action="store_true",
                     help="serve a read-only web view of each agent (loopback only); "
                          "the URL per agent is printed at startup")
@@ -2111,6 +2232,11 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
+    if args.woodsman:
+        run_woodsman_life(host=args.host, port=args.port, ticks=args.ticks,
+                          monitor=args.monitor)
+        return
+
     if args.pipeline:
         run_artisan_mage_village(host=args.host, port=args.port, ticks=args.ticks,
                                  monitor=args.monitor,
