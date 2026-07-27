@@ -145,3 +145,36 @@ def test_scaling_gives_a_throttled_agent_the_same_real_tick_count():
     for _ in range(ticks * agent.tick_budget_scale):
         agent.tick()
     assert inner.real_ticks == ticks
+
+
+# --- monitoring --------------------------------------------------------------------
+#
+# A spectator CANNOT be a second login of the same character: ServUO's character-select
+# handler disposes the previous `NetState`, so a "monitor login" would kick the agent
+# off its own body. The viewer therefore attaches to the session the agent bridge
+# already owns, which means one viewer per agent — there is no way to watch several
+# characters through one connection.
+
+from anima2.village import MONITOR_PORT_BASE, _monitor_ports  # noqa: E402
+
+
+def test_monitoring_off_gives_every_agent_no_port():
+    assert _monitor_ports(False, ["tinker", "mage"]) == {"tinker": None, "mage": None}
+
+
+def test_each_agent_gets_its_own_port():
+    ports = _monitor_ports(True, ["tinker", "mage"])
+    assert ports == {"tinker": MONITOR_PORT_BASE, "mage": MONITOR_PORT_BASE + 1}
+    # Distinct is the whole point: two bridges cannot share one HTTP port, and two
+    # characters cannot share one session.
+    assert len(set(ports.values())) == len(ports)
+
+
+def test_ports_stay_distinct_across_a_larger_roster():
+    ports = _monitor_ports(True, [f"w{i}" for i in range(5)])
+    assert len(set(ports.values())) == 5
+    assert min(ports.values()) == MONITOR_PORT_BASE
+
+
+def test_an_empty_roster_is_not_an_error():
+    assert _monitor_ports(True, []) == {}

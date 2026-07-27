@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import subprocess
 import tempfile
@@ -155,14 +156,23 @@ class IpcBody:
         bridge: str | Path | None = None,
         pump_ms: int = 200,
         response_timeout_s: float = 30.0,
+        monitor_port: int | None = None,
     ) -> IpcBody:
         cmd = [str(bridge or default_bridge_path()), host, str(port), username, password]
+        env = None
+        if monitor_port is not None:
+            # The bridge serves a READ-ONLY spectator view of this character on that
+            # port. It cannot be a second login — a UO shard allows one session per
+            # character and ServUO disposes the older one — so the bridge publishes
+            # frames from the session it already owns. Costs nothing while unwatched.
+            env = {**os.environ, "ANIMA_MONITOR_PORT": str(monitor_port)}
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
             bufsize=1,  # line-buffered
+            env=env,
         )
         try:
             return cls(
@@ -423,6 +433,7 @@ class ResilientIpcBody:
         policy: RestartPolicy | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
+        monitor_port: int | None = None,
     ) -> ResilientIpcBody:
         lease = _AccountLease(host, port, username)
 
@@ -435,6 +446,7 @@ class ResilientIpcBody:
                 bridge=bridge,
                 pump_ms=pump_ms,
                 response_timeout_s=response_timeout_s,
+                monitor_port=monitor_port,
             )
 
         def timed_factory(remaining_s: float) -> IpcBody:
@@ -446,6 +458,7 @@ class ResilientIpcBody:
                 bridge=bridge,
                 pump_ms=pump_ms,
                 response_timeout_s=min(response_timeout_s, max(0.001, remaining_s)),
+                monitor_port=monitor_port,
             )
 
         inner: IpcBody | None = None

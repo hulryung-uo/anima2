@@ -1367,7 +1367,8 @@ def _run_online_village(
 
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
                         ticks: int = 200, account_prefix: str = "animawar",
-                        prey: str = "Ettin", prey_target: int = 2, spacing: int = 25) -> None:
+                        prey: str = "Ettin", prey_target: int = 2, spacing: int = 25,
+                        monitor: bool = False) -> None:
     """Run `count` swordsmen LIVING the full autonomous loop via `WarriorLife`: each
     hunts, and when it loses its blade or runs low on bandages it re-arms/restocks/banks
     on its own, then resumes. Each warrior is staged at its own hunting pocket with a
@@ -1389,15 +1390,19 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
 
     print(f"raising a warrior village: {count} swordsman(men) at {host}:{port}")
     bodies: list[tuple[int, ResilientIpcBody]] = []
+    seats = _monitor_ports(monitor, [f"w{i}" for i in range(count)])
     for i in range(count):
         account = f"{account_prefix}{i}{fresh_suffix()}"
+        seat = seats[f"w{i}"]
         try:
-            body = ResilientIpcBody.spawn(host, port, account, account, pump_ms=400)
+            body = ResilientIpcBody.spawn(host, port, account, account, pump_ms=400,
+                                          monitor_port=seat)
         except Exception as e:  # noqa: BLE001
             print(f"  {account}: login failed ({e})")
             continue
         bodies.append((i, body))
-        print(f"  {account}: Bram{i} the swordsman")
+        watch = f"  watch: http://127.0.0.1:{seat}/" if seat else ""
+        print(f"  {account}: Bram{i} the swordsman{watch}")
         time.sleep(3.0)
     if not bodies:
         print("no warriors came online")
@@ -1761,9 +1766,27 @@ MAGE_BANKER = (2610, 477)
 PREY_SPOT = (2609, 480)                #: 3 tiles from the mage, 6 from the artisan
 
 
+#: First HTTP port handed to `--monitor`; each agent gets the next one up. Loopback
+#: only (the bridge hardcodes 127.0.0.1), so this never exposes a shard to the network.
+MONITOR_PORT_BASE = 8801
+
+
+def _monitor_ports(enabled: bool, roles: list[str]) -> dict[str, int | None]:
+    """One viewer port per role, or all `None` when monitoring is off.
+
+    Each agent runs its own bridge process and therefore its own viewer — a shard
+    allows exactly one session per character, so there is no way to watch several
+    characters through one connection.
+    """
+    if not enabled:
+        return {r: None for r in roles}
+    return {r: MONITOR_PORT_BASE + i for i, r in enumerate(roles)}
+
+
 def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                             ticks: int = 400, account_prefix: str = "animapipe",
-                            prey: str = "Ettin", mage_tick_every: int = 8) -> None:
+                            prey: str = "Ettin", mage_tick_every: int = 8,
+                            monitor: bool = False) -> None:
     """Run the WHOLE production pipeline unattended: an artisan and a mage, side by side.
 
     This is the goal's arc turned into a standing village rather than a scripted proof. The
@@ -1789,11 +1812,14 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
 
     print(f"raising an artisan+mage village at {host}:{port}")
     bodies = {}
+    viewers = _monitor_ports(monitor, ["tinker", "mage"])
     for role, acct in (("tinker", f"{account_prefix}t{fresh_suffix()}"),
                        ("mage", f"{account_prefix}m{fresh_suffix()}")):
         try:
-            bodies[role] = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400)
-            print(f"  {acct}: the {role}")
+            bodies[role] = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400,
+                                                  monitor_port=viewers[role])
+            seat = f"  watch: http://127.0.0.1:{viewers[role]}/" if viewers[role] else ""
+            print(f"  {acct}: the {role}{seat}")
         except Exception as e:  # noqa: BLE001
             print(f"  {acct} ({role}): login failed ({e})")
         time.sleep(3.0)
@@ -1998,6 +2024,9 @@ def main() -> None:
         default="anima",
         help="account/password prefix for isolated or repeatable village runs",
     )
+    ap.add_argument("--monitor", action="store_true",
+                    help="serve a read-only web view of each agent (loopback only); "
+                         "the URL per agent is printed at startup")
     ap.add_argument("--forum", action="store_true", help="post each villager's day to uotavern")
     ap.add_argument("--chatter", action="store_true", help="LLM cognition: speak in character while working")
     # Opt-in, unset by default: zero effect on any currently-passing roster unless
@@ -2061,12 +2090,14 @@ def main() -> None:
     args = ap.parse_args()
     if args.pipeline:
         run_artisan_mage_village(host=args.host, port=args.port, ticks=args.ticks,
+                                 monitor=args.monitor,
                                  account_prefix=args.account_prefix,
                                  mage_tick_every=args.mage_tick_every)
         return
 
     if args.warriors > 0:
         run_warrior_village(args.warriors, host=args.host, port=args.port,
+                            monitor=args.monitor,
                             ticks=args.ticks, account_prefix=args.account_prefix)
         return
 
