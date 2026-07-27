@@ -640,8 +640,16 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     hunt_reward_accum = 0.0
     sell_reward_accum = 0.0
     bank_reward_accum = 0.0
+    # Why this worker stopped, appended to its own status line when it does. A worker
+    # that has ENDED and one that is merely idle look identical from the outside — the
+    # monitor keeps reprinting whatever `status[idx]` last held, and every reading taken
+    # off it silently becomes a reading of a frozen snapshot. Live-caught the expensive
+    # way: a throttled mage exhausted its tick budget early, and its stale last
+    # observation was then read for several runs as "the mage cannot see the purse".
+    stopped = ""
     for _ in range(ticks):
         if not agent.body.connected:
+            stopped = "DISCONNECTED"
             break
         action = agent.tick()
         obs = agent.body.observe()
@@ -719,6 +727,13 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             if last_say:
                 line += f'  "{last_say[:60]}"'
             status[idx] = line
+    else:
+        stopped = "BUDGET SPENT"
+    # Say so, permanently. Everything printed from here on is a frozen snapshot, and a
+    # reader that cannot tell that will mistake this agent's last state for its current
+    # one — which is exactly how a stale observation got read as a live one.
+    with lock:
+        status[idx] = f"{status.get(idx, agent.persona.name)}  [{stopped or 'ENDED'}]"
 
 
 class _CountingClient:
@@ -1637,6 +1652,17 @@ class _ThrottledAgent:
         self.every = max(1, int(every))
         self._n = 0
 
+    @property
+    def tick_budget_scale(self) -> int:
+        """How many worker iterations one REAL tick of this agent costs.
+
+        A yielded tick does no work and waits on nothing, so a throttled agent burns a
+        fixed tick budget `every` times faster than an unthrottled peer and finishes
+        long before it — silently, since a finished worker just stops updating. Callers
+        that want the two to live equally long scale the throttled one's budget by this.
+        """
+        return self.every
+
     def tick(self):
         self._n += 1
         if self._n % self.every:
@@ -1888,8 +1914,14 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         lock = threading.Lock()
         threads = []
         for i, (role, agent) in enumerate(agents):
+            # Scale a throttled agent's budget by its own throttle, so both workers live
+            # about as long. Without this the mage — yielding 7 ticks in 8, each costing
+            # nothing — spends `ticks` iterations roughly `every` times faster than the
+            # artisan and quietly ends mid-run, leaving its last observation to be read
+            # as if it were current.
+            budget = ticks * getattr(agent, "tick_budget_scale", 1)
             t = threading.Thread(target=_run_worker,
-                                 args=(agent, ticks, i, status, lock, role), daemon=True)
+                                 args=(agent, budget, i, status, lock, role), daemon=True)
             threads.append(t)
             t.start()
             time.sleep(0.7)

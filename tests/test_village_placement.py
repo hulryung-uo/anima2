@@ -97,3 +97,51 @@ def test_no_two_occupied_tiles_collide():
     assert len(set(occupied)) == len(occupied)
     # ...and nothing may sit on the drop tile, or the purse becomes unpickable.
     assert MAGE_DROP not in occupied
+
+
+# --- worker liveness ---------------------------------------------------------------
+#
+# A worker that has ENDED and one that is merely idle look identical from outside: the
+# monitor reprints whatever `status[idx]` last held. That cost several live runs and a
+# wrong conclusion — a throttled mage spent its tick budget early, and its frozen last
+# observation was read for three runs as "the mage cannot see the delivered purse",
+# when in truth it had stopped observing before the purse ever landed.
+
+from anima2.village import _ThrottledAgent  # noqa: E402
+
+
+class _CountingAgent:
+    """Minimal Agent stand-in that records how many real ticks it received."""
+
+    def __init__(self):
+        self.real_ticks = 0
+
+    def tick(self):
+        self.real_ticks += 1
+        return None
+
+
+def test_a_throttled_agent_reports_what_its_yielded_ticks_cost():
+    # The budget scale is what lets a caller keep a throttled agent alive as long as an
+    # unthrottled peer; without it the throttled one ends `every` times sooner.
+    inner = _CountingAgent()
+    agent = _ThrottledAgent(inner, every=8)
+    assert agent.tick_budget_scale == 8
+    for _ in range(8 * 10):
+        agent.tick()
+    assert inner.real_ticks == 10, "1 real tick per 8 iterations"
+
+
+def test_an_unthrottled_agent_has_a_neutral_budget_scale():
+    # The village reads this with getattr(..., 1), so a plain Agent must be unaffected.
+    assert getattr(_CountingAgent(), "tick_budget_scale", 1) == 1
+
+
+def test_scaling_gives_a_throttled_agent_the_same_real_tick_count():
+    # The property under test: budget * scale real-ticks == the peer's tick count.
+    ticks = 200
+    inner = _CountingAgent()
+    agent = _ThrottledAgent(inner, every=8)
+    for _ in range(ticks * agent.tick_budget_scale):
+        agent.tick()
+    assert inner.real_ticks == ticks
