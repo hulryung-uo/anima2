@@ -1686,11 +1686,35 @@ def _pipeline_progress(tin_tap, mage) -> str:
 
     t_obs = tin_tap.last_obs
     m_obs = getattr(mage.body, "last_obs", None)
-    ground = sum(i.amount for i in (m_obs.items if m_obs else [])
-                 if i.graphic == GOLD_GRAPHIC and i.container is None)
+
+    def _ground_gold(obs):
+        return sum(i.amount for i in (obs.items if obs else [])
+                   if i.graphic == GOLD_GRAPHIC and i.container is None)
+
+    # Read the delivered purse from BOTH sides. The mage's view alone is not evidence
+    # the handover happened: a mage that has wandered off, or died, simply cannot see
+    # the tile — which reads identically to "nothing was ever delivered". The artisan
+    # stands at the drop when it lets go, so its own view is the honest witness.
+    ground = _ground_gold(m_obs)
+    dropped = _ground_gold(t_obs)
+    # Where the purse lies and how far the mage is from it. Worth carrying permanently:
+    # a purse the artisan can see and the mage cannot is the exact shape of the one
+    # failure this pipeline keeps hitting, and a bare "mage_sees=0" cannot express it.
+    where = [(i.pos.x, i.pos.y) for i in (t_obs.items if t_obs else [])
+             if i.graphic == GOLD_GRAPHIC and i.container is None]
+    near = ""
+    if where and m_obs is not None:
+        d = min(max(abs(m_obs.player.pos.x - x), abs(m_obs.player.pos.y - y)) for x, y in where)
+        near = f" at={where[0]} mage_is={d}away"
+    # A frozen agent looks the same as a busy one from the outside, so say plainly
+    # whether the mage is alive and whole — a dead or bleeding mage explains a stalled
+    # hunt far better than any guess about its planner.
+    p = m_obs.player if m_obs else None
+    vit = "?" if p is None else ("DEAD" if p.dead else f"{p.hits}/{p.hits_max}")
     return (f"artisan[tongs={_pack(t_obs, TONGS)} gold={_pack(t_obs, GOLD_GRAPHIC)}] "
-            f"purse_on_ground={ground} "
-            f"mage[gold={_pack(m_obs, GOLD_GRAPHIC)} ash={_pack(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
+            f"purse[mage_sees={ground} artisan_sees={dropped}{near}] "
+            f"mage[hp={vit} gold={_pack(m_obs, GOLD_GRAPHIC)} "
+            f"ash={_pack(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
 
 
 #: The pipeline village's ground, CALIBRATED LIVE rather than guessed — every tile below
@@ -1851,7 +1875,10 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # and never observes the purse the artisan delivers — live-caught here: a correct
         # `deliver_gold` handed over 140 gold that simply sat on the ground, because by
         # then the mage was ~15 tiles away and `fetch_gold` (rightly) needs to SEE it.
-        mage.memory["wander_home"] = MAGE_STAND
+        # Leash it to the DROP itself, tightly: the mage has to stay close enough to
+        # notice a purse arriving, not merely close enough to be in the neighbourhood.
+        mage.memory["wander_home"] = MAGE_DROP
+        mage.memory["wander_leash"] = 3
         # Budget the one shard: the mage yields most ticks so the artisan's
         # round-trip-hungry craft FSM actually gets served (see _ThrottledAgent).
         agents = [("tinker", tinker), ("mage", _ThrottledAgent(mage, mage_tick_every))]

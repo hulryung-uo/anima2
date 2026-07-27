@@ -288,3 +288,21 @@ def test_a_blocked_leashed_wanderer_still_rotates_free():
     skill = Wander()
     dirs = [skill.step(_wctx((140, 100), mem)).action.dir for _ in range(6)]
     assert len(set(dirs)) > 1, "a wedged leashed wanderer must try another direction"
+
+
+def test_the_leash_length_is_overridable_per_agent():
+    # How tight a leash must be depends on what the agent has to stay close enough to
+    # notice, so it is a per-agent memory value rather than a fixed constant.
+    home = (100, 100)
+    seen = _walk_until_settled(home, {"wander_home": home, "wander_leash": 3}, ticks=60)
+    worst = max(chebyshev(Position(px, py), Position(*home)) for px, py in seen)
+    assert worst <= 5, f"a 3-tile leash let it reach {worst} tiles"
+    assert worst < Wander.leash, "the override must actually bind tighter than the default"
+
+
+def test_a_malformed_leash_falls_back_to_the_default():
+    home = (100, 100)
+    for bad in (None, -1, "3", 2.5, True):
+        seen = _walk_until_settled(home, {"wander_home": home, "wander_leash": bad}, ticks=40)
+        worst = max(chebyshev(Position(px, py), Position(*home)) for px, py in seen)
+        assert worst <= Wander.leash + 2, f"leash={bad!r} let it reach {worst} tiles"

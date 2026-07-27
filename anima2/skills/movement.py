@@ -25,6 +25,8 @@ class Wander(Skill):
     name = "wander"
     description = "Walk around aimlessly, changing direction when movement stalls."
     #: How far from `wander_home` idle wandering may stray, when a home is set at all.
+    #: Overridable per agent with a `wander_leash` in memory, since how tight a leash
+    #: needs to be depends on what the agent must stay close enough to notice.
     leash: int = 8
 
     def _homeward(self, ctx: SkillContext, cur: tuple[int, int]) -> int | None:
@@ -33,9 +35,12 @@ class Wander(Skill):
         if not (isinstance(home, (tuple, list)) and len(home) == 2
                 and all(isinstance(v, int) and not isinstance(v, bool) for v in home)):
             return None
+        leash = ctx.memory.get("wander_leash", self.leash)
+        if not isinstance(leash, int) or isinstance(leash, bool) or leash < 0:
+            leash = self.leash
         here = ctx.obs.player.pos
         target = Position(home[0], home[1], here.z)
-        if chebyshev(here, target) <= self.leash:
+        if chebyshev(here, target) <= leash:
             return None
         return direction_toward(here, target)
 
