@@ -63,7 +63,21 @@ HATCHET_COST = TOOL_BUY_AMOUNT * BuyHatchet.tool_price_estimate
 #: A threshold no run can reach does not express caution, it just removes a capability
 #: from the agent's life without saying so.
 BANK_RESERVE_AXES = 6
-BANK_ABOVE = HATCHET_COST * BANK_RESERVE_AXES
+#: The working capital a woodsman KEEPS. One number, read by three places that must
+#: agree: this rule (when to want banking), the capability gate (`_bank_reserve`, which
+#: is ready at `gold > reserve`), and `BankGold`'s own FSM (which finishes when
+#: `final_pack_gold == reserve`). The village wires it into the economy agent's memory
+#: under `bank_reserve`, the key those two already share.
+#:
+#: Leaving it unset — as this first did — means a reserve of ZERO: the woodsman banks
+#: every last coin and walks back to the grove unable to replace a broken axe, which is
+#: precisely the outcome this constant's own comment claims to prevent. Having a
+#: threshold is not the same as keeping a reserve, and conflating them cost nothing here
+#: only because no run had reached the threshold yet.
+BANK_RESERVE = HATCHET_COST * BANK_RESERVE_AXES
+#: Bank once the purse is above that reserve — the same comparison the gate makes, so
+#: the rule can never want a deposit the gate would refuse.
+BANK_ABOVE = BANK_RESERVE
 
 
 def _backpack(obs: Observation) -> int | None:
@@ -114,7 +128,9 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
         return "economy", "sell_boards"
     if _pack_amount(obs, LOG_GRAPHIC) > 0:
         return "economy", "process_logs"
-    if _pack_amount(obs, GOLD_GRAPHIC) >= BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
+    # `>` not `>=`: the gate is ready at `gold > reserve`, and a rule that wanted a
+    # deposit one coin earlier would ask for something admission must refuse.
+    if _pack_amount(obs, GOLD_GRAPHIC) > BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None
 
@@ -131,6 +147,8 @@ class WoodsmanLife(WarriorLife):
     def __init__(self, body, persona, profession: str = "lumberjack",
                  routes: dict | None = None) -> None:
         super().__init__(body, persona, profession=profession, routes=routes)
+        # Tell the SKILL what the rule assumes: keep this much, bank the surplus.
+        self.econ_agent.memory["bank_reserve"] = BANK_RESERVE
 
     @property
     def work_agent(self):

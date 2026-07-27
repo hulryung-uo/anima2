@@ -161,3 +161,41 @@ def test_the_switch_keeps_the_inherited_hysteresis():
         assert life.mode == "hunt"
     life.tick()
     assert life.mode == "economy" and life.target_cap == "sell_boards"
+
+
+# --- the reserve is one number, shared ----------------------------------------------
+#
+# Having a THRESHOLD is not the same as keeping a RESERVE, and the two were conflated:
+# `BANK_ABOVE` said "keep enough for several axes" while nothing told `BankGold` to keep
+# anything, so its own completion rule (`final_pack_gold == reserve`, reserve defaulting
+# to 0) would have banked every coin and walked the woodsman back to the grove unable to
+# replace a broken axe — exactly what the constant claims to prevent.
+
+def test_the_rule_never_wants_a_deposit_the_gate_would_refuse():
+    # The gate is ready at `gold > reserve`; a rule firing at `>=` would ask for a goal
+    # admission must refuse, which is the stall shape this project keeps paying for.
+    from anima2.woodsman_life import BANK_RESERVE
+
+    at_reserve = _obs([_backpack(), _axe(), _item(0x902, GOLD_GRAPHIC, BANK_RESERVE)])
+    assert decide_mode(at_reserve, dict(ROUTES)) == ("hunt", None)
+    above = _obs([_backpack(), _axe(), _item(0x902, GOLD_GRAPHIC, BANK_RESERVE + 1)])
+    assert decide_mode(above, dict(ROUTES)) == ("economy", "bank_gold")
+
+
+def test_the_skill_is_told_the_same_reserve_the_rule_assumes():
+    from anima2.woodsman_life import BANK_RESERVE
+
+    life = WoodsmanLife(body=_MockBody([_obs([_backpack(), _axe()])]),
+                        persona=Persona(name="Bjorn"), routes=dict(ROUTES))
+    # `bank_reserve` is the key BankGold's FSM and the capability gate already share.
+    assert life.econ_agent.memory["bank_reserve"] == BANK_RESERVE
+    assert BANK_RESERVE > 0, "a zero reserve banks the axe money too"
+
+
+def test_the_reserve_covers_replacing_the_axe_several_times():
+    # The reserve exists for one reason: this profession must never be caught unable to
+    # replace its tool. Pin it to that, not to a round number.
+    from anima2.woodsman_life import BANK_RESERVE, BANK_RESERVE_AXES
+
+    assert BANK_RESERVE == HATCHET_COST * BANK_RESERVE_AXES
+    assert BANK_RESERVE >= HATCHET_COST * 2
