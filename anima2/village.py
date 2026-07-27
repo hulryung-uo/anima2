@@ -1396,7 +1396,7 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .skills.harvest import BACKPACK_LAYER
     from .skills.hunt import GOLD_GRAPHIC
-    from .skills.market import SELL_REACH
+    from .skills.market import BANKBOX_LAYER, SELL_REACH
     from .skills.woodwork import AXE_GRAPHICS, BOARD_GRAPHIC, LOG_GRAPHIC
     from .woodsman_life import WoodsmanLife
 
@@ -1547,10 +1547,21 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                          f"fin={m.get('cap_process_finished_goal_id')} gid={_gid})")
         except Exception:  # noqa: BLE001 — telemetry must never break the run
             _ready, _admitted = ("?",), "?"
+        # Banked gold read the way `live_bank_goal.py` proves a deposit: gold sitting in
+        # THIS character's bank box, not merely gold that has left the pack. A falling
+        # pack count alone is not evidence of banking — it is equally consistent with
+        # spending it, dropping it, or dying with it.
+        banked = 0
+        if obs is not None:
+            box = next((i.serial for i in obs.items if i.layer == BANKBOX_LAYER
+                        and i.container == obs.player.serial), None)
+            if box is not None:
+                banked = sum(i.amount for i in obs.items
+                             if i.graphic == GOLD_GRAPHIC and i.container == box)
         print(f"— woodsman [{life.mode}] want={life.target_cap} admitted={_admitted} "
               f"ready={list(_ready)}{_why} axe={axe} hp={hp} "
               f"logs={_pack(obs, LOG_GRAPHIC)} boards={_pack(obs, BOARD_GRAPHIC)} "
-              f"gold={_pack(obs, GOLD_GRAPHIC)} —")
+              f"gold={_pack(obs, GOLD_GRAPHIC)} banked={banked} —")
         for line in snap:
             print(f"  {line}")
     t.join(timeout=5)

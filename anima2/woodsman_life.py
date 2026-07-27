@@ -54,9 +54,16 @@ from .warrior_life import WarriorLife
 SELL_BOARDS_AT = SellBoards.sell_threshold
 #: What replacing a broken axe costs, from the buy capability's own config.
 HATCHET_COST = TOOL_BUY_AMOUNT * BuyHatchet.tool_price_estimate
-#: Bank once the purse is well past a replacement axe, so banking never strands a
-#: woodsman that is one bad swing away from needing a new tool.
-BANK_ABOVE = 300
+#: Bank the surplus above a working reserve — enough to replace the axe several times
+#: over, which is the only thing this profession must never be caught short of.
+#:
+#: DERIVED from that reason rather than picked. The first value here was a flat 300 (a
+#: round number, twelve axes) and it was never reached: a live Yew run peaked at 180
+#: gold across six sales, so `bank_gold` sat ready 46 times and was never once chosen.
+#: A threshold no run can reach does not express caution, it just removes a capability
+#: from the agent's life without saying so.
+BANK_RESERVE_AXES = 6
+BANK_ABOVE = HATCHET_COST * BANK_RESERVE_AXES
 
 
 def _backpack(obs: Observation) -> int | None:
