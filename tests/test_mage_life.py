@@ -118,9 +118,10 @@ def test_mage_life_reuses_the_warrior_orchestrator_with_its_own_rule():
     life = MageLife(body=_MockBody([_obs([_backpack(), _ash(50)])]),
                     persona=Persona(name="Elara"), routes=dict(ROUTES))
     assert set(life.econ_agent.planner.capability_ids) == {"buy_reagent", "fetch_gold", "bank_gold"}
-    # The hunt side is the mage's own: it kites, then casts, then hunts.
+    # The hunt side is the mage's own: it kites, then casts, then hunts — and its hunt
+    # is `ArmedHunt`, which refuses to close to melee once it can no longer cast.
     names = [type(s).__name__ for s in life.hunt_agent.planner.skills]
-    assert names.index("KeepDistance") < names.index("CastAttack") < names.index("Hunt")
+    assert names.index("KeepDistance") < names.index("CastAttack") < names.index("ArmedHunt")
     # Separate memories (the warrior's live-caught requirement) still hold.
     assert life.hunt_agent.memory is not life.econ_agent.memory
 

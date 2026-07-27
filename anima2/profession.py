@@ -28,7 +28,7 @@ from .curriculum import (
 )
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
-from .skills.mage import CastAttack, KeepDistance
+from .skills.mage import ArmedHunt, CastAttack, KeepDistance
 from .skills.warrior import EquipArmor, EquipWeapon, WarriorSurvive
 from .skills.base import SkillContext, SkillResult, Status
 
@@ -620,7 +620,10 @@ PROFESSIONS: dict[str, Profession] = {
         items=["Spellbook", "SulfurousAsh 100", "Bandage 100"],
         needs_workplace=True,
         workplace=HUNTING_SPOT,
-        work_skill=Hunt,
+        # NOT bare `Hunt`: a caster that cannot cast must not close to melee. The
+        # bare-handed hunter above keeps plain `Hunt` on purpose — fists ARE its attack,
+        # so contact is right for it and fatal for this one (see `skills.mage.ArmedHunt`).
+        work_skill=ArmedHunt,
         combat_disposition="aggressive",
         # KITE then CAST: opening the gap wins the tick, and casting resumes the
         # moment it is open — a caster's damage happens at range, so every tile a

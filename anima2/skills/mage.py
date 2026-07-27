@@ -34,7 +34,7 @@ from .base import Skill, SkillContext, SkillResult, Status
 from .carpentry import FetchBoards
 from .combat import is_hostile
 from .harvest import BACKPACK_LAYER
-from .hunt import GOLD_GRAPHIC
+from .hunt import GOLD_GRAPHIC, Hunt
 from .market import BuyMaterialCapability
 
 #: Magic Arrow — the first-circle attack spell. ServUO registers it at index 04 and the
@@ -296,3 +296,50 @@ class FetchGold(FetchBoards):
     name = "fetch_gold"
     description = "Pick up delivered gold from the ground into the pack for one verified goal."
     fetched_graphics = frozenset({GOLD_GRAPHIC})
+
+
+class ArmedHunt(Hunt):
+    """`Hunt`, but a caster only ENGAGES while it can actually cast.
+
+    A swordsman out of anything still has its fists and its Tactics; a caster with an
+    empty reagent pouch has NO attack, and closing to melee is not a fallback — it is a
+    way to die. `Hunt` cannot know that on its own: it walks to whatever it decided to
+    fight, which is right for the profession it was written for.
+
+    Live-caught, and the trace is unusually clean. While the mage had ash its HP went
+    82 -> 84 across the whole fight — kiting worked and the (pinned) prey never landed a
+    blow. The tick its pouch reached 0, HP fell 84 -> 78 -> 70 -> 59 -> ... to death,
+    with bandages unable to keep up, because `Hunt` kept marching it back into an Ettin
+    it could no longer hurt. Nothing about the placement or the creature changed at that
+    tick; only the mage's ability to fight did.
+
+    So the gate is exactly that ability — reagents AND mana, the two things
+    `CastAttack` itself requires. Waiting a few ticks for mana to regenerate is the
+    correct behaviour for a caster; punching an Ettin is not.
+
+    LOOTING is deliberately left alone. Retiring a corpse the mage already earned costs
+    nothing and risks nothing, and the gold on it is what buys the next reagent batch —
+    cutting that off would starve the very loop that ends the disarmed state.
+    """
+
+    name = "armed_hunt"
+    description = "Engage only while able to cast; always finish looting what is already dead."
+
+    def _armed(self, ctx: SkillContext) -> bool:
+        probe = CastAttack()
+        return probe._has_reagents(ctx) and probe._has_mana(ctx)
+
+    def _looting(self, ctx: SkillContext) -> bool:
+        return bool(ctx.memory.get("hunt_queue")) or ctx.memory.get("hunt_phase") == "loot"
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        if not super().can_run(ctx):
+            return False
+        return self._looting(ctx) or self._armed(ctx)
+
+    def diagnose(self, ctx: SkillContext) -> str | None:
+        if self.can_run(ctx):
+            return None
+        if super().can_run(ctx) and not self._armed(ctx):
+            return "out of reagents or mana — will not close to melee it cannot win"
+        return super().diagnose(ctx)

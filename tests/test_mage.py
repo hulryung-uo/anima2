@@ -182,11 +182,13 @@ def test_mage_profession_casts_above_its_work_skill():
     from anima2.skills.hunt import Hunt
 
     mage = PROFESSIONS["mage"]
-    assert mage.work_skill is Hunt          # engagement + looting are reused unchanged
+    # Engagement + looting are still Hunt's, but gated: a caster that cannot cast must
+    # not close to melee (`ArmedHunt`, which killed a live mage before it existed).
+    assert issubclass(mage.work_skill, Hunt) and mage.work_skill is not Hunt
     assert mage.skills["Magery"] >= 80      # damage scales with Magery/EvalInt
     names = [type(s).__name__ for s in mage.planner().skills]
     # CastAttack sits directly above Hunt: spells first while a foe is in range.
-    assert names[names.index("Hunt") - 1] == "CastAttack"
+    assert names[names.index("ArmedHunt") - 1] == "CastAttack"
     # Survive still outranks casting — heal before trading blows.
     assert names.index("Survive") < names.index("CastAttack")
 
@@ -287,6 +289,74 @@ def test_the_mage_kites_before_it_casts():
     from anima2.profession import PROFESSIONS
 
     names = [type(s).__name__ for s in PROFESSIONS["mage"].planner().skills]
-    assert names.index("KeepDistance") < names.index("CastAttack") < names.index("Hunt")
+    assert names.index("KeepDistance") < names.index("CastAttack") < names.index("ArmedHunt")
     # Survival still outranks tactics — heal before repositioning.
     assert names.index("Survive") < names.index("KeepDistance")
+
+
+# --- ArmedHunt: a caster that cannot cast must not close to melee -------------------
+#
+# Live-caught, with an unusually clean trace: while the mage had ash its HP ROSE across
+# the whole fight (82 -> 84) because kiting worked and the pinned prey never landed a
+# blow. The tick its pouch hit 0, HP fell 84 -> 78 -> 70 -> 59 -> ... to death — `Hunt`
+# kept marching it back into an Ettin it could no longer hurt. Only its ability to
+# fight changed at that tick; not the placement, not the creature.
+
+from anima2.skills.mage import ArmedHunt  # noqa: E402
+
+
+def _hunt_ctx(*, ash: int, mana: int, memory=None, distance: int = 3):
+    items = [_backpack()]
+    if ash:
+        items.append(_ash(ash))
+    obs = Observation(
+        player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0), mana=mana, hits=80, hits_max=90),
+        mobiles=[_foe(distance=distance)],
+        items=items,
+    )
+    return SkillContext(obs=obs, persona=Persona(name="Elara", combat_disposition="aggressive"),
+                        memory=dict(memory or {}))
+
+
+def test_an_armed_mage_engages_exactly_like_hunt():
+    assert ArmedHunt().can_run(_hunt_ctx(ash=20, mana=100)) is True
+
+
+def test_an_empty_pouch_stops_the_mage_closing_to_melee():
+    # The bug: this returned True and walked a defenceless caster into an Ettin.
+    assert ArmedHunt().can_run(_hunt_ctx(ash=0, mana=100)) is False
+
+
+def test_no_mana_also_stops_it():
+    # Reagents alone are not an attack. Waiting a few ticks for mana is correct for a
+    # caster; punching the thing it cannot hurt is not.
+    assert ArmedHunt().can_run(_hunt_ctx(ash=20, mana=MAGIC_ARROW_MANA - 1)) is False
+    assert ArmedHunt().can_run(_hunt_ctx(ash=20, mana=MAGIC_ARROW_MANA)) is True
+
+
+def test_looting_is_never_blocked_by_being_disarmed():
+    # Retiring a corpse already earned is free, and the gold on it is what buys the next
+    # reagent batch — gating that would starve the loop that ENDS the disarmed state.
+    for mem in ({"hunt_queue": [0x1234]}, {"hunt_phase": "loot"}):
+        assert ArmedHunt().can_run(_hunt_ctx(ash=0, mana=0, memory=mem)) is True
+
+
+def test_it_says_why_it_will_not_engage():
+    reason = ArmedHunt().diagnose(_hunt_ctx(ash=0, mana=100))
+    assert reason is not None and "reagents" in reason
+
+
+def test_a_pacifist_mage_still_never_engages():
+    ctx = _hunt_ctx(ash=20, mana=100)
+    ctx.persona.combat_disposition = "pacifist"
+    assert ArmedHunt().can_run(ctx) is False
+
+
+def test_the_bare_handed_hunter_keeps_plain_hunt():
+    # Fists ARE that profession's attack, so contact is right for it — the fix must not
+    # leak across and make it refuse to fight.
+    from anima2.profession import PROFESSIONS
+    from anima2.skills.hunt import Hunt
+
+    assert PROFESSIONS["hunter"].work_skill is Hunt
+    assert PROFESSIONS["mage"].work_skill is ArmedHunt
