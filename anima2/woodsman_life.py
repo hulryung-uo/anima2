@@ -45,6 +45,7 @@ from .skills.woodwork import (
     BOARD_GRAPHIC,
     LOG_GRAPHIC,
     BuyHatchet,
+    DeliverBoards,
     SellBoards,
 )
 from .warrior_life import WarriorLife
@@ -52,6 +53,8 @@ from .warrior_life import WarriorLife
 #: Boards worth a trip to the vendor — the sell capability's own trigger, reused so the
 #: rule and the readiness gate can never drift apart.
 SELL_BOARDS_AT = SellBoards.sell_threshold
+#: Boards worth hauling to a partner — the deliver capability's own trigger.
+DELIVER_BOARDS_AT = DeliverBoards.deliver_threshold
 #: What replacing a broken axe costs, from the buy capability's own config.
 HATCHET_COST = TOOL_BUY_AMOUNT * BuyHatchet.tool_price_estimate
 #: Bank the surplus above a working reserve — enough to replace the axe several times
@@ -121,9 +124,19 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
                 and _valid_spot(memory.get(BuyHatchet.vendor_spot_key))):
             return "economy", "buy_hatchet"
         return "hunt", None  # no tool and no way to get one — keep living, not stalling
+    boards = _pack_amount(obs, BOARD_GRAPHIC)
+    # A partner outranks the shop. Configuring `carpenter_drop` IS the statement that
+    # this woodsman supplies somebody — without it nothing changes and it sells as
+    # before. Note what this costs in gold, because it is not nothing: the vendor buys
+    # boards at 2g each, and EVERY carpentry recipe on this shard sells for less than
+    # its own boards (the best, a Club, is 9 boards for 13g against 18g raw). Supplying
+    # a carpenter is therefore a decision about having a village, not about income, and
+    # it should stay a decision the caller makes explicitly rather than a default.
+    if boards >= DELIVER_BOARDS_AT and _valid_spot(memory.get(DeliverBoards.drop_key)):
+        return "economy", "deliver_boards"
     # Finish the chain before extending it: a woodsman holding a sellable stack of boards
     # should turn them into gold, not chop more wood it has nowhere to put.
-    if (_pack_amount(obs, BOARD_GRAPHIC) >= SELL_BOARDS_AT
+    if (boards >= SELL_BOARDS_AT
             and _valid_spot(memory.get(SellBoards.vendor_spot_key))):
         return "economy", "sell_boards"
     if _pack_amount(obs, LOG_GRAPHIC) > 0:

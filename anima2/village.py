@@ -1375,6 +1375,187 @@ def _run_online_village(
                 print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
 
 
+def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
+                    ticks: int = 1200, account_prefix: str = "animapair",
+                    monitor: bool = False, carpenter_tick_every: int = 3) -> None:
+    """Bjorn supplies Sten: a lumberjack hauls boards to a carpenter's drop point.
+
+    The two capabilities were built for each other and had never met — `deliver_boards`
+    on one side, `fetch_boards` on the other — so this runs them as an actual pair,
+    coordinating only through the ground between them.
+
+    Be clear about what this is worth, because the numbers are not flattering. At vendor
+    prices a Board sells for 2g, and EVERY carpentry recipe on this shard sells for less
+    than the boards it eats — a Throne is 19 boards (38g raw) for 24g, and the best of
+    them, a Club, is 9 boards (18g) for 13g. Measured against gold, the village would be
+    richer if Bjorn simply sold his boards and Sten stayed home.
+
+    What the pair demonstrates is the MECHANISM — two independent agents, separate
+    memories, no messages between them, one leaving material on the ground and the other
+    finding it — which is the thing a village is made of and the thing that pays off the
+    moment crafted goods are worth more than vendor scrap. The gold is reported honestly
+    either way.
+    """
+    from .carpenter_life import SAW_COST, CarpenterLife
+    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
+    from .skills.carpentry import SellFurniture
+    from .skills.harvest import BACKPACK_LAYER
+    from .skills.hunt import GOLD_GRAPHIC
+    from .skills.market import SELL_REACH
+    from .skills.woodwork import BOARD_GRAPHIC, LOG_GRAPHIC
+    from .woodsman_life import WoodsmanLife
+
+    FURNITURE = SellFurniture.sold_graphic
+
+    print(f"raising a supply pair at {host}:{port}")
+    groves = find_tree_clusters(LUMBER_MAP, *YEW_FOREST)
+    if not groves:
+        print(f"no grove found near {YEW_FOREST}; aborting")
+        return
+    (gx, gy), trees = groves[0]
+    print(f"grove: stand ({gx},{gy}) with {len(trees)} trees in reach")
+
+    bodies = {}
+    seats = _monitor_ports(monitor, ["woodsman", "carpenter"])
+    for role, acct in (("woodsman", f"{account_prefix}w{fresh_suffix()}"),
+                       ("carpenter", f"{account_prefix}c{fresh_suffix()}")):
+        try:
+            bodies[role] = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400,
+                                                  monitor_port=seats[role])
+            watch = f"  watch: http://127.0.0.1:{seats[role]}/" if seats[role] else ""
+            print(f"  {acct}: the {role}{watch}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  {acct} ({role}): login failed ({e})")
+        time.sleep(3.0)
+    if len(bodies) < 2:
+        print("the pair needs both; aborting")
+        for b in bodies.values():
+            if hasattr(b, "close"):
+                b.close()
+        return
+
+    login_throttle(GM_RELOGIN_COOLDOWN_S)
+    gm = GmControl.spawn(host, port).__enter__()
+    w_routes: dict = {}
+    c_routes: dict = {}
+    try:
+        gm.hide()
+        serials = {r: b.ready["player"]["serial"] for r, b in bodies.items()}
+        allser = set(serials.values())
+        wx, wy, wz = gm.stage(serials["woodsman"], gx, gy,
+                              skills=PROFESSIONS["lumberjack"].skills,
+                              items=list(PROFESSIONS["lumberjack"].items))
+        wipe_area(gm, wx, wy, radius=10, z=wz)
+        # The carpenter stands a short walk south; the drop sits between them, inside
+        # the deliver walk's reach from one side and the pickup's from the other.
+        drop_wanted = (wx, wy + 2)
+        cx, cy, cz = gm.stage(serials["carpenter"], wx, wy + 3,
+                              skills=PROFESSIONS["carpenter"].skills,
+                              items=list(PROFESSIONS["carpenter"].items))
+        for role in ("woodsman", "carpenter"):
+            gm.command_on(f'[Set Name "{"Bjorn" if role == "woodsman" else "Sten"}"',
+                          serials[role])
+            st = [bodies[role].observe() for _ in range(3)][-1]
+            pack = next((i.serial for i in st.items if i.layer == BACKPACK_LAYER
+                         and i.container == serials[role]), None)
+            for i in st.items:
+                if i.container == pack and i.graphic == GOLD_GRAPHIC:
+                    gm.command_on("[Delete", i.serial)
+        # Sten gets a saw's worth of seed and nothing else: his boards must come from
+        # Bjorn, which is the whole point. Bjorn gets nothing — he starts with an axe.
+        gm.command_on(f"[AddToPack Gold {SAW_COST}", serials["carpenter"])
+        placed: dict[int, str] = {}
+        npc_tiles: set[tuple[int, int]] = set()
+        for who, key, npc, (nx, ny) in (
+            ("woodsman", "vendor_spot", "Carpenter", (wx - 1, wy)),
+            ("carpenter", "vendor_spot", "Carpenter", (cx + 1, cy)),
+            ("carpenter", "banker_spot", "Banker", (cx - 1, cy)),
+        ):
+            mob = gm.stage_npc(npc, nx, ny, cz, exclude={*allser, *placed})
+            if mob is None or mob.serial in placed:
+                print(f"  {npc} for the {who}: FAILED — {key} left unset")
+                continue
+            placed[mob.serial] = f"{who}.{key}"
+            anchor_xy = (wx, wy) if who == "woodsman" else (cx, cy)
+            reach = max(abs(mob.pos.x - anchor_xy[0]), abs(mob.pos.y - anchor_xy[1]))
+            (w_routes if who == "woodsman" else c_routes)[key] = [(mob.pos.x, mob.pos.y)]
+            print(f"  {npc} for the {who}: at ({mob.pos.x},{mob.pos.y}), {reach} away"
+                  f"{'' if reach <= SELL_REACH else '  ** OUT OF REACH **'}")
+            npc_tiles.add((mob.pos.x, mob.pos.y))
+        # The HANDOVER tile has to be clear too. An `[Add`-ed NPC settles a tile or two
+        # off the request, and one settled exactly onto this drop on the first attempt —
+        # a shops-vs-shops collision check never looks at it, which is the same
+        # half-verification that let two shops share one NPC earlier. Boards cannot be
+        # left on a tile somebody is standing on, and the failure would read as "the
+        # carpenter never got supplied".
+        drop = drop_wanted
+        if drop in npc_tiles:
+            drop = next(((wx, y) for y in range(wy + 1, cy)
+                         if (wx, y) not in npc_tiles), drop_wanted)
+            print(f"  drop {drop_wanted} was occupied by an NPC — moved to {drop}")
+    finally:
+        try:
+            gm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    bjorn = WoodsmanLife(body=bodies["woodsman"], persona=Persona(name="Bjorn"),
+                         routes={**w_routes, "carpenter_drop": drop})
+    bjorn.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
+    bjorn.memory["wander_home"] = (wx, wy)
+    sten = CarpenterLife(body=bodies["carpenter"], persona=Persona(name="Sten"),
+                         routes=c_routes)
+    for m in (sten.memory, sten.econ_agent.memory):
+        m["craft_spot"] = (cx, cy)
+    sten.memory["wander_home"] = (cx, cy)
+    print(f"staged: Bjorn@({wx},{wy}) -> drop {drop} -> Sten@({cx},{cy})\n")
+
+    agents = [("lumberjack", bjorn),
+              ("carpenter", _ThrottledAgent(sten, carpenter_tick_every))]
+    status: dict[int, str] = {}
+    lock = threading.Lock()
+    threads = []
+    for i, (role, agent) in enumerate(agents):
+        budget = ticks * getattr(agent, "tick_budget_scale", 1)
+        t = threading.Thread(target=_run_worker,
+                             args=(agent, budget, i, status, lock, role), daemon=True)
+        threads.append(t)
+        t.start()
+        time.sleep(0.7)
+
+    def _pack(obs, graphic):
+        if obs is None:
+            return 0
+        bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
+                   and i.container == obs.player.serial), None)
+        return sum(i.amount for i in obs.items
+                   if i.graphic == graphic and i.container == bp) if bp else 0
+
+    while any(t.is_alive() for t in threads):
+        time.sleep(4.0)
+        w_obs = getattr(bjorn.body, "last_obs", None)
+        c_obs = getattr(sten.body, "last_obs", None)
+        # Boards ON THE GROUND, read from BOTH sides — the handover is only real if the
+        # receiver can see it, and a purse one agent sees and the other cannot is the
+        # exact shape that cost this project three runs on the artisan+mage pipeline.
+        def _ground(o):
+            return sum(i.amount for i in (o.items if o else [])
+                       if i.graphic == BOARD_GRAPHIC and i.container is None)
+        with lock:
+            snap = [status[i] for i in sorted(status)]
+        print(f"— supply pair  bjorn[{bjorn.mode}/{bjorn.target_cap} "
+              f"logs={_pack(w_obs, LOG_GRAPHIC)} boards={_pack(w_obs, BOARD_GRAPHIC)} "
+              f"gold={_pack(w_obs, GOLD_GRAPHIC)}]  "
+              f"drop[bjorn_sees={_ground(w_obs)} sten_sees={_ground(c_obs)}]  "
+              f"sten[{sten.mode}/{sten.target_cap} boards={_pack(c_obs, BOARD_GRAPHIC)} "
+              f"furniture={_pack(c_obs, FURNITURE)} gold={_pack(c_obs, GOLD_GRAPHIC)}] —")
+        for line in snap:
+            print(f"  {line}")
+    for t in threads:
+        t.join(timeout=5)
+    print("\nthe pair's day is done")
+
+
 def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
                        ticks: int = 900, account_prefix: str = "animacarp",
                        monitor: bool = False) -> None:
@@ -2395,6 +2576,9 @@ def main() -> None:
         default="anima",
         help="account/password prefix for isolated or repeatable village runs",
     )
+    ap.add_argument("--supply-pair", action="store_true",
+                    help="run a lumberjack supplying a carpenter (deliver_boards -> "
+                         "fetch_boards), coordinating only through the ground")
     ap.add_argument("--carpenter", action="store_true",
                     help="run ONE carpenter living the full loop (buy boards -> craft -> "
                          "sell -> bank, and replace a lost saw) via CarpenterLife")
@@ -2465,6 +2649,11 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
+    if args.supply_pair:
+        run_supply_pair(host=args.host, port=args.port, ticks=args.ticks,
+                        monitor=args.monitor)
+        return
+
     if args.carpenter:
         run_carpenter_life(host=args.host, port=args.port, ticks=args.ticks,
                            monitor=args.monitor)

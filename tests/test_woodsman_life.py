@@ -199,3 +199,43 @@ def test_the_reserve_covers_replacing_the_axe_several_times():
 
     assert BANK_RESERVE == HATCHET_COST * BANK_RESERVE_AXES
     assert BANK_RESERVE >= HATCHET_COST * 2
+
+
+# --- supplying a partner ------------------------------------------------------------
+#
+# Configuring `carpenter_drop` IS the statement that this woodsman supplies somebody.
+# It costs gold to do so, measurably: the vendor buys boards at 2g each, and every
+# carpentry recipe on this shard sells for less than its own boards (the best, a Club,
+# is 9 boards for 13g against 18g raw). So it must stay an explicit choice, never a
+# default — an unpartnered woodsman has to behave exactly as it did before.
+
+def test_a_configured_drop_makes_the_partner_outrank_the_shop():
+    from anima2.woodsman_life import DELIVER_BOARDS_AT
+
+    routes = {**ROUTES, "carpenter_drop": ((12, 12),)}
+    obs = _obs([_backpack(), _axe(),
+                _item(0x901, BOARD_GRAPHIC, max(DELIVER_BOARDS_AT, SELL_BOARDS_AT))])
+    assert decide_mode(obs, routes) == ("economy", "deliver_boards")
+
+
+def test_without_a_drop_nothing_changes():
+    # The no-op guarantee for every woodsman that has no partner.
+    obs = _obs([_backpack(), _axe(), _item(0x901, BOARD_GRAPHIC, SELL_BOARDS_AT)])
+    assert decide_mode(obs, dict(ROUTES)) == ("economy", "sell_boards")
+
+
+def test_a_short_stack_is_not_hauled_to_the_partner():
+    from anima2.woodsman_life import DELIVER_BOARDS_AT
+
+    routes = {**ROUTES, "carpenter_drop": ((12, 12),)}
+    obs = _obs([_backpack(), _axe(), _item(0x901, BOARD_GRAPHIC, DELIVER_BOARDS_AT - 1)])
+    assert decide_mode(obs, routes) != ("economy", "deliver_boards")
+
+
+def test_a_missing_axe_still_outranks_supplying_anyone():
+    from anima2.woodsman_life import DELIVER_BOARDS_AT
+
+    routes = {**ROUTES, "carpenter_drop": ((12, 12),)}
+    obs = _obs([_backpack(), _item(0x901, BOARD_GRAPHIC, DELIVER_BOARDS_AT),
+                _item(0x902, GOLD_GRAPHIC, 1000)])
+    assert decide_mode(obs, routes) == ("economy", "buy_hatchet")
