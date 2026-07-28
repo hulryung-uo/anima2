@@ -165,3 +165,21 @@ def test_carpenter_life_reuses_the_orchestrator_and_shares_its_reserve():
     # The rule, the gate and BankGold's FSM must all keep the same amount back.
     assert life.econ_agent.memory["bank_reserve"] == BANK_RESERVE
     assert life.hunt_agent.memory is not life.econ_agent.memory
+
+
+def test_wanting_a_pickup_it_cannot_reach_is_refused():
+    # The fetch gate requires a ground item within PICKUP_RADIUS. A rule that ignored
+    # distance would want `fetch_boards` for boards it can merely SEE — a goal the gate
+    # must refuse, which is the stall shape this project keeps paying for. Live-caught:
+    # a carpenter nine tiles off its drop was never once admitted a fetch in 1200 ticks.
+    from anima2.skills.craft import PICKUP_RADIUS
+
+    def _far_boards(distance):
+        return ItemView(serial=0x905, graphic=BOARD, amount=40, pos=Position(),
+                        container=None, layer=0, distance=distance)
+
+    near = _obs([_backpack(), _saw(), _far_boards(PICKUP_RADIUS)])
+    assert decide_mode(near, dict(ROUTES)) == ("economy", "fetch_boards")
+    far = _obs([_backpack(), _saw(), _far_boards(PICKUP_RADIUS + 1),
+                _item(0x902, GOLD_GRAPHIC, BOARD_BATCH_COST)])
+    assert decide_mode(far, dict(ROUTES)) == ("economy", "buy_boards")

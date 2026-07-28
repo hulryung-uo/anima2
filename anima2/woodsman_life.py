@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from .capabilities import _valid_spot
 from .contract import Observation
+from .skills.craft import PICKUP_RADIUS
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.market import TOOL_BUY_AMOUNT
@@ -102,7 +103,11 @@ def _has_axe(obs: Observation) -> bool:
 
 
 def _axe_on_ground(obs: Observation) -> bool:
-    return any(i.graphic in AXE_GRAPHICS and i.container is None for i in obs.items)
+    """An axe lying in the world WITHIN PICKUP REACH — the fetch gate's own condition.
+    Wanting to fetch something too far to pick up is a goal admission must refuse (see
+    `carpenter_life._on_ground`, where ignoring distance cost a whole run)."""
+    return any(i.graphic in AXE_GRAPHICS and i.container is None
+               and i.distance <= PICKUP_RADIUS for i in obs.items)
 
 
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:

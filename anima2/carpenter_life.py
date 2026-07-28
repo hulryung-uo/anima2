@@ -43,6 +43,7 @@ from .skills.carpentry import (
     FetchBoards,
     SellFurniture,
 )
+from .skills.craft import PICKUP_RADIUS
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.market import TOOL_BUY_AMOUNT
@@ -94,7 +95,17 @@ def _owns(obs: Observation, graphics) -> bool:
 
 
 def _on_ground(obs: Observation, graphics) -> bool:
-    return any(i.graphic in graphics and i.container is None for i in obs.items)
+    """Material lying in the world WITHIN PICKUP REACH.
+
+    The distance test is the point. The fetch gate requires a ground item within
+    `PICKUP_RADIUS`, and a rule that ignored distance would want `fetch_boards` for
+    boards it can merely SEE across the clearing — a goal admission must then refuse,
+    producing the stall this project keeps paying for. Live-caught here: a carpenter
+    wandered nine tiles off its drop and spent the whole run wanting a pickup the gate
+    would never allow (`adm=fetch_boards` zero times in 1200 ticks).
+    """
+    return any(i.graphic in graphics and i.container is None and i.distance <= PICKUP_RADIUS
+               for i in obs.items)
 
 
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:

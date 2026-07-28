@@ -1401,6 +1401,7 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     from .skills.carpentry import SellFurniture
     from .skills.harvest import BACKPACK_LAYER
     from .skills.hunt import GOLD_GRAPHIC
+    from .skills.craft import PICKUP_RADIUS
     from .skills.market import SELL_REACH
     from .skills.woodwork import BOARD_GRAPHIC, LOG_GRAPHIC
     from .woodsman_life import WoodsmanLife
@@ -1507,7 +1508,18 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
                          routes=c_routes)
     for m in (sten.memory, sten.econ_agent.memory):
         m["craft_spot"] = (cx, cy)
-    sten.memory["wander_home"] = (cx, cy)
+    # Leash Sten to the DROP, not to his own feet. A carpenter that drifts out of pickup
+    # range stops being supplied — live-caught: he wandered nine tiles off and was never
+    # once admitted a `fetch_boards` goal in 1200 ticks, while boards sat on the ground
+    # in plain view. DERIVED, like the woodsman's: far enough to reach every shop he
+    # owns, and strictly inside `PICKUP_RADIUS` so a delivery is always fetchable.
+    shop_reach = max((max(abs(v[0][0] - drop[0]), abs(v[0][1] - drop[1]))
+                      for v in c_routes.values()), default=1)
+    sten_leash = min(max(1, shop_reach), PICKUP_RADIUS - 1)
+    sten.memory["wander_home"] = drop
+    sten.memory["wander_leash"] = sten_leash
+    print(f"  Sten leashed to the drop at {sten_leash} tiles "
+          f"(shops reach {shop_reach}, pickup radius {PICKUP_RADIUS})")
     print(f"staged: Bjorn@({wx},{wy}) -> drop {drop} -> Sten@({cx},{cy})\n")
 
     agents = [("lumberjack", bjorn),
@@ -1541,8 +1553,34 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
         def _ground(o):
             return sum(i.amount for i in (o.items if o else [])
                        if i.graphic == BOARD_GRAPHIC and i.container is None)
+        # want / admitted / ready, for BOTH sides. `want` alone is intent, and an
+        # unadmitted goal looks exactly like a busy one — the pair runner shipped
+        # without this and promptly needed it when Bjorn sat on 20 logs for 123 samples.
+        def _layers(life, prof_key):
+            try:
+                from .capabilities import ready_capability_ids
+                from .skills.base import SkillContext as _SC
+                o = getattr(life.body, "last_obs", None)
+                rdy = ready_capability_ids(
+                    prof_key, _SC(obs=o, persona=life.persona,
+                                  memory=life.econ_agent.memory)) if o is not None else ()
+                cur = life.econ_agent.goal_stack.current
+                adm = cur.goal.params.get("capability") if cur else None
+                extra = ""
+                if adm == "process_logs":
+                    m = life.econ_agent.memory
+                    extra = (f" need={m.get('cap_process_needed')}"
+                             f" delta={m.get('cap_process_board_delta')}"
+                             f" left={m.get('cap_process_logs_remaining')}"
+                             f" fin={m.get('cap_process_finished_goal_id')}")
+                return f"want={life.target_cap} adm={adm} rdy={list(rdy)}{extra}"
+            except Exception:  # noqa: BLE001 — telemetry must never break the run
+                return "want=? adm=? rdy=?"
+
         with lock:
             snap = [status[i] for i in sorted(status)]
+        print(f"  bjorn: {_layers(bjorn, 'lumberjack')}")
+        print(f"  sten : {_layers(sten, 'carpenter')}")
         print(f"— supply pair  bjorn[{bjorn.mode}/{bjorn.target_cap} "
               f"logs={_pack(w_obs, LOG_GRAPHIC)} boards={_pack(w_obs, BOARD_GRAPHIC)} "
               f"gold={_pack(w_obs, GOLD_GRAPHIC)}]  "
