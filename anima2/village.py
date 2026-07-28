@@ -1375,6 +1375,152 @@ def _run_online_village(
                 print(f"  {agent.persona.name} posted about the day: {'ok' if res else 'failed'}")
 
 
+def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
+                       ticks: int = 900, account_prefix: str = "animacarp",
+                       monitor: bool = False) -> None:
+    """Run ONE carpenter LIVING the full autonomous loop via `CarpenterLife`.
+
+    The fourth life, and the first for a profession with no work skill — everything it
+    does is a goal-scoped capability, so this run is really a test of whether the
+    capability layer alone can carry an agent through a day.
+
+    It stands at the trade smithy, on the ground the sell/buy gates were originally
+    calibrated against, with ONE Carpenter NPC serving all three shop errands (it sells
+    boards and saws, and buys furniture — which is why all three capabilities read the
+    same `vendor_spot`) plus a Banker. Both are read back after staging with their real
+    distance printed, and a shared tile is reported outright.
+    """
+    from .carpenter_life import BANK_RESERVE, BOARD_BATCH_COST, SAW_COST, CarpenterLife
+    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
+    from .skills.carpentry import BuySaw, FetchBoards, SellFurniture
+    from .skills.harvest import BACKPACK_LAYER
+    from .skills.hunt import GOLD_GRAPHIC
+    from .skills.market import BANKBOX_LAYER, SELL_REACH
+
+    SAW_GRAPHICS = frozenset(BuySaw.owned_tool_graphics)
+    BOARD_GRAPHICS = frozenset(FetchBoards.fetched_graphics)
+    FURNITURE = SellFurniture.sold_graphic
+
+    print(f"raising a carpenter at {host}:{port}")
+    acct = f"{account_prefix}{fresh_suffix()}"
+    seat = MONITOR_PORT_BASE if monitor else None
+    try:
+        body = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400, monitor_port=seat)
+    except Exception as e:  # noqa: BLE001
+        print(f"  {acct}: login failed ({e})")
+        return
+    watch = f"  watch: http://127.0.0.1:{seat}/" if seat else ""
+    print(f"  {acct}: Sten the carpenter{watch}")
+
+    login_throttle(GM_RELOGIN_COOLDOWN_S)
+    gm = GmControl.spawn(host, port).__enter__()
+    routes: dict = {}
+    try:
+        gm.hide()
+        serial = body.ready["player"]["serial"]
+        prof = PROFESSIONS["carpenter"]
+        # Seed money, and ONLY that: a carpenter cannot make its own material, so with
+        # an empty purse and no supplier it would correctly wait forever. The seed buys
+        # exactly one batch of boards plus a spare saw; everything past that it earns.
+        seed = BOARD_BATCH_COST + SAW_COST
+        cx, cy, cz = gm.stage(serial, *TRADE_SMITH_SPOT,
+                              skills=prof.skills, items=list(prof.items))
+        wipe_area(gm, cx, cy, radius=8, z=cz)
+        # Delete the STARTER gold before seeding, or the run's own numbers lie: a fresh
+        # ServUO account arrives with ~1000 gold, and an earlier attempt promptly banked
+        # it and reported 940 "earned". The seed is added afterwards and is the only
+        # money Sten is given — a carpenter cannot make its own material, so with an
+        # empty purse and no supplier it would correctly wait forever.
+        st = [body.observe() for _ in range(3)][-1]
+        pack = next((i.serial for i in st.items
+                     if i.layer == BACKPACK_LAYER and i.container == serial), None)
+        for i in st.items:
+            if i.container == pack and i.graphic == GOLD_GRAPHIC:
+                gm.command_on("[Delete", i.serial)
+        gm.command_on(f"[AddToPack Gold {seed}", serial)
+        gm.command_on('[Set Name "Sten"', serial)
+        placed: dict[int, str] = {}
+        for key, (npc, (nx, ny)) in (("vendor_spot", ("Carpenter", VENDOR_SPOT[-1])),
+                                     ("banker_spot", ("Banker", BANKER_SPOT[-1]))):
+            mob = gm.stage_npc(npc, nx, ny, cz, exclude={serial, *placed})
+            if mob is None or mob.serial in placed:
+                print(f"  {npc}: FAILED to stage — {key} left unset")
+                continue
+            placed[mob.serial] = key
+            reach = max(abs(mob.pos.x - cx), abs(mob.pos.y - cy))
+            routes[key] = [(mob.pos.x, mob.pos.y)]
+            print(f"  {npc}: at ({mob.pos.x},{mob.pos.y}), {reach} from the stand"
+                  f"{'' if reach <= SELL_REACH else '  ** OUT OF REACH **'}")
+        tiles = [tuple(v[0]) for v in routes.values()]
+        if len(set(tiles)) != len(tiles):
+            print(f"  ** two shops share a tile: {routes} **")
+    finally:
+        try:
+            gm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    life = CarpenterLife(body=body, persona=Persona(name="Sten"), routes=routes)
+    life.memory["craft_spot"] = (cx, cy)
+    life.econ_agent.memory["craft_spot"] = (cx, cy)
+    life.memory["wander_home"] = (cx, cy)
+    print(f"staged: Sten@({cx},{cy}) with a saw and {seed}g seed "
+          f"(reserve {BANK_RESERVE})\n")
+
+    status: dict[int, str] = {}
+    lock = threading.Lock()
+    t = threading.Thread(target=_run_worker, args=(life, ticks, 0, status, lock, "carpenter"),
+                         daemon=True)
+    t.start()
+
+    def _pack(obs, graphics):
+        if obs is None:
+            return 0
+        if isinstance(graphics, int):
+            graphics = {graphics}
+        bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
+                   and i.container == obs.player.serial), None)
+        return sum(i.amount for i in obs.items
+                   if i.graphic in graphics and i.container == bp) if bp else 0
+
+    while t.is_alive():
+        time.sleep(4.0)
+        obs = getattr(life.body, "last_obs", None)
+        banked = 0
+        saw = "NO"
+        if obs is not None:
+            box = next((i.serial for i in obs.items if i.layer == BANKBOX_LAYER
+                        and i.container == obs.player.serial), None)
+            if box is not None:
+                banked = sum(i.amount for i in obs.items
+                             if i.graphic == GOLD_GRAPHIC and i.container == box)
+            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
+                       and i.container == obs.player.serial), None)
+            saw = "yes" if any(i.graphic in SAW_GRAPHICS
+                               and i.container in (bp, obs.player.serial, None)
+                               for i in obs.items) else "NO"
+        try:
+            from .capabilities import ready_capability_ids
+            from .skills.base import SkillContext as _SC
+            _ready = ready_capability_ids(
+                "carpenter", _SC(obs=obs, persona=life.persona, memory=life.econ_agent.memory),
+            ) if obs is not None else ()
+            _cur = life.econ_agent.goal_stack.current
+            _admitted = _cur.goal.params.get("capability") if _cur else None
+        except Exception:  # noqa: BLE001 — telemetry must never break the run
+            _ready, _admitted = ("?",), "?"
+        with lock:
+            snap = [status[i] for i in sorted(status)]
+        print(f"— carpenter [{life.mode}] want={life.target_cap} admitted={_admitted} "
+              f"ready={list(_ready)} saw={saw} boards={_pack(obs, BOARD_GRAPHICS)} "
+              f"furniture={_pack(obs, FURNITURE)} gold={_pack(obs, GOLD_GRAPHIC)} "
+              f"banked={banked} —")
+        for line in snap:
+            print(f"  {line}")
+    t.join(timeout=5)
+    print("\nthe carpenter's day is done")
+
+
 def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                       ticks: int = 600, account_prefix: str = "animawood",
                       monitor: bool = False,
@@ -2249,6 +2395,9 @@ def main() -> None:
         default="anima",
         help="account/password prefix for isolated or repeatable village runs",
     )
+    ap.add_argument("--carpenter", action="store_true",
+                    help="run ONE carpenter living the full loop (buy boards -> craft -> "
+                         "sell -> bank, and replace a lost saw) via CarpenterLife")
     ap.add_argument("--woodsman", action="store_true",
                     help="run ONE lumberjack living the full loop (chop -> process -> "
                          "sell -> bank, and replace a broken axe) via WoodsmanLife")
@@ -2316,6 +2465,11 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
+    if args.carpenter:
+        run_carpenter_life(host=args.host, port=args.port, ticks=args.ticks,
+                           monitor=args.monitor)
+        return
+
     if args.woodsman:
         run_woodsman_life(host=args.host, port=args.port, ticks=args.ticks,
                           monitor=args.monitor)
