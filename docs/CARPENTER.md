@@ -89,9 +89,45 @@ stuck at tick zero, and nothing beyond that is a gift. Every coin after that is 
 Worth noting what the uncaught version would have produced: a headline result of "the
 carpenter banked 940 gold", which is both impressive and false.
 
-## Next
+## The supply pair — done, and what it took
 
-The obvious continuation is the supply pair. `WoodsmanLife` already has `deliver_boards`
-in its capability set, and `CarpenterLife` already prefers `fetch_boards` — Bjorn hauling
-boards to Sten's drop point is the case both were built for, and the only arrangement in
-which a carpenter turns a profit.
+`python -m anima2.village --supply-pair` runs Bjorn hauling boards to Sten's drop point.
+Live, over 1200 ticks:
+
+```
+Bjorn  chop -> process -> deliver (40 boards on the ground, BOTH agents seeing them)
+Sten   fetch -> craft (2 thrones) -> sell
+Sten's gold: 15 (saw seed) -> 39 -> 63
+```
+
+Two independent agents, separate memories, no messages between them — one leaves
+material on the ground and the other finds it. Sten's 48 earned gold all came out of
+Bjorn's trees. It ends with Sten correctly WAITING (2 boards against a 19-board recipe,
+63 gold against a 114 restock) rather than standing at a shop he cannot pay for.
+
+It took four attempts, and each failure was a variation on one theme — a component that
+was individually right, disagreeing with its neighbours:
+
+1. **the handover tile was never checked.** The carpenter's vendor settled onto the drop
+   itself. The collision check compared shops against SHOPS and never looked at the tile
+   the boards had to land on.
+2. **the pair runner shipped without the want/admitted/ready telemetry**, so Bjorn
+   sitting on 20 logs for 123 samples said nothing about why.
+3. **the fetch rule ignored distance** while its gate requires `PICKUP_RADIUS`, so a
+   carpenter nine tiles away kept wanting a pickup admission had to refuse.
+4. **the leash bound only one agent.** Each life runs two agents with separate memories
+   and both planners end in `Wander`, which reads whichever is ticking. A carpenter has
+   no work skill, so it runs the ECONOMY agent nearly every tick — and that one was
+   never leashed. It drifted off the corridor and walked into a wall with
+   `fetch_boards` correctly wanted, admitted and ready the whole time.
+
+(4) was the decisive one, and probing the ground first is what made it findable: the
+delivery corridor (518,1043)-(518,1045) walks fine both ways and everything west of the
+stand is blocked, so the drop and the layout were right. Without the probe the obvious
+move would have been relocating a drop that had nothing wrong with it.
+
+**The economics do not change.** At vendor prices the village is still richer if Bjorn
+sells his boards, so supplying stays an explicit choice — `WoodsmanLife` only prefers a
+partner when `carpenter_drop` is configured, and an unpartnered woodsman is unaffected.
+What the pair proves is the mechanism, which is what pays the moment crafted goods are
+worth more than vendor scrap.
