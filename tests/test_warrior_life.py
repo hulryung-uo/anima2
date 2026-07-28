@@ -221,3 +221,34 @@ def test_hysteresis_resets_when_the_blade_is_wielded_within_grace():
     for _ in range(6):
         life.tick()
         assert life.mode == "hunt"  # equip resolved within grace -> never diverts
+
+
+def test_a_leash_binds_both_agents_not_just_the_one_currently_ticking():
+    # Each agent owns its own memory and BOTH planners end in `Wander`, which reads
+    # whichever agent is ticking. Live-caught with the carpenter — a profession with no
+    # work skill, so its ECONOMY agent runs nearly every tick — whose leash sat on the
+    # hunt agent's memory while the economy agent wandered three tiles off its supply
+    # drop, onto ground it could not walk back from.
+    from anima2.persona import Persona
+    from anima2.warrior_life import WarriorLife
+
+    class _Body:
+        connected = True
+        ready = {"player": {"serial": 1}}
+
+        def observe(self):
+            return _obs([])
+
+        def act(self, action):
+            pass
+
+    life = WarriorLife(body=_Body(), persona=Persona(name="Bram"))
+    life.set_leash((10, 20), 3)
+    for memory in (life.hunt_agent.memory, life.econ_agent.memory):
+        assert memory["wander_home"] == (10, 20)
+        assert memory["wander_leash"] == 3
+    # A home with no explicit leash leaves `Wander`'s own default in charge.
+    life2 = WarriorLife(body=_Body(), persona=Persona(name="Bram"))
+    life2.set_leash((1, 2))
+    for memory in (life2.hunt_agent.memory, life2.econ_agent.memory):
+        assert memory["wander_home"] == (1, 2) and "wander_leash" not in memory

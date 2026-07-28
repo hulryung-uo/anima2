@@ -246,6 +246,25 @@ class WarriorLife:
         self.target_cap: str | None = None
         self._econ_streak = 0
 
+    def set_leash(self, home: tuple[int, int], leash: int | None = None) -> None:
+        """Bound idle wandering on BOTH agents.
+
+        Each agent owns its own memory (deliberately — they coordinate through the
+        world, not a shared dict), and BOTH planners end in `Wander`, which reads the
+        memory of whichever agent is ticking. Setting a leash on one of them therefore
+        leashes the agent only while it happens to be in that mode.
+
+        Live-caught with the carpenter, whose profession has no work skill and so runs
+        the ECONOMY agent nearly every tick: its leash was written to the hunt agent's
+        memory, the economy agent wandered free, and it drifted three tiles off its
+        supply drop onto ground it could not walk back from. Its `fetch_boards` goal
+        stayed correctly admitted and ready the whole time, walking into a wall.
+        """
+        for memory in (self.hunt_agent.memory, self.econ_agent.memory):
+            memory["wander_home"] = home
+            if leash is not None:
+                memory["wander_leash"] = leash
+
     def set_route(self, key: str, value) -> None:
         """Configure a vendor route on both the decision inputs and the economy agent."""
         self.routes[key] = value

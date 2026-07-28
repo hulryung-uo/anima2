@@ -1503,7 +1503,7 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     bjorn = WoodsmanLife(body=bodies["woodsman"], persona=Persona(name="Bjorn"),
                          routes={**w_routes, "carpenter_drop": drop})
     bjorn.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
-    bjorn.memory["wander_home"] = (wx, wy)
+    bjorn.set_leash((wx, wy))
     sten = CarpenterLife(body=bodies["carpenter"], persona=Persona(name="Sten"),
                          routes=c_routes)
     for m in (sten.memory, sten.econ_agent.memory):
@@ -1516,8 +1516,7 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     shop_reach = max((max(abs(v[0][0] - drop[0]), abs(v[0][1] - drop[1]))
                       for v in c_routes.values()), default=1)
     sten_leash = min(max(1, shop_reach), PICKUP_RADIUS - 1)
-    sten.memory["wander_home"] = drop
-    sten.memory["wander_leash"] = sten_leash
+    sten.set_leash(drop, sten_leash)
     print(f"  Sten leashed to the drop at {sten_leash} tiles "
           f"(shops reach {shop_reach}, pickup radius {PICKUP_RADIUS})")
     print(f"staged: Bjorn@({wx},{wy}) -> drop {drop} -> Sten@({cx},{cy})\n")
@@ -1682,7 +1681,7 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
     life = CarpenterLife(body=body, persona=Persona(name="Sten"), routes=routes)
     life.memory["craft_spot"] = (cx, cy)
     life.econ_agent.memory["craft_spot"] = (cx, cy)
-    life.memory["wander_home"] = (cx, cy)
+    life.set_leash((cx, cy))
     print(f"staged: Sten@({cx},{cy}) with a saw and {seed}g seed "
           f"(reserve {BANK_RESERVE})\n")
 
@@ -1840,7 +1839,7 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
 
     life = WoodsmanLife(body=body, persona=Persona(name="Bjorn"), routes=routes)
     life.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
-    life.memory["wander_home"] = (wx, wy)
+    life.set_leash((wx, wy))
     print(f"staged: Bjorn@({wx},{wy}) with a hatchet, broke\n")
 
     status: dict[int, str] = {}
@@ -2524,8 +2523,7 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # then the mage was ~15 tiles away and `fetch_gold` (rightly) needs to SEE it.
         # Leash it to the DROP itself, tightly: the mage has to stay close enough to
         # notice a purse arriving, not merely close enough to be in the neighbourhood.
-        mage.memory["wander_home"] = MAGE_DROP
-        mage.memory["wander_leash"] = MAGE_LEASH
+        mage.set_leash(MAGE_DROP, MAGE_LEASH)
         # Budget the one shard: the mage yields most ticks so the artisan's
         # round-trip-hungry craft FSM actually gets served (see _ThrottledAgent).
         agents = [("tinker", tinker), ("mage", _ThrottledAgent(mage, mage_tick_every))]
