@@ -241,6 +241,7 @@ def test_capability_registry_is_unique_and_deeply_immutable():
         ("tinker", "buy_iron"),
         ("tinker", "buy_tinker_tool"),
         ("tinker", "deliver_gold"),
+        ("tinker", "fetch_iron"),
         ("swordsman", "bank_gold"),
         ("swordsman", "buy_weapon"),
         ("swordsman", "buy_bandage"),

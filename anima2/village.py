@@ -1591,6 +1591,144 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     print("\nthe pair's day is done")
 
 
+def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
+                   ticks: int = 1200, account_prefix: str = "animaforge",
+                   monitor: bool = False) -> None:
+    """The FLAGSHIP pair: Grimm mines and delivers iron, Pim turns it into tongs.
+
+    This is the one supply chain the shard's own price tables reward (pinned by
+    tests/test_price_tripwire.py): a raw ingot sells for 4g, a tongs — one ingot, one
+    craft — sells for 7g, so every delivered ingot is worth 1.75x its raw value and
+    the pair is POSITIVE-margin end to end, unlike the frozen lumberjack->carpenter
+    chain (-33g/throne; DESIGN.md §10). The corridor is the Phase-3 calibrated trade
+    ground (`TRADE_MINE_SPOT` -> `TRADE_SMITH_SPOT`), the miner is `live_trade.py`'s
+    own live-verified MineSmeltDeliver agent, and the tinker is the fifth Life —
+    born on the harness, with the concordance suite and the disagreement detector
+    already covering it.
+
+    Provenance: BOTH start broke; the tinker gets no iron and no gold. Every coin at
+    the end came out of the mountain.
+    """
+    from .life_runner import (
+        banked_amount,
+        enforce_gold_provenance,
+        monitor_ports,
+        pack_amount,
+        stage_shops,
+        telemetry_line,
+    )
+    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
+    from .skills.craft import PICKUP_RADIUS
+    from .skills.hunt import GOLD_GRAPHIC
+    from .skills.smelt import INGOT_GRAPHICS, MineSmeltDeliver
+    from .skills.tinkering import TONGS_GRAPHIC
+    from .planner import Planner
+    from .tinker_life import BANK_RESERVE, TinkerLife
+
+    print(f"raising the forge pair at {host}:{port}")
+    bodies = {}
+    seats = monitor_ports(monitor, ["miner", "tinker"])
+    for role, acct in (("miner", f"{account_prefix}m{fresh_suffix()}"),
+                       ("tinker", f"{account_prefix}t{fresh_suffix()}")):
+        try:
+            bodies[role] = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400,
+                                                  monitor_port=seats[role])
+            watch = f"  watch: http://127.0.0.1:{seats[role]}/" if seats[role] else ""
+            print(f"  {acct}: the {role}{watch}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  {acct} ({role}): login failed ({e})")
+        time.sleep(3.0)
+    if len(bodies) < 2:
+        print("the pair needs both; aborting")
+        for b in bodies.values():
+            if hasattr(b, "close"):
+                b.close()
+        return
+
+    login_throttle(GM_RELOGIN_COOLDOWN_S)
+    routes: dict = {}
+    with GmControl.spawn(host, port) as gm:
+        gm.hide()
+        serials = {r: b.ready["player"]["serial"] for r, b in bodies.items()}
+        allser = set(serials.values())
+        mx, my = TRADE_MINE_SPOT
+        sx, sy = TRADE_SMITH_SPOT
+        wipe_area(gm, (mx + sx) // 2, (my + sy) // 2,
+                  radius=max(abs(mx - sx), abs(my - sy)) // 2 + 10, z=20)
+        # The miner, exactly as live_trade.py stages it (its corridor and forge
+        # placement are live-calibrated; east/west of the smith stand is the miner's
+        # approach and must stay clear).
+        mgx, mgy, mgz = gm.stage(serials["miner"], mx, my, skills={"Mining": 35},
+                                 items=["Pickaxe", "Pickaxe"])
+        gm.command_at("[Add Forge", mgx + 1, mgy + 1, mgz)
+        gm.command_on('[Set Name "Grimm"', serials["miner"])
+        # The tinker at the calibrated smith stand with its tool and NOTHING else.
+        tgx, tgy, tgz = gm.stage(serials["tinker"], sx, sy,
+                                 skills=PROFESSIONS["tinker"].skills,
+                                 items=["TinkerTools 999"])
+        gm.command_on('[Set Name "Pim"', serials["tinker"])
+        for role in ("miner", "tinker"):
+            enforce_gold_provenance(gm, bodies[role], serials[role])
+        # One Tinker NPC serves every errand (SBTinker both sells iron at 5g and pays
+        # 7g for tongs) plus a Banker — on the hand-calibrated VENDOR/BANKER spots.
+        routes, _tiles = stage_shops(
+            gm, z=tgz, anchor=(tgx, tgy), exclude=allser,
+            spots={"vendor_spot": ("Tinker", VENDOR_SPOT[-1]),
+                   "banker_spot": ("Banker", BANKER_SPOT[-1])})
+
+    miner = Agent(body=bodies["miner"], persona=Persona(name="Grimm"),
+                  planner=Planner([MineSmeltDeliver()]))
+    miner.memory["smithy_drop"] = TRADE_SMITH_SPOT  # the deliver phase's only wiring
+
+    pim = TinkerLife(body=bodies["tinker"], persona=Persona(name="Pim"), routes=routes)
+    for m in (pim.memory, pim.econ_agent.memory):
+        m["craft_spot"] = (tgx, tgy)
+    # Leash Pim to the DROP (his own stand): far enough for his shops, strictly inside
+    # pickup reach so a delivery is always fetchable — the carpenter's derivation.
+    shop_reach = max((max(abs(v[0][0] - tgx), abs(v[0][1] - tgy))
+                      for v in routes.values()), default=1)
+    pim.set_leash((tgx, tgy), min(max(1, shop_reach), PICKUP_RADIUS - 1))
+    print(f"staged: Grimm@({mgx},{mgy}) -> drop {TRADE_SMITH_SPOT} -> Pim@({tgx},{tgy}) "
+          f"(reserve {BANK_RESERVE}, both broke)\n")
+
+    status: dict[int, str] = {}
+    lock = threading.Lock()
+    threads = []
+    for i, (role, agent) in enumerate((("miner", miner), ("tinker", pim))):
+        budget = ticks * getattr(agent, "tick_budget_scale", 1)
+        t = threading.Thread(target=_run_worker,
+                             args=(agent, budget, i, status, lock, role), daemon=True)
+        threads.append(t)
+        t.start()
+        time.sleep(0.7)
+
+    started = time.monotonic()
+    while any(t.is_alive() for t in threads):
+        time.sleep(4.0)
+        m_obs = getattr(miner.body, "last_obs", None)
+        p_obs = getattr(pim.body, "last_obs", None)
+
+        def _ground_iron(o):
+            return sum(i.amount for i in (o.items if o else [])
+                       if i.graphic in INGOT_GRAPHICS and i.container is None)
+        earned = pack_amount(p_obs, GOLD_GRAPHIC) + banked_amount(p_obs)
+        hours = max(1e-9, (time.monotonic() - started) / 3600.0)
+        with lock:
+            snap = [status[i] for i in sorted(status)]
+        print(f"— forge pair  grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}]  "
+              f"drop[grimm_sees={_ground_iron(m_obs)} pim_sees={_ground_iron(p_obs)}]  "
+              f"pim[{pim.mode} {telemetry_line(pim, 'tinker', p_obs)} "
+              f"iron={pack_amount(p_obs, INGOT_GRAPHICS)} "
+              f"tongs={pack_amount(p_obs, TONGS_GRAPHIC)} "
+              f"gold={pack_amount(p_obs, GOLD_GRAPHIC)} banked={banked_amount(p_obs)} "
+              f"net={earned:+d}g ({earned / hours:+.0f}g/h)] —")
+        for line in snap:
+            print(f"  {line}")
+    for t in threads:
+        t.join(timeout=5)
+    print("\nthe forge pair's day is done")
+
+
 def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
                        ticks: int = 900, account_prefix: str = "animacarp",
                        monitor: bool = False) -> None:
@@ -2377,6 +2515,10 @@ def main() -> None:
         default="anima",
         help="account/password prefix for isolated or repeatable village runs",
     )
+    ap.add_argument("--forge-pair", action="store_true",
+                    help="run the FLAGSHIP positive-margin chain: a miner delivering "
+                         "iron to a TinkerLife that crafts and sells tongs (7g per "
+                         "delivered ingot vs 4g raw)")
     ap.add_argument("--supply-pair", action="store_true",
                     help="run a lumberjack supplying a carpenter (deliver_boards -> "
                          "fetch_boards), coordinating only through the ground")
@@ -2450,6 +2592,11 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
+    if args.forge_pair:
+        run_forge_pair(host=args.host, port=args.port, ticks=args.ticks,
+                       monitor=args.monitor)
+        return
+
     if args.supply_pair:
         run_supply_pair(host=args.host, port=args.port, ticks=args.ticks,
                         monitor=args.monitor)

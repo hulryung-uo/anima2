@@ -297,3 +297,66 @@ def test_carpenter_rule_never_wants_what_its_gates_refuse():
     _assert_concordance("carpenter", carpenter_decide, cases,
                         {"craft_carpentry", "sell_furniture", "fetch_boards",
                          "buy_boards", "fetch_saw", "buy_saw", "bank_gold"})
+
+
+# --- tinker (the flagship positive chain) -------------------------------------------
+
+def test_tinker_rule_never_wants_what_its_gates_refuse():
+    from anima2.skills.smelt import INGOT_GRAPHICS
+    from anima2.skills.tinkering import (
+        FETCH_IRON_PACK_CAP,
+        TONGS_GRAPHIC,
+        BuyIron,
+        TinkerTongs,
+    )
+    from anima2.tinker_life import (
+        BANK_RESERVE,
+        IRON_BATCH_COST,
+        SELL_TONGS_AT,
+        TOOL_COST,
+        decide_mode as tinker_decide,
+    )
+
+    IRON = sorted(INGOT_GRAPHICS)[0]
+    TOOL = sorted(TinkerTongs.craft_tool_graphics)[0]
+    memory = {"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
+              "bank_reserve": BANK_RESERVE,
+              # The craft gate allows a small drift radius around this; the player
+              # fixture stands at (5, 5), inside it — the REAL wiring.
+              "craft_spot": (5, 5)}
+
+    tool_axis = {
+        "none": ([], []),
+        "packed": ([_item(TOOL)], []),
+        "foreign": ([_other_pack(), _item(TOOL, container=OTHER_PACK, distance=1)],
+                    [_other_mobile()]),
+    }
+    tongs_axis = [0, SELL_TONGS_AT - 1, SELL_TONGS_AT]
+    iron_axis = sorted({0, TinkerTongs.craft_material_per_item,
+                        BuyIron.buy_reorder - 1, BuyIron.buy_reorder,
+                        TinkerTongs.craft_material_per_item * TinkerTongs.craft_batch,
+                        FETCH_IRON_PACK_CAP - 1, FETCH_IRON_PACK_CAP})
+    ground_axis = {
+        "none": [],
+        "in_reach": [_item(IRON, 20, container=None, distance=PICKUP_RADIUS)],
+        "out_of_reach": [_item(IRON, 20, container=None,
+                               distance=PICKUP_RADIUS + 1)],
+    }
+    gold_axis = sorted({0, TOOL_COST - 1, TOOL_COST, IRON_BATCH_COST - 1,
+                        IRON_BATCH_COST, BANK_RESERVE, BANK_RESERVE + 1})
+
+    cases = []
+    for (_, (tool, mobs)), tongs, iron, (_, ground), gold in product(
+            tool_axis.items(), tongs_axis, iron_axis, ground_axis.items(), gold_axis):
+        items = [*tool, *ground]
+        if tongs:
+            items.append(_item(TONGS_GRAPHIC, tongs))
+        if iron:
+            items.append(_item(IRON, iron))
+        if gold:
+            items.append(_item(GOLD_GRAPHIC, gold))
+        cases.append((_obs(items, mobs), memory))
+
+    _assert_concordance("tinker", tinker_decide, cases,
+                        {"buy_tinker_tool", "sell_tongs", "fetch_iron", "craft_tongs",
+                         "buy_iron", "bank_gold"})

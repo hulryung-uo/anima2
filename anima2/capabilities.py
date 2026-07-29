@@ -25,6 +25,8 @@ from .skills.carpentry import (
     SellFurniture,
 )
 from .skills.tinkering import (
+    FETCH_IRON_PACK_CAP,
+    FetchIron,
     BuyIron,
     BuyTinkerTool,
     DeliverHatchet,
@@ -558,21 +560,27 @@ _BANK_GOLD = CapabilityBinding(
 )
 
 
-def _craft_at_spot(ctx: SkillContext, radius: int = 0) -> bool:
-    """At (within `radius` tiles of) the configured craft stand. `radius=0` is the
-    exact-tile match (the blacksmith, whose forge/anvil proximity is load-bearing —
-    byte-identical). A crafter with no fixed structure (carpenter/tinker craft with
-    a hand tool anywhere) uses a small radius so a tile or two of drift — from
-    fetching a delivered pile that landed off-centre, or returning from a vendor/
-    bank trip — doesn't leave it unable to craft (the silent-stall root cause)."""
-    spot = ctx.memory.get("craft_spot")
+def craft_spot_within(obs, memory, radius: int = 0) -> bool:
+    """At (within `radius` tiles of) the configured `craft_spot`. Public because the
+    Life RULES need the same predicate the craft gates apply: a rule that wants a craft
+    while standing outside the gate's radius is the rule-vs-gate stall class again
+    (docs/AUDIT-2026-07-29.md) — one function, both readers."""
+    spot = memory.get("craft_spot")
     if not (
         isinstance(spot, (tuple, list))
         and len(spot) == 2
         and all(type(value) is int for value in spot)
     ):
         return False
-    return max(abs(ctx.obs.player.pos.x - spot[0]), abs(ctx.obs.player.pos.y - spot[1])) <= radius
+    return max(abs(obs.player.pos.x - spot[0]), abs(obs.player.pos.y - spot[1])) <= radius
+
+
+def _craft_at_spot(ctx: SkillContext, radius: int = 0) -> bool:
+    """The gate-side wrapper over `craft_spot_within` — see its docstring. `radius=0`
+    is the exact-tile match (the blacksmith, whose forge/anvil proximity is
+    load-bearing); carpenters/tinkers use a small radius so a tile or two of drift
+    doesn't leave them unable to craft (the silent-stall root cause)."""
+    return craft_spot_within(ctx.obs, ctx.memory, radius)
 
 
 def _make_craft_ready(
@@ -1427,6 +1435,28 @@ def _make_fetch_ready(graphic: int, below: int):
     return ready
 
 
+def _make_fetch_ready_set(graphics: frozenset[int], below: int):
+    """Set-typed twin of `_make_fetch_ready`, for arts that ship as several graphics
+    (iron ingots are four). Same clauses: something of it on the ground in PICKUP
+    reach, the pack below `below`, and an idle steady-state UI."""
+
+    def ready(ctx: SkillContext) -> bool:
+        obs = ctx.obs
+        return bool(
+            _backpack_serial(ctx) is not None
+            and _nearby_ground_graphics(ctx, graphics) is not None
+            and _pack_graphics(ctx, graphics) < below
+            and ctx.memory.get("mkt_phase", "craft") == "craft"
+            and obs.pending_target is None
+            and not obs.gumps
+            and obs.popup is None
+            and obs.shop_buy is None
+            and obs.shop_sell is None
+        )
+
+    return ready
+
+
 def _deliver_achieved(ctx: SkillContext) -> bool:
     goal_id = ctx.goal_id
     needed = ctx.memory.get("cap_deliver_needed")
@@ -2087,6 +2117,21 @@ _DELIVER_HATCHET = CapabilityBinding(
 # boards: the tinker carries its purse to the fighter's funding spot (`deliver_gold`), and
 # the fighter picks it up (`fetch_gold`) and spends it on the supplies that let it fight
 # (`buy_reagent`).
+# The receiving half of the flagship positive-margin chain (audit proposal 6): a miner
+# delivers ingots to the forge stand, the tinker collects them and turns each into a
+# 7g tongs against the ingot's 4g raw value — the one craft chain that beats its input.
+_FETCH_IRON = CapabilityBinding(
+    capability_id="fetch_iron",
+    profession="tinker",
+    skill_type=FetchIron,
+    allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
+    ready=_make_fetch_ready_set(INGOT_GRAPHICS, FETCH_IRON_PACK_CAP),
+    achieved=_fetch_achieved,
+    progress=_fetch_progress,
+    can_yield=_fetch_can_yield,
+    default_deadline_ticks=180,
+)
+
 _DELIVER_GOLD = CapabilityBinding(
     capability_id="deliver_gold",
     profession="tinker",
@@ -2182,6 +2227,7 @@ CAPABILITIES: Mapping[tuple[str, str], CapabilityBinding] = MappingProxyType(
         # The crafter's funding leg: carry the craft-and-sell proceeds to the
         # fighter it bankrolls (the production pipeline's giving half).
         (_DELIVER_GOLD.profession, _DELIVER_GOLD.capability_id): _DELIVER_GOLD,
+        (_FETCH_IRON.profession, _FETCH_IRON.capability_id): _FETCH_IRON,
         # The sword-warrior's economy leg (driven in capability mode between hunts):
         # bank looted gold, and buy a replacement Katana if left unarmed.
         (_SWORDSMAN_BANK_GOLD.profession, _SWORDSMAN_BANK_GOLD.capability_id): _SWORDSMAN_BANK_GOLD,

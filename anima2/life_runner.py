@@ -289,6 +289,7 @@ class LifeRunner:
 
         status: dict[int, str] = {}
         lock = threading.Lock()
+        started = time.monotonic()
         budget = self.ticks * getattr(life, "tick_budget_scale", 1)
         t = threading.Thread(target=worker,
                              args=(life, budget, 0, status, lock, spec.profession),
@@ -300,10 +301,18 @@ class LifeRunner:
             extra = f" {spec.status_extra(life, obs)}" if spec.status_extra else ""
             with lock:
                 snap = [status[i] for i in sorted(status)]
+            # Net earned per hour: (pack + banked) - seed, over wall time. Provenance
+            # deleted the starter gold, so this is genuinely EARNED — and a negative
+            # rate is the audit's economic finding made visible live: both deployed
+            # craft loops destroy value at vendor prices, and a society scaled on a
+            # bleeding loop decays to bankruptcy without a line like this saying so.
+            earned = pack_amount(obs, GOLD_GRAPHIC) + banked_amount(obs) - staged.seed_gold
+            hours = max(1e-9, (time.monotonic() - started) / 3600.0)
             print(f"— {spec.profession} [{life.mode}] "
                   f"{telemetry_line(life, spec.profession, obs)}{extra} "
                   f"hp={hp_readout(obs)} gold={pack_amount(obs, GOLD_GRAPHIC)} "
-                  f"banked={banked_amount(obs)} —")
+                  f"banked={banked_amount(obs)} "
+                  f"net={earned:+d}g ({earned / hours:+.0f}g/h) —")
             for line in snap:
                 print(f"  {line}")
         t.join(timeout=5)

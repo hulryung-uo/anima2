@@ -40,9 +40,10 @@ Live-calibration source (against this ServUO, `scratchpad/gump_probe.py`): a
 
 from __future__ import annotations
 
-from .carpentry import SAW_GRAPHIC, SAW_GRAPHICS
+from .carpentry import SAW_GRAPHIC, SAW_GRAPHICS, FetchBoards
 from .craft import CraftItemCapability
 from .hunt import GOLD_GRAPHIC
+from .smelt import INGOT_GRAPHICS
 from .woodwork import DeliverBoards
 from .market import BuyMaterialCapability, BuyToolCapability, SellItemCapability
 
@@ -316,3 +317,27 @@ class DeliverGold(DeliverBoards):
     #: Worth a trip: enough for a reagent batch (20 ash @3g) several times over, so the
     #: crafter walks over with a meaningful purse rather than a handful of coins.
     deliver_threshold = 120
+
+
+#: The fetch_iron gate's pack cap: stop collecting delivered ingots once the pack
+#: already holds two buy-batches' worth. ONE definition, imported by both the
+#: capability gate (`capabilities._FETCH_IRON`) and `TinkerLife`'s rule — the same
+#: shared-constant discipline as `mage.FETCH_GOLD_PACK_CAP`, for the same reason
+#: (a rule and a gate disagreeing about this number is the stall class).
+FETCH_IRON_PACK_CAP = BuyIron.buy_amount * 2
+
+
+class FetchIron(FetchBoards):
+    """Tinker config: pick up the ingots a MINER delivered to the forge stand.
+
+    The receiving half of the flagship positive-margin chain (docs/AUDIT-2026-07-29.md
+    proposal 6): a miner mines and smelts for free, hauls the ingots over, and every
+    ingot the tinker turns into tongs sells for 7g against the 4g a raw ingot fetches —
+    the ONE craft chain on this shard that beats selling the input, and it only beats
+    it on DELIVERED iron (bought iron at 5g leaves +2g/tongs; delivered leaves +7g).
+    Same ground-pickup machinery as `FetchBoards`/`FetchGold`; only the arts differ.
+    """
+
+    name = "fetch_iron"
+    description = "Pick up delivered iron ingots from the ground into the pack for one verified goal."
+    fetched_graphics = INGOT_GRAPHICS
