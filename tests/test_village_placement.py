@@ -126,6 +126,7 @@ def test_a_throttled_agent_reports_what_its_yielded_ticks_cost():
     # unthrottled peer; without it the throttled one ends `every` times sooner.
     inner = _CountingAgent()
     agent = _ThrottledAgent(inner, every=8)
+    agent.yield_pause_s = 0  # the pause is a live scheduling point, not under test
     assert agent.tick_budget_scale == 8
     for _ in range(8 * 10):
         agent.tick()
@@ -142,6 +143,7 @@ def test_scaling_gives_a_throttled_agent_the_same_real_tick_count():
     ticks = 200
     inner = _CountingAgent()
     agent = _ThrottledAgent(inner, every=8)
+    agent.yield_pause_s = 0  # the pause is a live scheduling point, not under test
     for _ in range(ticks * agent.tick_budget_scale):
         agent.tick()
     assert inner.real_ticks == ticks

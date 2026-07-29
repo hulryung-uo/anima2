@@ -631,6 +631,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                 counterpart: str | None = None,
                 session_events: list[ChronicleEvent] | None = None) -> None:
     steps = says = 0
+    ticks_done = 0
     last_say = ""
     # PHASE6.md item 2's own bookkeeping (only touched when `chronicle` is
     # set): a snapshot of `agent.memory` and `agent.episodes.total_recorded`
@@ -747,6 +748,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
         if isinstance(action, Say):
             says += 1
             last_say = action.text
+        ticks_done += 1
         _pulse = (round(agent.episodes.total_reward(), 3), steps, says, p.x, p.y)
         _quiet = _quiet + 1 if _pulse == _last_pulse else 0
         _last_pulse = _pulse
@@ -754,7 +756,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             print(f"  ** {agent.persona.name}: NO PROGRESS for {_quiet} ticks "
                   f"(reward/steps/speech/position all frozen) **")
         with lock:
-            line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) "
+            line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) t={ticks_done} "
                     f"out+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
             if last_say:
                 line += f'  "{last_say[:60]}"'
@@ -2167,6 +2169,11 @@ class _ThrottledAgent:
     Duck-types as an `Agent` (like `WarriorLife`) so `_run_worker` drives it unchanged.
     """
 
+    #: Pause per YIELDED tick — a scheduling point, not a rate limit (see tick()).
+    #: A class attribute so the budget-scale unit tests can zero it: 1,600 paced
+    #: no-ops would cost them 16 seconds of pure sleep for nothing under test.
+    yield_pause_s: float = 0.01
+
     def __init__(self, inner, every: int = 3) -> None:
         self.inner = inner
         self.every = max(1, int(every))
@@ -2186,6 +2193,15 @@ class _ThrottledAgent:
     def tick(self):
         self._n += 1
         if self._n % self.every:
+            # Yield WITH a breath. A yielded tick used to cost literally nothing,
+            # which made the worker a GIL-hot pure-python spin between real ticks —
+            # the prime suspect for the steered-pipeline run whose main thread
+            # reached its monitor loop once in ~4 hours (health-check follow-up #4).
+            # 10ms per yielded tick bounds the cost at `(every-1)*10ms` per real
+            # tick (~70ms at every=8) while giving every other thread a scheduling
+            # point the spin never offered.
+            if self.yield_pause_s:
+                time.sleep(self.yield_pause_s)
             return None  # yield this tick: no observe, no action, no server traffic
         return self.inner.tick()
 
@@ -2478,8 +2494,19 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
             t.start()
             time.sleep(0.7)
 
+        # Monitor discipline (health-check follow-up #4): the steered run printed ONE
+        # status block in ~4 hours, and nothing in the log could say why — so the loop
+        # now (a) prints FIRST and sleeps after, so even a loop that somehow runs once
+        # shows the start-state, (b) timestamps every block with the wall-clock delta
+        # since the last one, making starvation and slowdown measurable IN the log,
+        # and (c) prints any body exception instead of letting anything swallow it.
+        _mon_started = time.monotonic()
+        _mon_last = _mon_started
+        _mon_n = 0
         while any(t.is_alive() for t in threads):
-            time.sleep(4.0)
+            _mon_now = time.monotonic()
+            _mon_gap, _mon_last = _mon_now - _mon_last, _mon_now
+            _mon_n += 1
             with lock:
                 snap = [status[i] for i in sorted(status)]
             mode = mage.mode
@@ -2498,16 +2525,23 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                 _goal = _cur.goal.params.get("capability") if _cur else None
             except Exception:  # noqa: BLE001 — telemetry must never break the run
                 _ready, _goal = ("?",), "?"
-            # Steering evidence (audit #8): every LLM consult as candidates->chosen. This
-        # line is the live gate's data — it proves the model chose, chose among what
-        # the rule admitted, and nothing else.
-        if mage.steering_log:
-            cands, chosen, used = mage.steering_log[-1]
-            print(f"  steer#{len(mage.steering_log)}: {list(cands)} -> {chosen} "
-                  f"({'LLM' if used else 'fallback'})")
-        print(f"— artisan+mage village [mage:{mode}] {_pipeline_progress(tin_tap, mage)} "
+            # Steering evidence (audit #8): every LLM consult as candidates->chosen.
+            # NOTE the indentation of this whole block is LOAD-BEARING: its first
+            # version sat one level too shallow, which silently moved every print
+            # below OUT of the while loop — the run monitored nothing for four hours
+            # and printed once at exit, and a whole "monitor starvation" investigation
+            # (health-check follow-up #4) traced back to exactly this dedent.
+            if mage.steering_log:
+                cands, chosen, used = mage.steering_log[-1]
+                print(f"  steer#{len(mage.steering_log)}: {list(cands)} -> {chosen} "
+                      f"({'LLM' if used else 'fallback'})")
+            print(f"[mon#{_mon_n} +{_mon_gap:.0f}s "
+                  f"T+{(_mon_now - _mon_started) / 60:.1f}m] "
+                  f"— artisan+mage village [mage:{mode}] "
+                  f"{_pipeline_progress(tin_tap, mage)} "
                   f"artisan_ready={list(_ready)} artisan_goal={_goal} —"
                   f"\n  " + "\n  ".join(snap))
+            time.sleep(4.0)  # sleep AFTER printing — a starved loop still shows state
         for t in threads:
             t.join()
     finally:
