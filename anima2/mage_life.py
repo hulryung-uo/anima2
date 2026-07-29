@@ -75,6 +75,28 @@ def _ground_gold(obs: Observation) -> int:
                and i.distance <= PICKUP_RADIUS)
 
 
+def decide_candidates(obs: Observation, memory: dict) -> list[str]:
+    """Every economy capability the rule considers admissible RIGHT NOW, in priority
+    order. `decide_mode` is exactly `candidates[0]` — one predicate set, two views —
+    and the LLM steering slice (audit #8) chooses ONLY among this list, so the model
+    can never mint an option the rule did not already admit (the closed-vocabulary
+    discipline B4 established, applied to the orchestrator)."""
+    if obs.player.dead:
+        return []
+    out: list[str] = []
+    gold = _pack_amount(obs, GOLD_GRAPHIC)
+    if (_pack_amount(obs, SULFUROUS_ASH_GRAPHIC) < LOW_REAGENTS
+            and gold >= REAGENT_BATCH_COST
+            and _valid_spot(memory.get("mage_vendor_spot"))):
+        out.append("buy_reagent")
+    if _ground_gold(obs) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
+        out.append("fetch_gold")
+    if gold > memory.get("bank_reserve", BANK_RESERVE) \
+            and _valid_spot(memory.get("banker_spot")):
+        out.append("bank_gold")
+    return out
+
+
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """Pick ``("hunt", None)`` or ``("economy", capability_id)`` for a mage.
 
@@ -87,22 +109,8 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """
     if obs.player.dead:
         return "hunt", None  # RecoverDeath (a hunt-planner reflex) owns the death window
-    gold = _pack_amount(obs, GOLD_GRAPHIC)
-    if (_pack_amount(obs, SULFUROUS_ASH_GRAPHIC) < LOW_REAGENTS
-            and gold >= REAGENT_BATCH_COST
-            and _valid_spot(memory.get("mage_vendor_spot"))):
-        return "economy", "buy_reagent"
-    # The pipeline closing into the mage's own life: a crafter's purse is on the ground,
-    # so go and pick it up — that gold is what the next reagent batch is bought with.
-    # The pack cap is the GATE'S OWN (one shared constant): once the purse already holds
-    # a few reagent batches' worth, admission refuses the fetch, so wanting it would be
-    # the stall shape this project keeps paying for.
-    if _ground_gold(obs) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
-        return "economy", "fetch_gold"
-    if gold > memory.get("bank_reserve", BANK_RESERVE) \
-            and _valid_spot(memory.get("banker_spot")):
-        return "economy", "bank_gold"
-    return "hunt", None
+    candidates = decide_candidates(obs, memory)
+    return ("economy", candidates[0]) if candidates else ("hunt", None)
 
 
 class MageLife(WarriorLife):
@@ -115,6 +123,7 @@ class MageLife(WarriorLife):
     """
 
     decide = staticmethod(decide_mode)
+    decide_all = staticmethod(decide_candidates)
     DEFAULT_BANK_RESERVE = BANK_RESERVE
 
     def __init__(self, body, persona, profession: str = "mage",

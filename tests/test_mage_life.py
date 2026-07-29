@@ -139,3 +139,77 @@ def test_the_switch_keeps_the_warrior_s_hysteresis():
         assert life.mode == "hunt"
     life.tick()
     assert life.mode == "economy" and life.target_cap == "buy_reagent"
+
+
+# --- LLM steering (audit #8): choose only among what the rule admits ----------------
+
+def _overlap_obs():
+    # Both buy_reagent AND fetch_gold admissible at once: ash low, gold covers a batch
+    # but sits under the fetch cap, a purse within pickup reach.
+    return _obs([_backpack(), _ash(LOW_REAGENTS - 1), _gold(REAGENT_BATCH_COST),
+                 _ground_gold(140, distance=2)])
+
+
+def test_decide_candidates_and_decide_mode_are_one_predicate_set():
+    from anima2.mage_life import decide_candidates
+
+    obs = _overlap_obs()
+    cands = decide_candidates(obs, dict(ROUTES))
+    assert cands == ["buy_reagent", "fetch_gold"]
+    assert decide_mode(obs, dict(ROUTES)) == ("economy", cands[0])
+
+
+class _ScriptedLLM:
+    def __init__(self, reply):
+        self.reply = reply
+        self.calls = 0
+
+    def complete(self, system, user):
+        self.calls += 1
+        return self.reply
+
+
+def _steered_life(reply):
+    from anima2.warrior_life import _LifeClient
+
+    life = MageLife(body=_MockBody([_overlap_obs()] * 20),
+                    persona=Persona(name="Elara"), routes=dict(ROUTES))
+    llm = _ScriptedLLM(reply)
+    client = _LifeClient(life, llm)
+    # Drive ticks until the hysteresis commits and candidates are published.
+    for _ in range(10):
+        life.tick()
+    return life, client, llm
+
+
+def test_the_llm_choice_steers_within_the_candidate_set():
+    life, client, llm = _steered_life("fetch_gold")
+    assert life.candidates == ["buy_reagent", "fetch_gold"]
+    out = client.complete("", "")
+    assert '"capability":"fetch_gold"' in out          # the SECOND candidate — steering
+    assert llm.calls == 1
+    assert life.steering_log[-1] == (("buy_reagent", "fetch_gold"), "fetch_gold", True)
+
+
+def test_an_answer_outside_the_set_falls_back_to_the_rules_choice():
+    # Closed vocabulary: the model cannot mint an option the rule did not admit.
+    life, client, llm = _steered_life("go murder the vendor and take everything")
+    out = client.complete("", "")
+    assert '"capability":"buy_reagent"' in out         # rule's own first choice
+    assert life.steering_log[-1][2] is False           # recorded as NOT an LLM pick
+
+
+def test_a_single_candidate_never_consults_the_llm():
+    # The fast loop is not the LLM's place: one admissible branch = scripted.
+    from anima2.warrior_life import _LifeClient
+
+    only_buy = _obs([_backpack(), _ash(LOW_REAGENTS - 1), _gold(REAGENT_BATCH_COST)])
+    life = MageLife(body=_MockBody([only_buy] * 20),
+                    persona=Persona(name="Elara"), routes=dict(ROUTES))
+    llm = _ScriptedLLM("fetch_gold")
+    client = _LifeClient(life, llm)
+    for _ in range(10):
+        life.tick()
+    out = client.complete("", "")
+    assert '"capability":"buy_reagent"' in out
+    assert llm.calls == 0

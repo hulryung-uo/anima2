@@ -248,9 +248,11 @@ class LifeRunner:
     """Owns the run sequence every solo Life shares. See the module docstring."""
 
     def __init__(self, spec: LifeSpec, *, host: str = "127.0.0.1", port: int = 2594,
-                 ticks: int = 600, monitor: bool = False) -> None:
+                 ticks: int = 600, monitor: bool = False,
+                 persist_insights: bool = False) -> None:
         self.spec = spec
         self.host, self.port, self.ticks, self.monitor = host, port, ticks, monitor
+        self.persist_insights = persist_insights
 
     def run(self, worker: Callable) -> None:
         """`worker` is the village's `_run_worker` (injected to avoid an import cycle —
@@ -280,6 +282,7 @@ class LifeRunner:
                 gm.command_on(f"[AddToPack Gold {staged.seed_gold}", serial)
 
         life = spec.life_factory(body, Persona(name=spec.persona_name), staged.routes)
+        self._wire_persistence(life)
         life.memory.update(staged.memory)
         life.econ_agent.memory.update(staged.econ_memory)
         life.set_leash(staged.home, staged.leash)
@@ -317,3 +320,40 @@ class LifeRunner:
                 print(f"  {line}")
         t.join(timeout=5)
         print(f"\nthe {spec.profession}'s day is done")
+
+
+    def _wire_persistence(self, life) -> None:
+        """Phase-6 persistence for a Life (audit #8): the hunt agent — the one that
+        does the living — reflects through the tiered LLM, its insights persist to
+        `data/insights.jsonl` under the persona's key, and a prior session's insights
+        are LOADED at construction so live hours finally compound instead of being
+        discarded at exit. Mirrors `run_village`'s own live-verified wiring; degrades
+        honestly (a note, not a crash) when no LLM provider builds."""
+        if not self.persist_insights:
+            return
+        try:
+            from pathlib import Path
+
+            from .cognition import (
+                LLMCognition,
+                LLMReflection,
+                ReflectingCognition,
+                ThreadedCognition,
+            )
+            from .llm import build_tiered_clients
+            from .memory import load_insights
+
+            clients = build_tiered_clients()
+            insights = load_insights(Path("data") / "insights.jsonl",
+                                     self.spec.persona_name)
+            prior = insights.recent(1)
+            if prior:
+                print(f"  resumed insight: \"{prior[-1].text[:70]}\"")
+            life.hunt_agent.cognition = ThreadedCognition(ReflectingCognition(
+                LLMCognition(clients["cheap"], job=self.spec.profession),
+                LLMReflection(clients["cheap"]),
+                insights=insights,
+            ))
+            print(f"  persistence: insights load+persist for {self.spec.persona_name}")
+        except Exception as e:  # noqa: BLE001 — persistence must never break the life
+            print(f"  persistence requested but not wired ({e}); running without")

@@ -1715,7 +1715,19 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         hours = max(1e-9, (time.monotonic() - started) / 3600.0)
         with lock:
             snap = [status[i] for i in sorted(status)]
-        print(f"— forge pair  grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}]  "
+        # When a bank_gold goal holds the stack, show the FSM's own stage keys — an
+        # ADMITTED goal that does not progress is invisible to both the concordance
+        # suite (steady-state only) and the disagreement detector (no-goal guard), so
+        # the FSM has to say where it is stuck itself.
+        bank_state = ""
+        cur = pim.econ_agent.goal_stack.current
+        if cur is not None and cur.goal.params.get("capability") == "bank_gold":
+            m = pim.econ_agent.memory
+            bank_state = (f" bank(stage={m.get('bank_stage')} leg={m.get('bank_leg')} "
+                          f"banker={m.get('bank_banker')} "
+                          f"attempts={m.get('bank_deposit_attempts')} "
+                          f"popup_wait={m.get('bank_popup_wait')})")
+        print(f"— forge pair {bank_state} grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}]  "
               f"drop[grimm_sees={_ground_iron(m_obs)} pim_sees={_ground_iron(p_obs)}]  "
               f"pim[{pim.mode} {telemetry_line(pim, 'tinker', p_obs)} "
               f"iron={pack_amount(p_obs, INGOT_GRAPHICS)} "
@@ -1787,7 +1799,7 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
 
 def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                       ticks: int = 600, account_prefix: str = "animawood",
-                      monitor: bool = False,
+                      monitor: bool = False, persist_insights: bool = False,
                       forest: tuple[int, int] = YEW_FOREST) -> None:
     """Run ONE lumberjack LIVING the full autonomous loop via `WoodsmanLife`.
 
@@ -1849,6 +1861,7 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                      body=body, persona=persona, routes=routes),
                  stage=stage, status_extra=status_extra),
         host=host, port=port, ticks=ticks, monitor=monitor,
+        persist_insights=persist_insights,
     ).run(_run_worker)
 
 
@@ -2274,7 +2287,8 @@ from .life_runner import monitor_ports as _monitor_ports  # noqa: E402
 def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                             ticks: int = 400, account_prefix: str = "animapipe",
                             prey: str = "Ettin", mage_tick_every: int = 8,
-                            monitor: bool = False) -> None:
+                            monitor: bool = False,
+                            steer_mage: str = "scripted") -> None:
     """Run the WHOLE production pipeline unattended: an artisan and a mage, side by side.
 
     This is the goal's arc turned into a standing village rather than a scripted proof. The
@@ -2419,7 +2433,8 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         mage = MageLife(body=bodies["mage"],
                         persona=Persona(name="Mage", combat_disposition="aggressive"),
                         routes={"mage_vendor_spot": [MAGE_VENDOR],
-                                "banker_spot": [MAGE_BANKER]})
+                                "banker_spot": [MAGE_BANKER]},
+                        steering=steer_mage)
         # Leash the mage to its plaza. Without this it wanders off once the prey is dead
         # and never observes the purse the artisan delivers — live-caught here: a correct
         # `deliver_gold` handed over 140 gold that simply sat on the ground, because by
@@ -2468,7 +2483,14 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                 _goal = _cur.goal.params.get("capability") if _cur else None
             except Exception:  # noqa: BLE001 — telemetry must never break the run
                 _ready, _goal = ("?",), "?"
-            print(f"— artisan+mage village [mage:{mode}] {_pipeline_progress(tin_tap, mage)} "
+            # Steering evidence (audit #8): every LLM consult as candidates->chosen. This
+        # line is the live gate's data — it proves the model chose, chose among what
+        # the rule admitted, and nothing else.
+        if mage.steering_log:
+            cands, chosen, used = mage.steering_log[-1]
+            print(f"  steer#{len(mage.steering_log)}: {list(cands)} -> {chosen} "
+                  f"({'LLM' if used else 'fallback'})")
+        print(f"— artisan+mage village [mage:{mode}] {_pipeline_progress(tin_tap, mage)} "
                   f"artisan_ready={list(_ready)} artisan_goal={_goal} —"
                   f"\n  " + "\n  ".join(snap))
         for t in threads:
@@ -2515,6 +2537,10 @@ def main() -> None:
         default="anima",
         help="account/password prefix for isolated or repeatable village runs",
     )
+    ap.add_argument("--steer-mage", choices=["scripted", "llm"], default="scripted",
+                    help="pipeline only: let a real LLM pick the mage's economy branch "
+                         "whenever 2+ are simultaneously admissible (closed vocabulary; "
+                         "an invalid answer falls back to the rule's own choice)")
     ap.add_argument("--forge-pair", action="store_true",
                     help="run the FLAGSHIP positive-margin chain: a miner delivering "
                          "iron to a TinkerLife that crafts and sells tongs (7g per "
@@ -2609,12 +2635,13 @@ def main() -> None:
 
     if args.woodsman:
         run_woodsman_life(host=args.host, port=args.port, ticks=args.ticks,
-                          monitor=args.monitor)
+                          monitor=args.monitor,
+                          persist_insights=args.persist_insights)
         return
 
     if args.pipeline:
         run_artisan_mage_village(host=args.host, port=args.port, ticks=args.ticks,
-                                 monitor=args.monitor,
+                                 monitor=args.monitor, steer_mage=args.steer_mage,
                                  account_prefix=args.account_prefix,
                                  mage_tick_every=args.mage_tick_every)
         return

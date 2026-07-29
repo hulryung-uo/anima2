@@ -183,14 +183,52 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
 
 
 class _LifeClient:
-    """The economy agent's cognition client — returns whichever capability the
-    orchestrator currently wants (set each tick by `WarriorLife`)."""
+    """The economy agent's cognition client.
 
-    def __init__(self, life: "WarriorLife") -> None:
+    Scripted by default: it returns whichever capability the orchestrator's rule wants
+    (set each tick by `WarriorLife`), as fake LLM JSON — which is what the audit called
+    out as "no cognition steers any Life". With `steering="llm"` it becomes the first
+    REAL steering slice (audit #8): whenever the rule finds TWO OR MORE branches
+    simultaneously admissible (`decide_candidates`), a real LLM picks among exactly
+    those; a single candidate stays scripted (no call — the fast loop is not the LLM's
+    place), and an answer outside the candidate list falls back to the rule's own
+    first choice. The model can never mint an option the rule did not admit — the
+    closed-vocabulary discipline (B4), applied to the orchestrator.
+
+    Every LLM consult is appended to `life.steering_log` as
+    `(candidates, chosen, used_llm)` so a live gate can audit the choices afterwards.
+    """
+
+    def __init__(self, life: "WarriorLife", llm=None) -> None:
         self._life = life
+        self._llm = llm
+
+    def _pick(self) -> str | None:
+        cands = list(self._life.candidates)
+        if not cands:
+            return None
+        if self._llm is None or len(cands) < 2:
+            return cands[0]
+        try:
+            reply = self._llm.complete(
+                "You steer a UO character's economy. Answer with EXACTLY one word: "
+                "one item from the allowed list. No punctuation, no explanation.",
+                "The character can do any ONE of these right now, all currently "
+                f"possible and safe: {', '.join(cands)}. Which single one should it "
+                "do first?",
+            )
+            token = str(reply).strip().strip('."\'` ').lower()
+            chosen = next((c for c in cands if c == token or c in token), None)
+        except Exception:  # noqa: BLE001 — a steering consult must never break the life
+            chosen = None
+        used = chosen is not None
+        if chosen is None:
+            chosen = cands[0]  # closed vocabulary: an invalid answer changes nothing
+        self._life.steering_log.append((tuple(cands), chosen, used))
+        return chosen
 
     def complete(self, system: str, user: str) -> str:
-        cap = self._life.target_cap
+        cap = self._pick()
         if cap is None:
             return '{"schema":1,"decision":"idle"}'
         return '{"schema":1,"decision":"capability","capability":"%s"}' % cap
@@ -246,6 +284,11 @@ class WarriorLife:
     #: rest of the orchestrator (two agents, separate memories, the hysteresis, the
     #: caching body, the Agent-compatible surface) is profession-agnostic.
     decide = staticmethod(decide_mode)
+    #: The rule's full admissible set (a list, priority order). Subclasses with a real
+    #: multi-branch rule (the mage) point this at their own `decide_candidates`; the
+    #: default derives a one-element set from `decide`, so steering is a no-op for
+    #: professions that have not opted in.
+    decide_all = None
 
     #: Per-class default for the `bank_reserve` the constructor writes; subclasses
     #: override with their own derived reserve.
@@ -254,8 +297,24 @@ class WarriorLife:
     def __init__(self, body, persona: Persona, profession: str = "swordsman",
                  routes: dict | None = None, *,
                  bank_reserve: int | None = None,
-                 econ_grace: int = ECON_GRACE) -> None:
+                 econ_grace: int = ECON_GRACE,
+                 steering: str = "scripted") -> None:
         prof = PROFESSIONS[profession]
+        #: Steering evidence: every LLM consult as (candidates, chosen, used_llm).
+        self.steering_log: list[tuple[tuple[str, ...], str, bool]] = []
+        #: The rule's full admissible set this tick (see `decide_candidates`).
+        self.candidates: list[str] = []
+        llm = None
+        if steering == "llm":
+            # A real slow-loop brain, degrading HONESTLY: if no provider builds, the
+            # life stays scripted and says so, rather than dying or pretending.
+            try:
+                from .llm import build_tiered_clients
+                llm = build_tiered_clients()["cheap"]
+                print(f"  steering: LLM ({type(llm).__name__}) picks when 2+ branches are admissible")
+            except Exception as e:  # noqa: BLE001
+                print(f"  steering: requested llm but none built ({e}); staying scripted")
+        self._steering_llm = llm
         # Wrap the body so the inner agents' own observes cache the world state; the
         # orchestrator then decides the mode off that cache with no extra pump.
         self.body = _CachingBody(body)
@@ -267,7 +326,7 @@ class WarriorLife:
         self.econ_agent = Agent(
             body=self.body, persona=persona,
             planner=prof.planner(capability_goals=True),
-            cognition=CapabilityCognition(_LifeClient(self), profession),
+            cognition=CapabilityCognition(_LifeClient(self, llm), profession),
             cognition_interval=1, profession=profession,
             goal_policy=CapabilityPolicy(profession),
         )
@@ -340,6 +399,15 @@ class WarriorLife:
         else:
             self._econ_streak = 0
         self.mode, self.target_cap = mode, cap
+        # The admissible SET, for the steering client: the rule's own candidates when
+        # the profession exposes them, else exactly the one capability `decide` chose.
+        if self.mode == "economy":
+            if type(self).decide_all is not None:
+                self.candidates = list(type(self).decide_all(obs, self.econ_agent.memory))
+            else:
+                self.candidates = [cap] if cap else []
+        else:
+            self.candidates = []
         self._detect_disagreement(obs)
         return action
 
