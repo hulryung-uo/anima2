@@ -252,3 +252,64 @@ def test_a_leash_binds_both_agents_not_just_the_one_currently_ticking():
     life2.set_leash((1, 2))
     for memory in (life2.hunt_agent.memory, life2.econ_agent.memory):
         assert memory["wander_home"] == (1, 2) and "wander_leash" not in memory
+
+
+# --- the rule-vs-gate disagreement detector ------------------------------------------
+#
+# Six live failures shared one state: the rule WANTED an economy capability, no goal was
+# admitted, and the gate refused — for whole runs, with no outward signature. The
+# orchestrator now detects that state itself instead of leaving it to bespoke telemetry.
+
+def _rich_unarmed_obs():
+    # A warrior with no weapon and plenty of gold: the rule wants buy_weapon.
+    return _obs([_backpack(), _gold(500)])
+
+
+def test_a_persistent_disagreement_is_flagged_after_the_grace_window():
+    from anima2.warrior_life import DISAGREEMENT_TICKS, ECON_GRACE, WarriorLife
+
+    obs = _rich_unarmed_obs()
+    life = WarriorLife(body=_MockBody([obs] * (ECON_GRACE + DISAGREEMENT_TICKS + 4)),
+                       persona=Persona(name="Bram"),
+                       # NO weapon_vendor route in the ECON memory but present for the
+                       # RULE: the rule wants buy_weapon, the gate (which reads the econ
+                       # agent's memory) refuses for lack of a route — a real drift.
+                       routes={})
+    life.routes["weapon_vendor_spot"] = ((10, 10),)  # rule-side only, deliberately
+    for _ in range(ECON_GRACE + DISAGREEMENT_TICKS + 2):
+        life.tick()
+    assert life.rule_gate_disagreement is not None
+    cap, streak = life.rule_gate_disagreement
+    assert cap == "buy_weapon" and streak >= DISAGREEMENT_TICKS
+
+
+def test_a_healthy_admitted_goal_never_trips_the_detector():
+    # Gates de-assert MID-transaction by design (a buy in flight holds a goal and shows
+    # not-ready) — the no-goal guard must make that invisible to the detector.
+    from anima2.warrior_life import DISAGREEMENT_TICKS, ECON_GRACE, WarriorLife
+
+    obs = _rich_unarmed_obs()
+    life = WarriorLife(body=_MockBody([obs] * (ECON_GRACE + DISAGREEMENT_TICKS + 4)),
+                       persona=Persona(name="Bram"),
+                       routes={"weapon_vendor_spot": ((10, 10),)})
+    for _ in range(ECON_GRACE + DISAGREEMENT_TICKS + 2):
+        life.tick()
+    # The gate agrees here (route present in econ memory, gold in pack), so whether or
+    # not a goal is admitted, no disagreement may be reported.
+    assert life.rule_gate_disagreement is None
+
+
+def test_the_flag_clears_when_the_disagreement_resolves():
+    from anima2.warrior_life import DISAGREEMENT_TICKS, ECON_GRACE, WarriorLife
+
+    obs = _rich_unarmed_obs()
+    life = WarriorLife(body=_MockBody([obs] * (ECON_GRACE + DISAGREEMENT_TICKS * 2 + 6)),
+                       persona=Persona(name="Bram"), routes={})
+    life.routes["weapon_vendor_spot"] = ((10, 10),)
+    for _ in range(ECON_GRACE + DISAGREEMENT_TICKS + 2):
+        life.tick()
+    assert life.rule_gate_disagreement is not None
+    # Heal the drift: give the ECON memory the route the gate was missing.
+    life.econ_agent.memory["weapon_vendor_spot"] = ((10, 10),)
+    life.tick()
+    assert life.rule_gate_disagreement is None

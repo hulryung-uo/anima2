@@ -728,6 +728,13 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             prev_recorded = agent.episodes.total_recorded
 
         steps += isinstance(action, Walk)
+        # A Life that has detected a rule-vs-gate disagreement says so LOUDLY, every
+        # tick it persists. Six live failures sat in exactly this state looking like an
+        # agent at work; the one thing that must never happen again is it being quiet.
+        _disagree = getattr(agent, "rule_gate_disagreement", None)
+        if _disagree is not None:
+            print(f"  ** {agent.persona.name}: RULE-vs-GATE DISAGREEMENT — wants "
+                  f"{_disagree[0]!r}, admission refuses, {_disagree[1]} ticks **")
         if isinstance(action, Say):
             says += 1
             last_say = action.text

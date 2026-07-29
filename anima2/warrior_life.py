@@ -68,6 +68,13 @@ BANK_ABOVE = 400
 #: interrupt EquipWeapon and strand the blade. During the grace the hunt agent keeps
 #: running, so it wields an OWNED blade first; only a genuine loss survives the grace.
 ECON_GRACE = 6
+#: Consecutive ticks the rule may WANT an economy capability that admission never grants
+#: (no goal on the stack, capability absent from the ready set) before the orchestrator
+#: flags a rule-vs-gate disagreement. High enough that a healthy transaction can never
+#: trip it: ready gates deliberately de-assert MID-transaction (a buy in flight holds a
+#: goal and shows not-ready), which is why the no-goal guard below is mandatory, not an
+#: optimization.
+DISAGREEMENT_TICKS = 10
 
 
 def _backpack(obs: Observation) -> int | None:
@@ -245,6 +252,12 @@ class WarriorLife:
         self.mode = "hunt"
         self.target_cap: str | None = None
         self._econ_streak = 0
+        self._profession_key = profession
+        self._disagree_streak = 0
+        #: `(capability_id, streak)` once a rule-vs-gate disagreement has persisted for
+        #: `DISAGREEMENT_TICKS`; `None` while healthy. Runners print this loudly — six
+        #: live failures were exactly this state with no outward signature.
+        self.rule_gate_disagreement: tuple[str, int] | None = None
 
     def set_leash(self, home: tuple[int, int], leash: int | None = None) -> None:
         """Bound idle wandering on BOTH agents.
@@ -293,7 +306,39 @@ class WarriorLife:
         else:
             self._econ_streak = 0
         self.mode, self.target_cap = mode, cap
+        self._detect_disagreement(obs)
         return action
+
+    def _detect_disagreement(self, obs) -> None:
+        """Self-report the stall this project kept paying to discover live.
+
+        The shape: the rule WANTS an economy capability, no goal is on the stack, and the
+        capability's own readiness gate refuses — for `DISAGREEMENT_TICKS` straight. Each
+        of the six documented live failures sat in exactly this state, outwardly
+        indistinguishable from an agent at work, until a bespoke instrumentation round
+        named it. The no-goal guard is mandatory: gates de-assert mid-transaction by
+        design, so a naive want-but-not-ready check false-fires on every healthy buy.
+
+        Pure reads over this tick's cached observation — no extra pump.
+        """
+        from .capabilities import ready_capability_ids
+        from .skills.base import SkillContext
+
+        disagreeing = False
+        if self.mode == "economy" and self.target_cap is not None \
+                and self.econ_agent.goal_stack.current is None:
+            try:
+                ctx = SkillContext(obs=obs, persona=self.econ_agent.persona,
+                                   memory=self.econ_agent.memory)
+                disagreeing = self.target_cap not in ready_capability_ids(
+                    self._profession_key, ctx)
+            except Exception:  # noqa: BLE001 — a detector must never break the life
+                disagreeing = False
+        self._disagree_streak = self._disagree_streak + 1 if disagreeing else 0
+        if self._disagree_streak >= DISAGREEMENT_TICKS:
+            self.rule_gate_disagreement = (self.target_cap, self._disagree_streak)
+        else:
+            self.rule_gate_disagreement = None
 
     # --- Agent-compatible surface, so any agent runner (e.g. village._run_worker)
     # drives a WarriorLife unchanged. The HUNT agent is the primary: it does the
