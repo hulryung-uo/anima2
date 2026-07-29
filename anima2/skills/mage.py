@@ -283,6 +283,14 @@ class BuyReagent(BuyMaterialCapability):
     vendor_spot_key = "mage_vendor_spot"
 
 
+#: The fetch_gold gate's pack cap: stop collecting once the purse already holds a few
+#: reagent batches' worth. ONE definition, imported by both the capability gate
+#: (`capabilities._FETCH_GOLD`) and the mage's Life rule — the gate and the rule
+#: disagreeing about exactly this number is how a mage once wanted a pickup admission
+#: had to refuse (the rule-vs-gate stall class; see docs/AUDIT-2026-07-29.md).
+FETCH_GOLD_PACK_CAP = BuyReagent.buy_amount * BuyReagent.buy_price_estimate * 3
+
+
 class FetchGold(FetchBoards):
     """Mage config: pick up the gold a CRAFTER dropped at the mage's funding spot.
 

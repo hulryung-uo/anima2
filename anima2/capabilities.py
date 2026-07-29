@@ -45,7 +45,12 @@ from .skills.market import (
     _bank_reserve,
 )
 from .skills.smelt import INGOT_GRAPHICS
-from .skills.mage import BuyReagent, CastAttack, FetchGold  # noqa: F401
+from .skills.mage import (  # noqa: F401
+    FETCH_GOLD_PACK_CAP,
+    BuyReagent,
+    CastAttack,
+    FetchGold,
+)
 from .skills.tinkering import DeliverGold
 from .skills.warrior import (
     PLATE_ARMOR_LAYERS,
@@ -2100,7 +2105,7 @@ _FETCH_GOLD = CapabilityBinding(
     skill_type=FetchGold,
     allowed_sources=frozenset({GoalSource.COGNITION, GoalSource.USER, GoalSource.SYSTEM}),
     # Collect delivered gold whenever the purse is below a few reagent batches' worth.
-    ready=_make_fetch_ready(_GOLD_GRAPHIC, BuyReagent.buy_amount * BuyReagent.buy_price_estimate * 3),
+    ready=_make_fetch_ready(_GOLD_GRAPHIC, FETCH_GOLD_PACK_CAP),
     achieved=_fetch_achieved,
     progress=_fetch_progress,
     can_yield=_fetch_can_yield,

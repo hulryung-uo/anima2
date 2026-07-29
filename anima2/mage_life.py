@@ -28,7 +28,8 @@ from .capabilities import _valid_spot
 from .contract import Observation
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.mage import BuyReagent, SULFUROUS_ASH_GRAPHIC
+from .skills.craft import PICKUP_RADIUS
+from .skills.mage import FETCH_GOLD_PACK_CAP, BuyReagent, SULFUROUS_ASH_GRAPHIC
 from .warrior_life import WarriorLife
 
 #: Restock reagents when the pouch falls below the buy capability's own reorder line.
@@ -55,9 +56,17 @@ def _pack_amount(obs: Observation, graphic: int) -> int:
 
 
 def _ground_gold(obs: Observation) -> int:
-    """Gold lying in the world (a crafter's delivered purse), never our own pack gold."""
+    """Gold lying in the world WITHIN PICKUP REACH — never our own pack gold.
+
+    The distance test mirrors the fetch gate's own `PICKUP_RADIUS` clause. Without it
+    this rule wanted `fetch_gold` for a purse it could merely SEE, which admission must
+    refuse — the audit found exactly that drift latent here after the carpenter's
+    identical fix was never back-ported (docs/AUDIT-2026-07-29.md), and the concordance
+    suite now fails on it if either side moves alone.
+    """
     return sum(i.amount for i in obs.items
-               if i.graphic == GOLD_GRAPHIC and i.container is None)
+               if i.graphic == GOLD_GRAPHIC and i.container is None
+               and i.distance <= PICKUP_RADIUS)
 
 
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
@@ -79,7 +88,10 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
         return "economy", "buy_reagent"
     # The pipeline closing into the mage's own life: a crafter's purse is on the ground,
     # so go and pick it up — that gold is what the next reagent batch is bought with.
-    if _ground_gold(obs) >= COLLECT_ABOVE:
+    # The pack cap is the GATE'S OWN (one shared constant): once the purse already holds
+    # a few reagent batches' worth, admission refuses the fetch, so wanting it would be
+    # the stall shape this project keeps paying for.
+    if _ground_gold(obs) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
         return "economy", "fetch_gold"
     if gold >= BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
