@@ -1409,7 +1409,6 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     from .skills.harvest import BACKPACK_LAYER
     from .skills.hunt import GOLD_GRAPHIC
     from .skills.craft import PICKUP_RADIUS
-    from .skills.market import SELL_REACH
     from .skills.woodwork import BOARD_GRAPHIC, LOG_GRAPHIC
     from .woodsman_life import WoodsmanLife
 
@@ -1446,6 +1445,7 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     gm = GmControl.spawn(host, port).__enter__()
     w_routes: dict = {}
     c_routes: dict = {}
+    drop = None
     try:
         gm.hide()
         serials = {r: b.ready["player"]["serial"] for r, b in bodies.items()}
@@ -1460,36 +1460,27 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
         cx, cy, cz = gm.stage(serials["carpenter"], wx, wy + 3,
                               skills=PROFESSIONS["carpenter"].skills,
                               items=list(PROFESSIONS["carpenter"].items))
+        from .life_runner import enforce_gold_provenance
         for role in ("woodsman", "carpenter"):
             gm.command_on(f'[Set Name "{"Bjorn" if role == "woodsman" else "Sten"}"',
                           serials[role])
-            st = [bodies[role].observe() for _ in range(3)][-1]
-            pack = next((i.serial for i in st.items if i.layer == BACKPACK_LAYER
-                         and i.container == serials[role]), None)
-            for i in st.items:
-                if i.container == pack and i.graphic == GOLD_GRAPHIC:
-                    gm.command_on("[Delete", i.serial)
+            enforce_gold_provenance(gm, bodies[role], serials[role])
         # Sten gets a saw's worth of seed and nothing else: his boards must come from
         # Bjorn, which is the whole point. Bjorn gets nothing — he starts with an axe.
         gm.command_on(f"[AddToPack Gold {SAW_COST}", serials["carpenter"])
+        # The shared verified-staging path (life_runner.stage_shops): one `placed` dict
+        # spans both calls so a shop placed for one agent can never answer for the
+        # other's — the Banker-as-Weaponsmith aliasing, cross-agent edition.
+        from .life_runner import stage_shops
         placed: dict[int, str] = {}
-        npc_tiles: set[tuple[int, int]] = set()
-        for who, key, npc, (nx, ny) in (
-            ("woodsman", "vendor_spot", "Carpenter", (wx - 1, wy)),
-            ("carpenter", "vendor_spot", "Carpenter", (cx + 1, cy)),
-            ("carpenter", "banker_spot", "Banker", (cx - 1, cy)),
-        ):
-            mob = gm.stage_npc(npc, nx, ny, cz, exclude={*allser, *placed})
-            if mob is None or mob.serial in placed:
-                print(f"  {npc} for the {who}: FAILED — {key} left unset")
-                continue
-            placed[mob.serial] = f"{who}.{key}"
-            anchor_xy = (wx, wy) if who == "woodsman" else (cx, cy)
-            reach = max(abs(mob.pos.x - anchor_xy[0]), abs(mob.pos.y - anchor_xy[1]))
-            (w_routes if who == "woodsman" else c_routes)[key] = [(mob.pos.x, mob.pos.y)]
-            print(f"  {npc} for the {who}: at ({mob.pos.x},{mob.pos.y}), {reach} away"
-                  f"{'' if reach <= SELL_REACH else '  ** OUT OF REACH **'}")
-            npc_tiles.add((mob.pos.x, mob.pos.y))
+        w_routes, t1 = stage_shops(
+            gm, z=cz, anchor=(wx, wy), exclude=allser, strict=False, placed=placed,
+            spots={"vendor_spot": ("Carpenter", (wx - 1, wy))})
+        c_routes, t2 = stage_shops(
+            gm, z=cz, anchor=(cx, cy), exclude=allser, strict=False, placed=placed,
+            spots={"vendor_spot": ("Carpenter", (cx + 1, cy)),
+                   "banker_spot": ("Banker", (cx - 1, cy))})
+        npc_tiles = t1 | t2
         # The HANDOVER tile has to be clear too. An `[Add`-ed NPC settles a tile or two
         # off the request, and one settled exactly onto this drop on the first attempt —
         # a shops-vs-shops collision check never looks at it, which is the same
@@ -1607,143 +1598,53 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
 
     The fourth life, and the first for a profession with no work skill — everything it
     does is a goal-scoped capability, so this run is really a test of whether the
-    capability layer alone can carry an agent through a day.
-
-    It stands at the trade smithy, on the ground the sell/buy gates were originally
-    calibrated against, with ONE Carpenter NPC serving all three shop errands (it sells
-    boards and saws, and buys furniture — which is why all three capabilities read the
-    same `vendor_spot`) plus a Banker. Both are read back after staging with their real
-    distance printed, and a shared tile is reported outright.
+    capability layer alone can carry an agent through a day. Runs on the `LifeRunner`
+    harness, which owns staging verification, provenance, the leash on both agent
+    memories, and the standard telemetry — see `life_runner.py` for why those are
+    structural rather than per-runner.
     """
     from .carpenter_life import BANK_RESERVE, BOARD_BATCH_COST, SAW_COST, CarpenterLife
-    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
+    from .life_runner import LifeRunner, LifeSpec, Staged, pack_amount, stage_shops
+    from .life_runner import owned_tool_readout
+    from .live_common import wipe_area
     from .skills.carpentry import BuySaw, FetchBoards, SellFurniture
-    from .skills.harvest import BACKPACK_LAYER
-    from .skills.hunt import GOLD_GRAPHIC
-    from .skills.market import BANKBOX_LAYER, SELL_REACH
 
     SAW_GRAPHICS = frozenset(BuySaw.owned_tool_graphics)
     BOARD_GRAPHICS = frozenset(FetchBoards.fetched_graphics)
     FURNITURE = SellFurniture.sold_graphic
 
-    print(f"raising a carpenter at {host}:{port}")
-    acct = f"{account_prefix}{fresh_suffix()}"
-    seat = MONITOR_PORT_BASE if monitor else None
-    try:
-        body = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400, monitor_port=seat)
-    except Exception as e:  # noqa: BLE001
-        print(f"  {acct}: login failed ({e})")
-        return
-    watch = f"  watch: http://127.0.0.1:{seat}/" if seat else ""
-    print(f"  {acct}: Sten the carpenter{watch}")
-
-    login_throttle(GM_RELOGIN_COOLDOWN_S)
-    gm = GmControl.spawn(host, port).__enter__()
-    routes: dict = {}
-    try:
-        gm.hide()
-        serial = body.ready["player"]["serial"]
+    def stage(gm, serial, body) -> Staged:
         prof = PROFESSIONS["carpenter"]
-        # Seed money, and ONLY that: a carpenter cannot make its own material, so with
-        # an empty purse and no supplier it would correctly wait forever. The seed buys
-        # exactly one batch of boards plus a spare saw; everything past that it earns.
-        seed = BOARD_BATCH_COST + SAW_COST
         cx, cy, cz = gm.stage(serial, *TRADE_SMITH_SPOT,
                               skills=prof.skills, items=list(prof.items))
         wipe_area(gm, cx, cy, radius=8, z=cz)
-        # Delete the STARTER gold before seeding, or the run's own numbers lie: a fresh
-        # ServUO account arrives with ~1000 gold, and an earlier attempt promptly banked
-        # it and reported 940 "earned". The seed is added afterwards and is the only
-        # money Sten is given — a carpenter cannot make its own material, so with an
-        # empty purse and no supplier it would correctly wait forever.
-        st = [body.observe() for _ in range(3)][-1]
-        pack = next((i.serial for i in st.items
-                     if i.layer == BACKPACK_LAYER and i.container == serial), None)
-        for i in st.items:
-            if i.container == pack and i.graphic == GOLD_GRAPHIC:
-                gm.command_on("[Delete", i.serial)
-        gm.command_on(f"[AddToPack Gold {seed}", serial)
         gm.command_on('[Set Name "Sten"', serial)
-        placed: dict[int, str] = {}
-        for key, (npc, (nx, ny)) in (("vendor_spot", ("Carpenter", VENDOR_SPOT[-1])),
-                                     ("banker_spot", ("Banker", BANKER_SPOT[-1]))):
-            mob = gm.stage_npc(npc, nx, ny, cz, exclude={serial, *placed})
-            if mob is None or mob.serial in placed:
-                print(f"  {npc}: FAILED to stage — {key} left unset")
-                continue
-            placed[mob.serial] = key
-            reach = max(abs(mob.pos.x - cx), abs(mob.pos.y - cy))
-            routes[key] = [(mob.pos.x, mob.pos.y)]
-            print(f"  {npc}: at ({mob.pos.x},{mob.pos.y}), {reach} from the stand"
-                  f"{'' if reach <= SELL_REACH else '  ** OUT OF REACH **'}")
-        tiles = [tuple(v[0]) for v in routes.values()]
-        if len(set(tiles)) != len(tiles):
-            print(f"  ** two shops share a tile: {routes} **")
-    finally:
-        try:
-            gm.__exit__(None, None, None)
-        except Exception:  # noqa: BLE001
-            pass
+        routes, _tiles = stage_shops(
+            gm, z=cz, anchor=(cx, cy), exclude=serial,
+            spots={"vendor_spot": ("Carpenter", VENDOR_SPOT[-1]),
+                   "banker_spot": ("Banker", BANKER_SPOT[-1])})
+        # Seed money, and ONLY that: a carpenter cannot make its own material, so with
+        # an empty purse and no supplier it would correctly wait forever. The seed buys
+        # exactly one batch of boards plus a spare saw; everything past that is earned.
+        return Staged(routes=routes, home=(cx, cy),
+                      econ_memory={"craft_spot": (cx, cy)},
+                      memory={"craft_spot": (cx, cy)},
+                      seed_gold=BOARD_BATCH_COST + SAW_COST,
+                      banner=f"(reserve {BANK_RESERVE})")
 
-    life = CarpenterLife(body=body, persona=Persona(name="Sten"), routes=routes)
-    life.memory["craft_spot"] = (cx, cy)
-    life.econ_agent.memory["craft_spot"] = (cx, cy)
-    life.set_leash((cx, cy))
-    print(f"staged: Sten@({cx},{cy}) with a saw and {seed}g seed "
-          f"(reserve {BANK_RESERVE})\n")
+    def status_extra(life, obs) -> str:
+        return (f"saw={owned_tool_readout(obs, SAW_GRAPHICS)} "
+                f"boards={pack_amount(obs, BOARD_GRAPHICS)} "
+                f"furniture={pack_amount(obs, FURNITURE)}")
 
-    status: dict[int, str] = {}
-    lock = threading.Lock()
-    t = threading.Thread(target=_run_worker, args=(life, ticks, 0, status, lock, "carpenter"),
-                         daemon=True)
-    t.start()
-
-    def _pack(obs, graphics):
-        if obs is None:
-            return 0
-        if isinstance(graphics, int):
-            graphics = {graphics}
-        bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
-                   and i.container == obs.player.serial), None)
-        return sum(i.amount for i in obs.items
-                   if i.graphic in graphics and i.container == bp) if bp else 0
-
-    while t.is_alive():
-        time.sleep(4.0)
-        obs = getattr(life.body, "last_obs", None)
-        banked = 0
-        saw = "NO"
-        if obs is not None:
-            box = next((i.serial for i in obs.items if i.layer == BANKBOX_LAYER
-                        and i.container == obs.player.serial), None)
-            if box is not None:
-                banked = sum(i.amount for i in obs.items
-                             if i.graphic == GOLD_GRAPHIC and i.container == box)
-            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
-                       and i.container == obs.player.serial), None)
-            saw = "yes" if any(i.graphic in SAW_GRAPHICS
-                               and i.container in (bp, obs.player.serial, None)
-                               for i in obs.items) else "NO"
-        try:
-            from .capabilities import ready_capability_ids
-            from .skills.base import SkillContext as _SC
-            _ready = ready_capability_ids(
-                "carpenter", _SC(obs=obs, persona=life.persona, memory=life.econ_agent.memory),
-            ) if obs is not None else ()
-            _cur = life.econ_agent.goal_stack.current
-            _admitted = _cur.goal.params.get("capability") if _cur else None
-        except Exception:  # noqa: BLE001 — telemetry must never break the run
-            _ready, _admitted = ("?",), "?"
-        with lock:
-            snap = [status[i] for i in sorted(status)]
-        print(f"— carpenter [{life.mode}] want={life.target_cap} admitted={_admitted} "
-              f"ready={list(_ready)} saw={saw} boards={_pack(obs, BOARD_GRAPHICS)} "
-              f"furniture={_pack(obs, FURNITURE)} gold={_pack(obs, GOLD_GRAPHIC)} "
-              f"banked={banked} —")
-        for line in snap:
-            print(f"  {line}")
-    t.join(timeout=5)
-    print("\nthe carpenter's day is done")
+    LifeRunner(
+        LifeSpec(profession="carpenter", persona_name="Sten",
+                 account_prefix=account_prefix,
+                 life_factory=lambda body, persona, routes: CarpenterLife(
+                     body=body, persona=persona, routes=routes),
+                 stage=stage, status_extra=status_extra),
+        host=host, port=port, ticks=ticks, monitor=monitor,
+    ).run(_run_worker)
 
 
 def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
@@ -1752,26 +1653,17 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                       forest: tuple[int, int] = YEW_FOREST) -> None:
     """Run ONE lumberjack LIVING the full autonomous loop via `WoodsmanLife`.
 
-    The third profession to get a life of its own, after the swordsman and the mage, and
-    the first that does not fight for a living. Its chain is longer than either of
-    theirs — tree -> log -> board -> gold — and its tool is consumable, so what stops it
-    is different again: a broken axe, not a lost blade or an empty reagent pouch.
-
-    Staging follows this village's own hard-learned rule: vendors are placed and then
-    VERIFIED, never assumed. Both shops are put within the market skill's own reach of
-    the woodsman's stand, so the trip short-circuits `_walk_route`'s final-reach check
-    and no greedy crossing is needed — the same co-located shape the trade smithy has
-    naturally, and the shape that made the artisan's sales work after an arbitrary
-    `+8 tiles` placement had silently made them impossible.
+    The third profession to get a life of its own, and the first that does not fight
+    for a living: its chain is tree -> log -> board -> gold, and its tool is
+    consumable. Runs on the `LifeRunner` harness (staging verification, provenance,
+    both-memory leash, standard telemetry — see `life_runner.py`).
     """
-    from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
-    from .skills.harvest import BACKPACK_LAYER
-    from .skills.hunt import GOLD_GRAPHIC
-    from .skills.market import BANKBOX_LAYER, SELL_REACH
+    from .life_runner import LifeRunner, LifeSpec, Staged, pack_amount, stage_shops
+    from .life_runner import owned_tool_readout
+    from .live_common import wipe_area
     from .skills.woodwork import AXE_GRAPHICS, BOARD_GRAPHIC, LOG_GRAPHIC
     from .woodsman_life import WoodsmanLife
 
-    print(f"raising a woodsman at {host}:{port}")
     groves = find_tree_clusters(LUMBER_MAP, *forest)
     if not groves:
         print(f"no grove found near {forest}; aborting")
@@ -1780,163 +1672,46 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
     print(f"grove: stand ({sx},{sy}) with {len(trees)} trees in reach "
           f"({len(groves)} groves near {forest})")
 
-    acct = f"{account_prefix}{fresh_suffix()}"
-    seat = MONITOR_PORT_BASE if monitor else None
-    try:
-        body = ResilientIpcBody.spawn(host, port, acct, acct, pump_ms=400, monitor_port=seat)
-    except Exception as e:  # noqa: BLE001
-        print(f"  {acct}: login failed ({e})")
-        return
-    watch = f"  watch: http://127.0.0.1:{seat}/" if seat else ""
-    print(f"  {acct}: Bjorn the lumberjack{watch}")
-
-    login_throttle(GM_RELOGIN_COOLDOWN_S)
-    gm = GmControl.spawn(host, port).__enter__()
-    try:
-        gm.hide()
-        serial = body.ready["player"]["serial"]
+    def stage(gm, serial, body) -> Staged:
         prof = PROFESSIONS["lumberjack"]
-        wx, wy, wz = gm.stage(serial, sx, sy, skills=prof.skills, items=list(prof.items))
+        wx, wy, wz = gm.stage(serial, sx, sy, skills=prof.skills,
+                              items=list(prof.items))
         wipe_area(gm, wx, wy, radius=8, z=wz)
         gm.command_on('[Set Name "Bjorn"', serial)
-        # Provenance: every coin it holds at the end must be one it EARNED selling boards.
-        st = [body.observe() for _ in range(3)][-1]
-        pack = next((i.serial for i in st.items
-                     if i.layer == BACKPACK_LAYER and i.container == serial), None)
-        for i in st.items:
-            if i.container == pack and i.graphic == GOLD_GRAPHIC:
-                gm.command_on("[Delete", i.serial)
+        routes, _tiles = stage_shops(
+            gm, z=wz, anchor=(wx, wy), exclude=serial,
+            spots={"vendor_spot": ("Carpenter", (wx + 1, wy)),
+                   "tool_vendor_spot": ("Weaponsmith", (wx - 1, wy)),
+                   "banker_spot": ("Banker", (wx, wy + 1))})
+        return Staged(routes=routes, home=(wx, wy),
+                      memory={"harvest_nodes": [(t.x, t.y, t.z, t.graphic)
+                                                for t in trees]},
+                      banner="with a hatchet")
 
-        # Both shops within the sell/buy reach of the stand, then READ BACK where they
-        # actually landed — an `[Add`-ed NPC settles a tile or two off the request, and a
-        # shop out of reach is indistinguishable from a broken planner from the outside.
-        spots = {"vendor_spot": ("Carpenter", (wx + 1, wy)),
-                 "tool_vendor_spot": ("Weaponsmith", (wx - 1, wy)),
-                 "banker_spot": ("Banker", (wx, wy + 1))}
-        routes: dict = {}
-        placed: dict[int, str] = {}   # serial -> the key it was accepted for
-        for key, (npc, (nx, ny)) in spots.items():
-            # Exclude the ones already placed, not just the player. `find_mobile_near`
-            # returns the nearest mobile to the requested tile, and with shops a single
-            # tile apart that is very often an NPC staged a moment ago — live-caught
-            # here: the Banker came back as the Weaponsmith's own serial and tile, which
-            # would have pointed `banker_spot` at a vendor with no bank box.
-            mob = gm.stage_npc(npc, nx, ny, wz, exclude={serial, *placed})
-            if mob is None:
-                print(f"  {npc}: FAILED to stage — {key} left unset")
-                continue
-            if mob.serial in placed:
-                print(f"  {npc}: resolved to the {placed[mob.serial]} NPC — {key} left unset")
-                continue
-            placed[mob.serial] = key
-            reach = max(abs(mob.pos.x - wx), abs(mob.pos.y - wy))
-            routes[key] = [(mob.pos.x, mob.pos.y)]
-            print(f"  {npc}: at ({mob.pos.x},{mob.pos.y}), {reach} from the stand"
-                  f"{'' if reach <= SELL_REACH else '  ** OUT OF REACH **'}")
-        # Distinct shops must be distinct NPCs on distinct tiles, or a trip resolves to
-        # the wrong counter. Say so plainly rather than leaving it to be inferred.
-        tiles = [tuple(v[0]) for v in routes.values()]
-        if len(set(tiles)) != len(tiles):
-            print(f"  ** two shops share a tile: {routes} **")
-    finally:
-        try:
-            gm.__exit__(None, None, None)
-        except Exception:  # noqa: BLE001
-            pass
+    def status_extra(life, obs) -> str:
+        line = (f"axe={owned_tool_readout(obs, AXE_GRAPHICS)} "
+                f"logs={pack_amount(obs, LOG_GRAPHIC)} "
+                f"boards={pack_amount(obs, BOARD_GRAPHIC)}")
+        # When a process_logs goal holds the stack, show the completion bookkeeping the
+        # achievement check reads — "not achieved" has several distinct causes, and this
+        # block earned its place in a real debugging round (commit c49c444).
+        cur = life.econ_agent.goal_stack.current
+        if cur is not None and cur.goal.params.get("capability") == "process_logs":
+            m = life.econ_agent.memory
+            line += (f" (need={m.get('cap_process_needed')}"
+                     f" delta={m.get('cap_process_board_delta')}"
+                     f" left={m.get('cap_process_logs_remaining')}"
+                     f" fin={m.get('cap_process_finished_goal_id')})")
+        return line
 
-    life = WoodsmanLife(body=body, persona=Persona(name="Bjorn"), routes=routes)
-    life.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
-    life.set_leash((wx, wy))
-    print(f"staged: Bjorn@({wx},{wy}) with a hatchet, broke\n")
-
-    status: dict[int, str] = {}
-    lock = threading.Lock()
-    t = threading.Thread(target=_run_worker, args=(life, ticks, 0, status, lock, "lumberjack"),
-                         daemon=True)
-    t.start()
-
-    def _pack(obs, graphic):
-        if obs is None:
-            return 0
-        bp = next((i.serial for i in obs.items
-                   if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-        return sum(i.amount for i in obs.items
-                   if i.graphic == graphic and i.container == bp) if bp else 0
-
-    while t.is_alive():
-        time.sleep(4.0)
-        obs = getattr(life.body, "last_obs", None)
-        # OUR axe, not any axe in view. Reporting "yes" for the Weaponsmith's axe is how
-        # this readout would hide the very defect that broke the first run.
-        axe = "NO"
-        if obs is not None:
-            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
-                       and i.container == obs.player.serial), None)
-            axe = "yes" if any(i.graphic in AXE_GRAPHICS
-                               and i.container in (bp, obs.player.serial, None)
-                               for i in obs.items) else "NO"
-        hp = "?" if obs is None else ("DEAD" if obs.player.dead
-                                      else f"{obs.player.hits}/{obs.player.hits_max}")
-        with lock:
-            snap = [status[i] for i in sorted(status)]
-        # `target_cap` is only what the orchestrator WANTS. Show what was actually
-        # admitted, and what the capability layer considers ready — a leaf whose goal
-        # was never admitted just returns RUNNING forever, which from the outside looks
-        # exactly like a leaf that is working.
-        # `process_logs` readiness, clause by clause. "ready=[]" says the gate refused;
-        # it does not say WHICH condition did, and the candidates differ in kind (a tool
-        # the gate cannot see, a cursor left open by another skill, a market phase never
-        # cleared). Printing the clauses is the difference between knowing and guessing.
-        _why = ""
-        if obs is not None:
-            bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
-                       and i.container == obs.player.serial), None)
-            in_pack = any(i.graphic in AXE_GRAPHICS and i.container == bp for i in obs.items)
-            worn = any(i.graphic in AXE_GRAPHICS and i.container == obs.player.serial
-                       for i in obs.items)
-            _why = (f" [axe_in_pack={in_pack} worn={worn} "
-                   f"cursor={obs.pending_target is not None} "
-                   f"mkt={life.econ_agent.memory.get('mkt_phase', 'craft')}]")
-        try:
-            from .capabilities import ready_capability_ids
-            from .skills.base import SkillContext as _SC
-            _ready = ready_capability_ids(
-                "lumberjack", _SC(obs=obs, persona=life.persona, memory=life.econ_agent.memory),
-            ) if obs is not None else ()
-            _cur = life.econ_agent.goal_stack.current
-            _admitted = _cur.goal.params.get("capability") if _cur else None
-            # A goal that has finished its work but is not RETIRED still occupies the
-            # stack, so nothing else can be admitted — `want` and `ready` agree while
-            # `admitted` stays stale. Show the completion bookkeeping the achievement
-            # check actually reads, since "not achieved" has several distinct causes.
-            if _admitted == "process_logs":
-                m = life.econ_agent.memory
-                _gid = getattr(_cur.goal, "goal_id", None) or m.get("cap_process_goal_id")
-                _why += (f" (need={m.get('cap_process_needed')} "
-                         f"delta={m.get('cap_process_board_delta')} "
-                         f"left={m.get('cap_process_logs_remaining')} "
-                         f"fin={m.get('cap_process_finished_goal_id')} gid={_gid})")
-        except Exception:  # noqa: BLE001 — telemetry must never break the run
-            _ready, _admitted = ("?",), "?"
-        # Banked gold read the way `live_bank_goal.py` proves a deposit: gold sitting in
-        # THIS character's bank box, not merely gold that has left the pack. A falling
-        # pack count alone is not evidence of banking — it is equally consistent with
-        # spending it, dropping it, or dying with it.
-        banked = 0
-        if obs is not None:
-            box = next((i.serial for i in obs.items if i.layer == BANKBOX_LAYER
-                        and i.container == obs.player.serial), None)
-            if box is not None:
-                banked = sum(i.amount for i in obs.items
-                             if i.graphic == GOLD_GRAPHIC and i.container == box)
-        print(f"— woodsman [{life.mode}] want={life.target_cap} admitted={_admitted} "
-              f"ready={list(_ready)}{_why} axe={axe} hp={hp} "
-              f"logs={_pack(obs, LOG_GRAPHIC)} boards={_pack(obs, BOARD_GRAPHIC)} "
-              f"gold={_pack(obs, GOLD_GRAPHIC)} banked={banked} —")
-        for line in snap:
-            print(f"  {line}")
-    t.join(timeout=5)
-    print("\nthe woodsman's day is done")
+    LifeRunner(
+        LifeSpec(profession="lumberjack", persona_name="Bjorn",
+                 account_prefix=account_prefix,
+                 life_factory=lambda body, persona, routes: WoodsmanLife(
+                     body=body, persona=persona, routes=routes),
+                 stage=stage, status_extra=status_extra),
+        host=host, port=port, ticks=ticks, monitor=monitor,
+    ).run(_run_worker)
 
 
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
@@ -2352,22 +2127,10 @@ PREY_SPOT = (2609, 480)                #: 3 tiles from the mage, 6 from the arti
 MAGE_LEASH = max(1, _cheb2(PREY_SPOT, MAGE_DROP) - (KeepDistance.too_close + 1))
 
 
-#: First HTTP port handed to `--monitor`; each agent gets the next one up. Loopback
-#: only (the bridge hardcodes 127.0.0.1), so this never exposes a shard to the network.
-MONITOR_PORT_BASE = 8801
-
-
-
-def _monitor_ports(enabled: bool, roles: list[str]) -> dict[str, int | None]:
-    """One viewer port per role, or all `None` when monitoring is off.
-
-    Each agent runs its own bridge process and therefore its own viewer — a shard
-    allows exactly one session per character, so there is no way to watch several
-    characters through one connection.
-    """
-    if not enabled:
-        return {r: None for r in roles}
-    return {r: MONITOR_PORT_BASE + i for i, r in enumerate(roles)}
+# Monitor seats live in `life_runner` now (one definition); re-exported under the old
+# names because the CLI, the multi-agent runners and the placement tests address them.
+from .life_runner import MONITOR_PORT_BASE  # noqa: E402, F401 — re-export
+from .life_runner import monitor_ports as _monitor_ports  # noqa: E402
 
 
 def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
@@ -2395,7 +2158,6 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .mage_life import MageLife
     from .skills.harvest import BACKPACK_LAYER
-    from .skills.hunt import GOLD_GRAPHIC
 
     print(f"raising an artisan+mage village at {host}:{port}")
     bodies = {}
@@ -2458,13 +2220,9 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # deliver is what it EARNED selling its wares — otherwise it would simply hand over
         # its ~1000 starter gold and the "production funds the fighter" claim would be
         # hollow (it also outranks crafting in the chain priority, so it would never craft).
+        from .life_runner import enforce_gold_provenance
         for role in ("mage", "tinker"):
-            st = [bodies[role].observe() for _ in range(3)][-1]
-            pack = next((i.serial for i in st.items
-                         if i.layer == BACKPACK_LAYER and i.container == serials[role]), None)
-            for i in st.items:
-                if i.container == pack and i.graphic == GOLD_GRAPHIC:
-                    gm.command_on("[Delete", i.serial)
+            enforce_gold_provenance(gm, bodies[role], serials[role])
         st = [bodies["mage"].observe() for _ in range(3)][-1]
         pack = next((i.serial for i in st.items
                      if i.layer == BACKPACK_LAYER and i.container == serials["mage"]), None)

@@ -1,0 +1,176 @@
+"""The LifeRunner harness — the lessons are structural, so pin the structure.
+
+Five runners grew by copy-paste and each new one shipped WITHOUT some piece its
+predecessor had paid for live. The harness exists so omission is a construction error,
+not a live rediscovery; these tests pin exactly that property, plus the staging
+verification clauses that were each a real live failure.
+"""
+
+import pytest
+
+from anima2.contract import ItemView, Observation, PlayerView, Position
+from anima2.life_runner import (
+    LifeSpec,
+    StagingError,
+    banked_amount,
+    monitor_ports,
+    owned_tool_readout,
+    pack_amount,
+    stage_shops,
+    telemetry_line,
+)
+from anima2.skills.harvest import BACKPACK_LAYER
+from anima2.skills.hunt import GOLD_GRAPHIC
+from anima2.skills.market import BANKBOX_LAYER, SELL_REACH
+
+PLAYER = 1
+BP = 0x50
+
+
+def _item(serial, graphic, amount=1, *, container=BP, layer=0):
+    return ItemView(serial=serial, graphic=graphic, amount=amount, pos=Position(),
+                    container=container, layer=layer, distance=0)
+
+
+def _obs(items):
+    return Observation(player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0)),
+                       items=[_item(BP, 0x0E75, container=PLAYER, layer=BACKPACK_LAYER),
+                              *items])
+
+
+# --- readbacks -----------------------------------------------------------------------
+
+def test_pack_amount_is_owner_filtered_and_accepts_sets():
+    other_pack = ItemView(serial=0x9A, graphic=0x0E75, amount=1, pos=Position(),
+                          container=0x99, layer=BACKPACK_LAYER, distance=1)
+    obs = _obs([_item(0x900, GOLD_GRAPHIC, 70),
+                other_pack,
+                _item(0x901, GOLD_GRAPHIC, 999, container=0x9A)])
+    assert pack_amount(obs, GOLD_GRAPHIC) == 70
+    assert pack_amount(obs, {GOLD_GRAPHIC}) == 70
+    assert pack_amount(None, GOLD_GRAPHIC) == 0
+
+
+def test_banked_amount_reads_the_bank_box_not_the_pack():
+    # A falling pack count is not a deposit; only gold in OUR bank box counts.
+    box = ItemView(serial=0x60, graphic=0x0E7C, amount=1, pos=Position(),
+                   container=PLAYER, layer=BANKBOX_LAYER, distance=0)
+    obs = _obs([box, _item(0x902, GOLD_GRAPHIC, 150),
+                _item(0x903, GOLD_GRAPHIC, 70, container=0x60)])
+    assert banked_amount(obs) == 70
+    assert pack_amount(obs, GOLD_GRAPHIC) == 150
+
+
+def test_owned_tool_readout_never_says_yes_for_a_neighbours_tool():
+    # Reporting "yes" for the Weaponsmith's axe hid the exact defect that broke a run.
+    HATCHET = 0x0F43
+    obs = _obs([_item(0x991, HATCHET, container=0x99, layer=1)])
+    assert owned_tool_readout(obs, {HATCHET}) == "NO"
+    assert owned_tool_readout(_obs([_item(0x992, HATCHET)]), {HATCHET}) == "yes"
+    assert owned_tool_readout(_obs([_item(0x993, HATCHET, container=None)]),
+                              {HATCHET}) == "yes"
+
+
+# --- staging verification ------------------------------------------------------------
+
+class _Mob:
+    def __init__(self, serial, x, y):
+        self.serial = serial
+        self.pos = Position(x, y, 0)
+
+
+class _FakeGm:
+    """Answers stage_npc from a script: the live-caught failure shapes on demand."""
+
+    def __init__(self, answers):
+        self._answers = list(answers)
+        self.calls = []
+
+    def stage_npc(self, npc, x, y, z, *, exclude=None):
+        self.calls.append((npc, x, y, set(exclude or ())))
+        return self._answers.pop(0)
+
+
+def test_stage_shops_excludes_already_placed_npcs():
+    # The Banker once resolved to the Weaponsmith's own serial — the second call must
+    # carry the first shop's serial in its exclude set.
+    gm = _FakeGm([_Mob(0x10, 6, 5), _Mob(0x11, 4, 5)])
+    routes, tiles = stage_shops(gm, z=0, anchor=(5, 5), exclude=PLAYER,
+                                spots={"a": ("Carpenter", (6, 5)),
+                                       "b": ("Banker", (4, 5))})
+    assert routes == {"a": [(6, 5)], "b": [(4, 5)]}
+    assert 0x10 in gm.calls[1][3], "second stage must exclude the first NPC"
+    assert tiles == {(6, 5), (4, 5)}
+
+
+def test_strict_staging_raises_on_the_three_live_caught_failures():
+    # (a) an NPC that failed to stage at all
+    with pytest.raises(StagingError):
+        stage_shops(_FakeGm([None]), z=0, anchor=(5, 5), exclude=PLAYER,
+                    spots={"a": ("Carpenter", (6, 5))})
+    # (b) two shops resolving to one NPC
+    dup = _Mob(0x10, 6, 5)
+    with pytest.raises(StagingError):
+        stage_shops(_FakeGm([dup, dup]), z=0, anchor=(5, 5), exclude=PLAYER,
+                    spots={"a": ("Carpenter", (6, 5)), "b": ("Banker", (4, 5))})
+    # (c) a shop that settled out of reach — indistinguishable from a broken planner
+    with pytest.raises(StagingError):
+        stage_shops(_FakeGm([_Mob(0x10, 5 + SELL_REACH + 1, 5)]), z=0, anchor=(5, 5),
+                    exclude=PLAYER, spots={"a": ("Carpenter", (6, 5))})
+
+
+def test_non_strict_staging_preserves_the_old_print_and_continue_behavior():
+    routes, tiles = stage_shops(_FakeGm([None]), z=0, anchor=(5, 5), exclude=PLAYER,
+                                strict=False, spots={"a": ("Carpenter", (6, 5))})
+    assert routes == {} and tiles == set()
+
+
+def test_a_shared_placed_dict_spans_multi_anchor_calls():
+    # The supply pair stages shops for two agents; a shop placed for one must never
+    # answer for the other's.
+    gm = _FakeGm([_Mob(0x10, 6, 5), _Mob(0x11, 20, 20)])
+    placed: dict = {}
+    stage_shops(gm, z=0, anchor=(5, 5), exclude=PLAYER, placed=placed,
+                spots={"a": ("Carpenter", (6, 5))})
+    stage_shops(gm, z=0, anchor=(20, 21), exclude=PLAYER, placed=placed,
+                spots={"b": ("Banker", (20, 20))})
+    assert 0x10 in gm.calls[1][3], "the second CALL must exclude the first call's NPC"
+
+
+# --- the spec's no-defaults guarantee ------------------------------------------------
+
+def test_forgetting_a_load_bearing_spec_field_is_a_construction_error():
+    # The whole point of the harness: omission is a TypeError, not a live rediscovery.
+    with pytest.raises(TypeError):
+        LifeSpec(profession="carpenter", persona_name="Sten",
+                 account_prefix="x", life_factory=lambda *a: None)  # no stage
+
+
+def test_monitor_ports_allocates_distinct_ports_only_when_enabled():
+    assert monitor_ports(False, ["a", "b"]) == {"a": None, "b": None}
+    ports = monitor_ports(True, ["a", "b", "c"])
+    assert len(set(ports.values())) == 3
+
+
+# --- telemetry -----------------------------------------------------------------------
+
+def test_telemetry_line_shows_want_admitted_and_ready_separately():
+    # `want` alone is intent, and an unadmitted goal looks identical to a busy one.
+    class _Stack:
+        current = None
+
+    class _Econ:
+        memory = {}
+        goal_stack = _Stack()
+
+    class _Life:
+        target_cap = "sell_boards"
+        econ_agent = _Econ()
+        persona = None
+
+    from anima2.persona import Persona
+
+    life = _Life()
+    life.persona = Persona(name="T")
+    line = telemetry_line(life, "lumberjack", _obs([]))
+    assert "want=sell_boards" in line and "admitted=None" in line and "ready=" in line
