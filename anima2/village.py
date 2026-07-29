@@ -657,6 +657,15 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # way: a throttled mage exhausted its tick budget early, and its stale last
     # observation was then read for several runs as "the mage cannot see the purse".
     stopped = ""
+    # No-progress liveness (health-check follow-up #1's guard): forge2's miner issued
+    # ZERO actions for an entire run and nothing flagged it — a dead agent and a
+    # patient one look identical from outside. If reward, steps, speech AND position
+    # all freeze for _QUIET_TICKS straight, say so loudly and keep saying it. The
+    # threshold sits far above any legitimate quiet stretch (a bank trip is ~12 ticks,
+    # a craft item ~10) and far below the half-hour forge2 sat dead.
+    _QUIET_TICKS = 40
+    _quiet = 0
+    _last_pulse = None
     for _ in range(ticks):
         if not agent.body.connected:
             stopped = "DISCONNECTED"
@@ -738,6 +747,12 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
         if isinstance(action, Say):
             says += 1
             last_say = action.text
+        _pulse = (round(agent.episodes.total_reward(), 3), steps, says, p.x, p.y)
+        _quiet = _quiet + 1 if _pulse == _last_pulse else 0
+        _last_pulse = _pulse
+        if _quiet and _quiet % _QUIET_TICKS == 0:
+            print(f"  ** {agent.persona.name}: NO PROGRESS for {_quiet} ticks "
+                  f"(reward/steps/speech/position all frozen) **")
         with lock:
             line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) "
                     f"out+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
