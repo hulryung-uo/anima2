@@ -340,7 +340,7 @@ class LifeRunner:
                 ReflectingCognition,
                 ThreadedCognition,
             )
-            from .llm import build_tiered_clients
+            from .llm import build_tiered_clients, with_role
             from .memory import load_insights
 
             clients = build_tiered_clients()
@@ -349,9 +349,14 @@ class LifeRunner:
             prior = insights.recent(1)
             if prior:
                 print(f"  resumed insight: \"{prior[-1].text[:70]}\"")
+            # Role-tagged clients (health-check follow-up #2): chatter and reflection
+            # both ride the cheap tier under the degraded provider, and untagged they
+            # are indistinguishable in the ledger — which is exactly how a
+            # heuristic-authored insight passed for an LLM one until forensics
+            # compared the TEXT against the fallback template.
             life.hunt_agent.cognition = ThreadedCognition(ReflectingCognition(
                 LLMCognition(clients["cheap"], job=self.spec.profession),
-                LLMReflection(clients["cheap"]),
+                LLMReflection(with_role(clients["cheap"], "reflection")),
                 insights=insights,
             ))
             print(f"  persistence: insights load+persist for {self.spec.persona_name}")

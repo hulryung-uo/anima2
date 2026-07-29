@@ -142,14 +142,18 @@ def test_build_tiered_clients_provider_stub_is_fully_offline(monkeypatch, tmp_pa
 # --- ROLE_TIER / role-per-tier logging ------------------------------------------
 
 
-def test_role_tier_covers_the_four_specified_call_sites():
+def test_role_tier_covers_the_wired_call_sites():
     assert llm.ROLE_TIER == {
         "chatter": "cheap",
+        "steering": "cheap",  # audit #8's Life steering — rides cheap, tagged via with_role
         "reflection": "standard",
         "wiki_judge": "standard",
         "curriculum_pick": "standard",
         "capability_pick": "standard",
     }
+    # Table ORDER is load-bearing: chatter must stay cheap's primary label, so adding
+    # steering after it must not change what untagged cheap-tier calls log as.
+    assert llm._primary_role_for_tier("cheap") == "chatter"
 
 
 def test_primary_role_for_tier_matches_todays_wired_call_sites():
@@ -350,3 +354,35 @@ def test_usage_logging_client_creates_data_dir_lazily(tmp_path):
     )
     wrapped.complete("sys", "user")
     assert log_path.exists()
+
+
+def test_with_role_relabels_without_changing_client_tier_or_log(tmp_path):
+    # The health check found the flagship steering consult logged as ordinary
+    # chatter — indistinguishable in the ledger. with_role is the sanctioned fix.
+    import json
+
+    log = tmp_path / "usage.jsonl"
+
+    class _Stub:
+        model = "stub-model"
+
+        def complete(self, system, user):
+            return "ok"
+
+    base = llm._UsageLoggingClient(client=_Stub(), role="chatter", tier="cheap",
+                                   usage_log=log)
+    tagged = llm.with_role(base, "steering")
+    assert tagged.client is base.client and tagged.tier == base.tier
+    tagged.complete("s", "u")
+    base.complete("s", "u")
+    roles = [json.loads(line)["role"] for line in log.read_text().splitlines()]
+    assert roles == ["steering", "chatter"]
+
+
+def test_with_role_passes_a_bare_client_through():
+    class _Bare:
+        def complete(self, system, user):
+            return "ok"
+
+    bare = _Bare()
+    assert llm.with_role(bare, "steering") is bare

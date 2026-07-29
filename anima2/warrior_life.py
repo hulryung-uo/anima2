@@ -309,8 +309,8 @@ class WarriorLife:
             # A real slow-loop brain, degrading HONESTLY: if no provider builds, the
             # life stays scripted and says so, rather than dying or pretending.
             try:
-                from .llm import build_tiered_clients
-                llm = build_tiered_clients()["cheap"]
+                from .llm import build_tiered_clients, with_role
+                llm = with_role(build_tiered_clients()["cheap"], "steering")
                 print(f"  steering: LLM ({type(llm).__name__}) picks when 2+ branches are admissible")
             except Exception as e:  # noqa: BLE001
                 print(f"  steering: requested llm but none built ({e}); staying scripted")

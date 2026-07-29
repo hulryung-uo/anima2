@@ -447,22 +447,35 @@ class LLMReflection:
         self.client = client
         self.wiki = wiki
         self._fallback = HeuristicReflection()
+        #: How many times reflection fell back to the heuristic. The fallback used to
+        #: be SILENT, and it cost a false claim: a persisted insight was presented as
+        #: LLM-authored until forensics matched its text to the heuristic template
+        #: (docs/AUDIT-2026-07-29.md, correction d65700d). Degrading is fine;
+        #: degrading invisibly is how overstatements get written.
+        self.fallback_count = 0
         #: See `LLMCognition._wiki_cache` — same memoization contract.
         self._wiki_cache: dict[str, str | None] = {}
+
+    def _fall_back(self, episodes: list[Episode], persona: Persona,
+                   why: str) -> list[str]:
+        self.fallback_count += 1
+        print(f"  reflection: LLM unavailable ({why}) — heuristic fallback "
+              f"#{self.fallback_count} authored this insight")
+        return self._fallback.reflect(episodes, persona)
 
     def reflect(self, episodes: list[Episode], persona: Persona) -> list[str]:
         if not episodes:
             return []
         try:
             raw = self.client.complete(self._system(persona), self._situation(episodes))
-        except Exception:  # noqa: BLE001 — a flaky LLM must not break reflection
-            return self._fallback.reflect(episodes, persona)
+        except Exception as e:  # noqa: BLE001 — a flaky LLM must not break reflection
+            return self._fall_back(episodes, persona, type(e).__name__)
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         # Insights persist in `ReflectionMemory` and are replayed into every later
         # situation prompt (the "Lessons learned" line) — screen/clamp each one the
         # same way `_queue_say` treats in-game speech before it's stored.
         insights = [c for s in _parse_insights(raw) if (c := _clean_model_line(s)) is not None]
-        return insights or self._fallback.reflect(episodes, persona)
+        return insights or self._fall_back(episodes, persona, "unparseable reply")
 
     def _system(self, persona: Persona) -> str:
         return (

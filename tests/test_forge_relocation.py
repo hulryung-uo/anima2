@@ -164,3 +164,41 @@ def test_a_progressing_agent_never_trips_the_liveness_line(capsys):
     _run_worker(_WalkingAgent(), 85, 0, {}, threading.Lock(), "lumberjack")
     out = capsys.readouterr().out
     assert "NO PROGRESS" not in out
+
+
+# --- reflection fallback visibility (follow-up #3) -----------------------------------
+#
+# The fallback used to be silent, and it cost a false claim: a persisted insight was
+# presented as LLM-authored until forensics matched its text to the heuristic template.
+# Degrading is fine; degrading invisibly is how overstatements get written.
+
+def test_a_failed_reflection_says_it_fell_back(capsys):
+    from anima2.cognition import LLMReflection
+    from anima2.memory import Episode
+
+    class _Down:
+        def complete(self, system, user):
+            raise TimeoutError("provider down")
+
+    r = LLMReflection(_Down())
+    eps = [Episode(tick=1, kind="work", summary="chop → success", reward=0.1)]
+    out = r.reflect(eps, Persona(name="Bjorn"))
+    assert r.fallback_count == 1
+    assert "heuristic fallback" in capsys.readouterr().out
+    assert any("paid off" in i for i in out)  # the heuristic template, now labelled
+
+
+def test_a_healthy_reflection_never_mentions_fallback(capsys):
+    from anima2.cognition import LLMReflection
+    from anima2.memory import Episode
+
+    class _Up:
+        def complete(self, system, user):
+            return '["The east grove yields faster in the morning."]'
+
+    r = LLMReflection(_Up())
+    out = r.reflect([Episode(tick=1, kind="work", summary="chop → success", reward=0.1)],
+                    Persona(name="Bjorn"))
+    assert r.fallback_count == 0
+    assert "fallback" not in capsys.readouterr().out
+    assert out and "east grove" in out[0]

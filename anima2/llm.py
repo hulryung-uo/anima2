@@ -202,6 +202,12 @@ class ReplicateClient:
 #: PHASE4.md's own dependency-order note.
 ROLE_TIER: dict[str, str] = {
     "chatter": "cheap",
+    # Life steering (audit #8): a rare, tiny closed-vocabulary pick — cheap tier.
+    # Listed AFTER "chatter" on purpose: `_primary_role_for_tier` labels a tier's
+    # calls by table order, and chatter stays the cheap tier's default label;
+    # steering call sites re-wrap with `with_role` so the flagship feature leaves
+    # its own auditable trace (health-check follow-up #2).
+    "steering": "cheap",
     "reflection": "standard",
     "wiki_judge": "standard",
     "curriculum_pick": "standard",
@@ -226,6 +232,26 @@ _DEFAULT_USAGE_LOG = Path("data") / "llm_usage.jsonl"
 #: loop, so contention is a non-issue, and it keeps this simple rather than
 #: keyed-per-path for a single-process, single-log-file repo.
 _usage_log_lock = threading.Lock()
+
+
+def with_role(tiered: "_UsageLoggingClient", role: str) -> "_UsageLoggingClient":
+    """Re-wrap a tiered client so its ledger lines carry `role`.
+
+    `build_tiered_clients()` labels each tier's calls with that tier's PRIMARY role
+    (cheap -> "chatter"), because the `LLMClient` Protocol carries no role per call.
+    A second role sharing a tier — steering rides cheap, a Life's reflection rides
+    cheap in the degraded provider — was therefore indistinguishable in
+    `data/llm_usage.jsonl`: the health check found the flagship steering consult
+    logged as ordinary chatter. This is the one sanctioned fix the logging client's
+    own docstring already named: same underlying client, same tier, same log path,
+    the caller's own role. Non-wrapped clients (a bare stub in tests) pass through
+    unchanged rather than crash.
+    """
+    inner = getattr(tiered, "client", None)
+    if inner is None or not hasattr(tiered, "usage_log"):
+        return tiered
+    return _UsageLoggingClient(client=inner, role=role, tier=tiered.tier,
+                               usage_log=tiered.usage_log)
 
 
 def _primary_role_for_tier(tier: str) -> str:
