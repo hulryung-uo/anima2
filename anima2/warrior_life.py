@@ -61,7 +61,20 @@ UPGRADE_RESERVE = ARMOR_PRICE
 UPGRADE_TARGET_RANK = SWORD_RANK.get(UpgradeWeapon.offer_graphic, 0)
 #: Bank looted gold once the pack holds more than this, keeping a working reserve
 #: (enough to re-arm a blade + a bandage batch) so banking never strands the warrior.
-BANK_ABOVE = 400
+#: The working capital a warrior KEEPS: one full re-arm kit - a blade, a bandage
+#: batch, and a chest plate, the three purchases the rule itself makes. DERIVED from
+#: the same capability configs the buy gates read, not picked: the first value here
+#: was a flat 400 alongside a reserve of ZERO (nothing ever wrote `bank_reserve`),
+#: which meant the warrior banked every coin at 400 and walked back to the hunt
+#: unable to re-arm - the exact outcome the constant claimed to prevent (the
+#: woodsman's threshold-vs-reserve conflation, warrior edition; see
+#: docs/AUDIT-2026-07-29.md). Overridable per instance via
+#: `WarriorLife(..., bank_reserve=...)` - the constructor writes it to the econ
+#: memory's `bank_reserve`, the ONE key the rule below, the `bank_gold` gate, and
+#: `BankGold`'s own FSM all read.
+BANK_RESERVE = WEAPON_PRICE + BANDAGE_BATCH_COST + ARMOR_PRICE
+#: Back-compat alias (tests and docs referenced the old name).
+BANK_ABOVE = BANK_RESERVE
 #: Require the economy condition to PERSIST this many ticks before switching. This
 #: filters the 1-2 tick transient where a blade is on the cursor mid-equip (gone from
 #: `items`, so it momentarily reads "weaponless") — diverting to the economy then would
@@ -159,7 +172,12 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
             and gold >= WEAPON_PRICE + UPGRADE_RESERVE
             and _valid_spot(memory.get("weapon_vendor_spot"))):
         return "economy", "upgrade_weapon"
-    if gold >= BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
+    # `>` against the SAME `bank_reserve` key the gate and BankGold's FSM read - one
+    # number decides when to bank, what admission allows, and how much the skill
+    # leaves behind. The fallback default only matters to bare-dict unit tests;
+    # every Life writes the key at construction.
+    if gold > memory.get("bank_reserve", BANK_RESERVE) \
+            and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None
 
@@ -229,8 +247,14 @@ class WarriorLife:
     #: caching body, the Agent-compatible surface) is profession-agnostic.
     decide = staticmethod(decide_mode)
 
+    #: Per-class default for the `bank_reserve` the constructor writes; subclasses
+    #: override with their own derived reserve.
+    DEFAULT_BANK_RESERVE = BANK_RESERVE
+
     def __init__(self, body, persona: Persona, profession: str = "swordsman",
-                 routes: dict | None = None) -> None:
+                 routes: dict | None = None, *,
+                 bank_reserve: int | None = None,
+                 econ_grace: int = ECON_GRACE) -> None:
         prof = PROFESSIONS[profession]
         # Wrap the body so the inner agents' own observes cache the world state; the
         # orchestrator then decides the mode off that cache with no extra pump.
@@ -249,6 +273,13 @@ class WarriorLife:
         )
         # SEPARATE memories (no shared dict). The economy agent gets the vendor routes.
         self.econ_agent.memory.update(self.routes)
+        # The tuning knobs (audit proposal 5), exposed for genome axes / bandit tuning
+        # / slow-loop steering. `bank_reserve` goes into the econ memory - the ONE key
+        # the rule, the bank gate, and BankGold's FSM all read, so tuning it cannot
+        # recreate the rule-vs-gate drift class.
+        self.econ_agent.memory["bank_reserve"] = (
+            self.DEFAULT_BANK_RESERVE if bank_reserve is None else bank_reserve)
+        self.econ_grace = econ_grace
         self.mode = "hunt"
         self.target_cap: str | None = None
         self._econ_streak = 0
@@ -294,14 +325,17 @@ class WarriorLife:
         obs = self.body.last_obs
         if obs is None:
             return action
-        mode, cap = self.decide(obs, self.routes)
+        # The rule reads the ECON AGENT'S memory - the very dict the gates read - so a
+        # knob written at construction (bank_reserve) or a route added later is seen
+        # by both sides by construction, never by synchronization.
+        mode, cap = self.decide(obs, self.econ_agent.memory)
         # Hysteresis: only commit to the economy after the condition PERSISTS for
         # ECON_GRACE ticks, so a transient mid-equip "weaponless" blip doesn't yank the
         # warrior off wielding a blade it already owns (which would strand it on the
         # cursor). Genuine loss/low-supply persists and switches.
         if mode == "economy":
             self._econ_streak += 1
-            if self._econ_streak < ECON_GRACE:
+            if self._econ_streak < self.econ_grace:
                 mode, cap = "hunt", None
         else:
             self._econ_streak = 0

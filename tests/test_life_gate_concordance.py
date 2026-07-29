@@ -113,7 +113,6 @@ def test_warrior_rule_never_wants_what_its_gates_refuse():
     from anima2.warrior_life import (
         ARMOR_PRICE,
         BANDAGE_BATCH_COST,
-        BANK_ABOVE,
         LOW_BANDAGES,
         UPGRADE_RESERVE,
         WEAPON_PRICE,
@@ -121,8 +120,14 @@ def test_warrior_rule_never_wants_what_its_gates_refuse():
 
     top = UpgradeWeapon.offer_graphic
     low = min(SWORD_RANK, key=SWORD_RANK.get)
+    from anima2.warrior_life import BANK_RESERVE
+
+    # The REAL econ memory: routes plus the bank_reserve the constructor writes
+    # (audit #5) - the gate reads this key with default 0, so omitting what the
+    # orchestrator wires would test a configuration that never runs.
     routes = {"weapon_vendor_spot": ((10, 10),), "healer_spot": ((10, 10),),
-              "armorer_spot": ((10, 10),), "banker_spot": ((10, 10),)}
+              "armorer_spot": ((10, 10),), "banker_spot": ((10, 10),),
+              "bank_reserve": BANK_RESERVE}
 
     weapon_axis = {
         "none": [],
@@ -139,7 +144,7 @@ def test_warrior_rule_never_wants_what_its_gates_refuse():
     bandage_axis = [0, LOW_BANDAGES - 1, LOW_BANDAGES]
     gold_axis = sorted({0, WEAPON_PRICE - 1, WEAPON_PRICE, BANDAGE_BATCH_COST,
                         ARMOR_PRICE, WEAPON_PRICE + UPGRADE_RESERVE - 1,
-                        WEAPON_PRICE + UPGRADE_RESERVE, BANK_ABOVE, BANK_ABOVE + 1})
+                        WEAPON_PRICE + UPGRADE_RESERVE, BANK_RESERVE, BANK_RESERVE + 1})
 
     cases = []
     for (_, weapon), (_, chest), bandages, gold in product(
@@ -159,15 +164,18 @@ def test_warrior_rule_never_wants_what_its_gates_refuse():
 # --- mage ---------------------------------------------------------------------------
 
 def test_mage_rule_never_wants_what_its_gates_refuse():
-    from anima2.mage_life import BANK_ABOVE, LOW_REAGENTS, REAGENT_BATCH_COST
+    from anima2.mage_life import LOW_REAGENTS, REAGENT_BATCH_COST
     from anima2.skills.mage import FETCH_GOLD_PACK_CAP, SULFUROUS_ASH_GRAPHIC
 
-    routes = {"mage_vendor_spot": ((10, 10),), "banker_spot": ((10, 10),)}
+    from anima2.mage_life import BANK_RESERVE
+
+    routes = {"mage_vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
+              "bank_reserve": BANK_RESERVE}
 
     ash_axis = [0, LOW_REAGENTS - 1, LOW_REAGENTS]
     gold_axis = sorted({0, REAGENT_BATCH_COST - 1, REAGENT_BATCH_COST,
                         FETCH_GOLD_PACK_CAP - 1, FETCH_GOLD_PACK_CAP,
-                        BANK_ABOVE, BANK_ABOVE + 1})
+                        BANK_RESERVE, BANK_RESERVE + 1})
     purse_axis = {
         "none": [],
         "in_reach": [_item(GOLD_GRAPHIC, 140, container=None, distance=PICKUP_RADIUS)],

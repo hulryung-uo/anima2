@@ -266,16 +266,18 @@ def _rich_unarmed_obs():
 
 
 def test_a_persistent_disagreement_is_flagged_after_the_grace_window():
+    # The rule and the gate now literally read one dict (audit #5), so the old drift
+    # avenue — a route the rule sees and the gate does not — is structurally closed.
+    # What can STILL diverge is state the rule does not model: a market-FSM key
+    # (`bs_state="fetch"`) left behind by a wedged trip blocks every buy gate while the
+    # rule keeps wanting the purchase. That is the live shape this detector exists for.
     from anima2.warrior_life import DISAGREEMENT_TICKS, ECON_GRACE, WarriorLife
 
     obs = _rich_unarmed_obs()
     life = WarriorLife(body=_MockBody([obs] * (ECON_GRACE + DISAGREEMENT_TICKS + 4)),
                        persona=Persona(name="Bram"),
-                       # NO weapon_vendor route in the ECON memory but present for the
-                       # RULE: the rule wants buy_weapon, the gate (which reads the econ
-                       # agent's memory) refuses for lack of a route — a real drift.
-                       routes={})
-    life.routes["weapon_vendor_spot"] = ((10, 10),)  # rule-side only, deliberately
+                       routes={"weapon_vendor_spot": ((10, 10),)})
+    life.econ_agent.memory["bs_state"] = "fetch"  # a stale mid-fetch marker
     for _ in range(ECON_GRACE + DISAGREEMENT_TICKS + 2):
         life.tick()
     assert life.rule_gate_disagreement is not None
@@ -304,12 +306,69 @@ def test_the_flag_clears_when_the_disagreement_resolves():
 
     obs = _rich_unarmed_obs()
     life = WarriorLife(body=_MockBody([obs] * (ECON_GRACE + DISAGREEMENT_TICKS * 2 + 6)),
-                       persona=Persona(name="Bram"), routes={})
-    life.routes["weapon_vendor_spot"] = ((10, 10),)
+                       persona=Persona(name="Bram"),
+                       routes={"weapon_vendor_spot": ((10, 10),)})
+    life.econ_agent.memory["bs_state"] = "fetch"
     for _ in range(ECON_GRACE + DISAGREEMENT_TICKS + 2):
         life.tick()
     assert life.rule_gate_disagreement is not None
-    # Heal the drift: give the ECON memory the route the gate was missing.
-    life.econ_agent.memory["weapon_vendor_spot"] = ((10, 10),)
+    # Heal the drift: the wedged market state clears, the gate opens again.
+    life.econ_agent.memory["bs_state"] = "open"
     life.tick()
     assert life.rule_gate_disagreement is None
+
+
+# --- the tuning knobs (audit #5) -----------------------------------------------------
+#
+# Thresholds became constructor parameters so genome axes / bandit tuning / slow-loop
+# steering can touch them — but each knob routes through its SINGLE source (the
+# `bank_reserve` memory key the rule, the gate, and BankGold's FSM all read), so tuning
+# one side cannot recreate the rule-vs-gate drift class.
+
+def test_a_tuned_bank_reserve_moves_the_rule_and_the_gate_together():
+    from anima2.capabilities import ready_capability_ids
+    from anima2.skills.base import SkillContext
+    from anima2.warrior_life import WarriorLife
+
+    life = WarriorLife(body=_MockBody([]), persona=Persona(name="Bram"),
+                       routes={"banker_spot": ((10, 10),)}, bank_reserve=77)
+    mem = life.econ_agent.memory
+    assert mem["bank_reserve"] == 77
+
+    at = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(77)])
+    above = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(78)])
+    # The RULE flips exactly at the knob...
+    assert WarriorLife.decide(at, mem) == ("hunt", None)
+    assert WarriorLife.decide(above, mem) == ("economy", "bank_gold")
+    # ...and the GATE flips at the same coin, reading the same key.
+    assert "bank_gold" not in ready_capability_ids(
+        "swordsman", SkillContext(obs=at, persona=life.persona, memory=mem))
+    assert "bank_gold" in ready_capability_ids(
+        "swordsman", SkillContext(obs=above, persona=life.persona, memory=mem))
+
+
+def test_a_tuned_econ_grace_changes_the_hysteresis_window():
+    from anima2.warrior_life import WarriorLife
+
+    weaponless = _obs([_backpack(), _bandages(50), _gold(100)])
+    life = WarriorLife(body=_MockBody([weaponless] * 6),
+                       persona=Persona(name="Bram"),
+                       routes={"weapon_vendor_spot": ((10, 10),)}, econ_grace=2)
+    life.tick()
+    assert life.mode == "hunt"          # tick 1: within the tuned grace
+    life.tick()
+    assert life.mode == "economy"       # tick 2: tuned grace elapsed
+
+
+def test_every_life_writes_its_own_derived_reserve_at_construction():
+    from anima2.carpenter_life import CarpenterLife
+    from anima2.mage_life import MageLife
+    from anima2.warrior_life import WarriorLife
+    from anima2.woodsman_life import WoodsmanLife
+
+    for cls in (WarriorLife, MageLife, WoodsmanLife, CarpenterLife):
+        life = cls(body=_MockBody([]), persona=Persona(name="T"))
+        assert life.econ_agent.memory["bank_reserve"] == cls.DEFAULT_BANK_RESERVE > 0, (
+            f"{cls.__name__}: a zero reserve banks the working capital too — the "
+            f"threshold-vs-reserve conflation this knob exists to prevent"
+        )

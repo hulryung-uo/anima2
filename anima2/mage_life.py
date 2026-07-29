@@ -40,9 +40,15 @@ REAGENT_BATCH_COST = BuyReagent.buy_amount * BuyReagent.buy_price_estimate
 #: crafter's `DeliverGold` drops a real purse, so anything at all on the ground is worth
 #: the few steps.
 COLLECT_ABOVE = 1
-#: Bank once the purse is comfortably past several restocks' worth, so banking never
-#: strands a mage that still needs to buy ash.
-BANK_ABOVE = 400
+#: The working capital a mage KEEPS — and it is the fetch gate's own pack cap
+#: (`FETCH_GOLD_PACK_CAP`, three reagent batches), because the two thresholds are one
+#: idea: below it the mage still collects delivered purses, above it the surplus goes
+#: to the bank. The first value here was a flat 400 alongside a reserve of ZERO
+#: (nothing wrote `bank_reserve`), so the mage would have banked every coin at 400 and
+#: kept nothing for ash — the threshold-vs-reserve conflation, mage edition.
+BANK_RESERVE = FETCH_GOLD_PACK_CAP
+#: Back-compat alias (tests referenced the old name).
+BANK_ABOVE = BANK_RESERVE
 
 
 def _backpack(obs: Observation) -> int | None:
@@ -93,7 +99,8 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     # the stall shape this project keeps paying for.
     if _ground_gold(obs) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
         return "economy", "fetch_gold"
-    if gold >= BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
+    if gold > memory.get("bank_reserve", BANK_RESERVE) \
+            and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None
 
@@ -108,7 +115,8 @@ class MageLife(WarriorLife):
     """
 
     decide = staticmethod(decide_mode)
+    DEFAULT_BANK_RESERVE = BANK_RESERVE
 
     def __init__(self, body, persona, profession: str = "mage",
-                 routes: dict | None = None) -> None:
-        super().__init__(body, persona, profession=profession, routes=routes)
+                 routes: dict | None = None, **knobs) -> None:
+        super().__init__(body, persona, profession=profession, routes=routes, **knobs)

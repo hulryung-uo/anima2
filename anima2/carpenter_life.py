@@ -137,7 +137,8 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
                 and _valid_spot(memory.get(BuyBoards.vendor_spot_key))):
             return "economy", "buy_boards"
         return "hunt", None  # no material and no means — wait rather than stall
-    if _pack(obs, GOLD_GRAPHIC) > BANK_ABOVE and _valid_spot(memory.get("banker_spot")):
+    if _pack(obs, GOLD_GRAPHIC) > memory.get("bank_reserve", BANK_RESERVE) \
+            and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "economy", "craft_carpentry"
 
@@ -151,12 +152,13 @@ class CarpenterLife(WarriorLife):
     """
 
     decide = staticmethod(decide_mode)
+    DEFAULT_BANK_RESERVE = BANK_RESERVE
 
     def __init__(self, body, persona, profession: str = "carpenter",
-                 routes: dict | None = None) -> None:
-        super().__init__(body, persona, profession=profession, routes=routes)
-        # Tell the SKILL what the rule assumes: keep this much, bank the surplus.
-        self.econ_agent.memory["bank_reserve"] = BANK_RESERVE
+                 routes: dict | None = None, **knobs) -> None:
+        # The base constructor writes `bank_reserve` (DEFAULT_BANK_RESERVE unless the
+        # caller tunes it) into the econ memory — the one key rule, gate and FSM read.
+        super().__init__(body, persona, profession=profession, routes=routes, **knobs)
 
     @property
     def work_agent(self):
