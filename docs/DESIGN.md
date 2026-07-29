@@ -534,6 +534,22 @@ The original analysis, kept as the decision record:
   escalation only if they succeed. No item is expected to touch the
   Observation/Action contract.
 
+- **The autonomy thread (2026-07, runs alongside the numbered phases)** — see
+  [`AUTONOMY-ROADMAP.md`](AUTONOMY-ROADMAP.md) for its own work order and acceptance
+  ladder, and [`AUDIT-2026-07-29.md`](AUDIT-2026-07-29.md) for the multi-team review of
+  it. Landed: the immutable capability registry + closed capability cognition (B3/B4),
+  and four autonomous per-profession **Lives** on one orchestrator
+  (`warrior_life.py` base; mage/woodsman/carpenter subclasses) with a shared runner
+  harness (`life_runner.py`). Two inter-agent supply chains verified live, coordinating
+  only through items on the ground: tinker→mage (gold) and lumberjack→carpenter
+  (boards). **Economics caveat, measured against ServUO's own price tables and binding
+  on future work:** every carpentry recipe sells for less than its input boards
+  (`CARPENTER.md`), so the lumberjack→carpenter pair is a mechanism proof and is
+  economically FROZEN — do not scale or showcase it as an economy; the flagship chain
+  belongs on a positive-margin loop. Phase 7 item 2's rerun is deferred per
+  AUTONOMY-ROADMAP §E until the genome's axes steer a full Life and a positive-margin
+  loop exists (see CLAUDE.md "Two roadmaps, one decision").
+
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane
 > (`GmControl`) and the society elements (the village, professions, and the forum)
