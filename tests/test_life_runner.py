@@ -183,3 +183,49 @@ def test_pickaxes_scale_with_the_budget_between_floor_and_weight_ceiling():
     assert _pickaxes_for(300) == ["Pickaxe"] * 3
     assert _pickaxes_for(1200) == ["Pickaxe"] * 8      # capped: weight is capacity
     assert _pickaxes_for(1500) == ["Pickaxe"] * 8
+
+
+def test_run_worker_reads_the_ticks_observation_and_never_observes_again():
+    # forge10 postmortem (2026-07-30): `_run_worker`'s own `body.observe()` after
+    # every tick STOLE the journal batch — `new_journal` is since-last-observe, so
+    # with two consumers on one body the agent's skills saw empty journals: the
+    # miner's relocation window stayed EMPTY through three full forge days while
+    # every single-consumer probe passed. The worker is an observer of the AGENT,
+    # not of the world: it must read the tick's own `_last_observation`.
+    import threading
+
+    from anima2.agent import Agent
+    from anima2.contract import ItemView, PlayerView, Position
+    from anima2.mock_body import MockBody
+    from anima2.persona import Persona
+    from anima2.planner import Planner
+    from anima2.skills import Mine
+    from anima2.skills.harvest import BACKPACK_LAYER
+    from anima2.village import _run_worker
+
+    PICKAXE = 0x0E86
+
+    class CountingBody(MockBody):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.observes = 0
+
+        def observe(self):
+            self.observes += 1
+            return super().observe()
+
+    items = {
+        0xB1: ItemView(serial=0xB1, graphic=0x0E75, amount=1, pos=Position(),
+                       container=0x1, layer=BACKPACK_LAYER, distance=0),
+        0x100: ItemView(serial=0x100, graphic=PICKAXE, amount=1, pos=Position(),
+                        container=0xB1, layer=0, distance=0),
+    }
+    body = CountingBody(player=PlayerView(serial=0x1, name="Spy",
+                                          pos=Position(10, 10, 0)), items=items)
+    agent = Agent(body=body, persona=Persona(name="Spy"),
+                  planner=Planner([Mine()]))
+    _run_worker(agent, 5, 0, {}, threading.Lock(), "miner")
+    # One observe per Agent.tick — the worker itself must add ZERO.
+    assert body.observes == 5, (
+        f"{body.observes} observes for 5 ticks — a second consumer is stealing "
+        f"the journal batch again")

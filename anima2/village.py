@@ -672,7 +672,14 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             stopped = "DISCONNECTED"
             break
         action = agent.tick()
-        obs = agent.body.observe()
+        # READ the tick's own observation — never observe() again. new_journal is
+        # since-LAST-observe: a second consumer on the same body steals the batch,
+        # and the agent's next tick sees an empty journal. This single line kept
+        # the relocation window EMPTY through three full forge days (the miner's
+        # verdict clilocs landed HERE and were discarded) while the standalone
+        # probes — one consumer — kept passing. The Lives never hit it because
+        # `_CachingBody` exists for exactly this; a plain Agent has no such shield.
+        obs = getattr(agent, "_last_observation", None) or agent.body.observe()
         p = obs.player.pos
 
         if chronicle is not None:
