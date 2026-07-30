@@ -282,3 +282,69 @@ def test_malformed_bank_reserve_clamps_identically_for_rule_and_gate():
     obs = _decide_obs([_iron(0x800, 20), _item(0x801, GOLD_GRAPHIC, amount=gold)])
     # Urgent branch must NOT fire (50 <= 0 + 75); craft outranks the patient bank.
     assert decide_mode(obs, memory) == ("economy", "craft_tongs")
+
+
+def test_a_given_up_bank_goal_closes_its_frame_instead_of_zombieing():
+    # forge1 (audit #6's one anomaly) and forge13 live, root-caused offline: a
+    # bank run whose FSM gives up (banker not found — here structurally, the
+    # mock stages no banker) marks its goal id finished and walks home, but
+    # nothing CLOSED the frame: `CapabilityGoalComplete` requires achievement,
+    # so the frame sat admitted until its deadline while the inner skill
+    # no-opped on the finished id — 20+ live minutes of a Life doing nothing,
+    # with a delivery rotting on the ground beside it. The wrapper's neutral
+    # `cap_run_finished_goal_id` marker now lets the frame close as FAILURE,
+    # and the Life must simply move on to the work it wants.
+    from anima2.contract import ItemView, PlayerView, Position
+    from anima2.mock_body import MockBody
+    from anima2.skills.harvest import BACKPACK_LAYER
+    from anima2.skills.smelt import INGOT_GRAPHICS
+    from anima2.tinker_life import TinkerLife
+
+    IRON = sorted(INGOT_GRAPHICS)[0]
+    PIM, PACK = 0x1, 0xB1
+    items = {
+        PACK: ItemView(serial=PACK, graphic=0x0E75, amount=1, pos=Position(),
+                       container=PIM, layer=BACKPACK_LAYER, distance=0),
+        0x100: ItemView(serial=0x100, graphic=TINKERTOOLS_GRAPHIC, amount=1,
+                        pos=Position(), container=PACK, layer=0, distance=0),
+        0x101: ItemView(serial=0x101, graphic=GOLD_GRAPHIC, amount=140,
+                        pos=Position(), container=PACK, layer=0, distance=0),
+    }
+    body = MockBody(player=PlayerView(serial=PIM, name="Pim",
+                                      pos=Position(10, 10, 0)), items=items)
+    life = TinkerLife(body=body, persona=Persona(name="Pim"),
+                      routes={"vendor_spot": ((12, 10),),
+                              "banker_spot": ((10, 12),)})
+    life.set_leash((10, 10), 3)
+    for m in (life.memory, life.econ_agent.memory):
+        m["craft_spot"] = (10, 10)
+
+    def admitted():
+        cur = life.econ_agent.goal_stack.current
+        return cur.goal.params.get("capability") if cur else None
+
+    for _ in range(30):  # supply gap: 140g > reserve -> bank_gold admitted
+        life.tick()
+        if admitted() == "bank_gold":
+            break
+    assert admitted() == "bank_gold"
+
+    # The mid-goal delivery that turned forge13's wedge visible.
+    items[0x200] = ItemView(serial=0x200, graphic=IRON, amount=17,
+                            pos=Position(11, 10, 0), container=None, layer=0,
+                            distance=1)
+    for t in range(40):
+        life.tick()
+        if admitted() != "bank_gold":
+            break
+    assert admitted() != "bank_gold", (
+        "the given-up bank frame never closed — the forge13 zombie is back")
+    # And the Life actually moved on: give it the rest of the errand and the
+    # delivered iron must reach the pack (fetch executed, not just re-wanted).
+    for _ in range(60):
+        life.tick()
+        pack_iron = sum(i.amount for i in items.values()
+                        if i.graphic == IRON and i.container == PACK)
+        if pack_iron > 0:
+            break
+    assert pack_iron > 0

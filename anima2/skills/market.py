@@ -1459,6 +1459,13 @@ class SellItemCapability(BlacksmithMarket):
             ctx.memory.pop("sell_return_leg", None)
             ctx.memory["mkt_phase"] = "craft"
             ctx.memory["cap_sell_finished_goal_id"] = goal_id
+            # Neutral run-finished marker for `CapabilityGoalComplete`: a run
+            # that ended WITHOUT achievement (the FSM gave up and walked home)
+            # must still CLOSE its goal frame — before this, the frame sat
+            # admitted until its deadline while every step no-opped on the
+            # finished id: the forge1/forge13 "admitted bank_gold that never
+            # progressed" zombie, 20+ minutes of a Life doing nothing.
+            ctx.memory["cap_run_finished_goal_id"] = goal_id
             stand = ctx.memory.get("bs_stand")
             if (
                 isinstance(stand, (tuple, list))
@@ -1843,6 +1850,13 @@ class BankGold(BlacksmithMarket):
             ctx.memory.pop("bank_return_leg", None)
             ctx.memory["mkt_phase"] = "craft"
             ctx.memory["cap_bank_finished_goal_id"] = goal_id
+            # Neutral run-finished marker for `CapabilityGoalComplete`: a run
+            # that ended WITHOUT achievement (the FSM gave up and walked home)
+            # must still CLOSE its goal frame — before this, the frame sat
+            # admitted until its deadline while every step no-opped on the
+            # finished id: the forge1/forge13 "admitted bank_gold that never
+            # progressed" zombie, 20+ minutes of a Life doing nothing.
+            ctx.memory["cap_run_finished_goal_id"] = goal_id
             stand = ctx.memory.get("bs_stand")
             if (
                 isinstance(stand, (tuple, list))

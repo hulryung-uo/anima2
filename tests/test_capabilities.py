@@ -1596,10 +1596,15 @@ def test_unserviceable_admitted_capability_expires_in_bounded_time() -> None:
         if agent.goal is None:
             break
 
+    # Bounded-time cleanup is the contract. Originally only the DEADLINE could
+    # reclaim this frame (outcome EXPIRED); since the giveup-close fix (the
+    # forge1/forge13 zombie), a run that finishes without achievement closes
+    # itself as FAILURE well before the deadline — earlier and more truthful.
     matches = [
         frame
         for frame in agent.goal_stack.history
-        if frame.goal.kind == "capability" and frame.outcome is GoalOutcome.EXPIRED
+        if frame.goal.kind == "capability"
+        and frame.outcome in (GoalOutcome.FAILURE, GoalOutcome.EXPIRED)
     ]
     assert len(matches) == 1
     assert agent.goal is None

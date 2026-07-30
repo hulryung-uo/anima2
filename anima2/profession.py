@@ -296,13 +296,36 @@ class CapabilityGoalComplete(Skill):
         binding = policy_binding_for_context(ctx, self.profession)
         if binding is None:
             return False
+        if self._achieved(binding, ctx):
+            return True
+        # A transaction that ran to its END without achievement — the FSM gave
+        # up and walked home, leaving the wrapper's neutral run-finished marker
+        # — must still close its frame. Without this branch the frame sat
+        # admitted until its deadline while the inner skill no-opped on the
+        # finished id every tick: forge1's and forge13's "admitted bank_gold
+        # that never progressed" (live: 20+ minutes of a Life doing nothing,
+        # and forge4's lingering sell_tongs was the same shape via the sell
+        # wrapper). Closing with FAILURE frees the stack, so the Life simply
+        # retries at the next opportunity — a transient giveup costs one trip,
+        # not the rest of the day.
+        return (ctx.goal_id is not None
+                and ctx.memory.get("cap_run_finished_goal_id") == ctx.goal_id)
+
+    @staticmethod
+    def _achieved(binding, ctx: SkillContext) -> bool:
         try:
             return bool(binding.achieved(ctx) and binding.can_yield(ctx))
         except Exception:  # noqa: BLE001 — policy callbacks fail closed
             return False
 
     def step(self, ctx: SkillContext) -> SkillResult:
-        return SkillResult(Status.SUCCESS if self.can_run(ctx) else Status.FAILURE)
+        if not self.can_run(ctx):
+            return SkillResult(Status.FAILURE)
+        binding = policy_binding_for_context(ctx, self.profession)
+        achieved = binding is not None and self._achieved(binding, ctx)
+        # SUCCESS closes the frame as achieved; FAILURE closes a finished-but-
+        # unachieved run (`consumes_goal` carries either to the goal stack).
+        return SkillResult(Status.SUCCESS if achieved else Status.FAILURE)
 
 
 class CapabilityBoundSkill(Skill):
