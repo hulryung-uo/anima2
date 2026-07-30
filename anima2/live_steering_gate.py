@@ -62,10 +62,12 @@ def main() -> int:
             wipe_area(gm, mx, my, radius=8, z=mz)
             enforce_gold_provenance(gm, body, serial)
             gm.command_on(f"[AddToPack Gold {STAGE_GOLD}", serial)
+            shop_serials: dict = {}
             routes, _ = stage_shops(
                 gm, z=mz, anchor=(mx, my), exclude=serial,
                 spots={"mage_vendor_spot": ("Mage", MAGE_VENDOR),
-                       "banker_spot": ("Banker", MAGE_BANKER)})
+                       "banker_spot": ("Banker", MAGE_BANKER)},
+                serials_out=shop_serials)
             # The overlap's second half: a purse already delivered, in pickup reach.
             gm.command_at(f"[Add Gold {PURSE}", mx + 1, my + 1, mz)
             print(f"staged: mage@({mx},{my}) ash={LOW_REAGENTS - 5} gold={STAGE_GOLD} "
@@ -73,6 +75,8 @@ def main() -> int:
 
         life = MageLife(body=body, persona=Persona(name="Elara"), routes=routes,
                         steering="llm")
+        for m in (life.memory, life.econ_agent.memory):
+            m["shop_serials"] = shop_serials  # identity pin (see stage_shops)
         life.set_leash((mx, my), 3)
 
         admitted: list[str] = []

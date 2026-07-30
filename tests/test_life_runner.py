@@ -292,3 +292,49 @@ def test_stage_shops_records_the_serial_it_actually_staged():
     # Keyed by the READBACK position — the same tuple the route's last waypoint
     # holds, which is what the resolver is called with.
     assert all(tuple(routes[k][-1]) in out for k in routes)
+
+
+def test_every_stage_shops_caller_passes_the_identity_pin():
+    # Structural, because the failure is silent: a runner that forgets the pin
+    # falls back to nearest-to-spot resolution, and that only misbehaves when
+    # two shops happen to tie — one run in three, live-measured. Wiring it is a
+    # one-liner; NOT wiring it costs a whole trip and looks like a slow banker.
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "anima2"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        src = path.read_text()
+        for m in re.finditer(r"\bstage_shops\(", src):
+            if "def stage_shops" in src[max(0, m.start() - 120):m.start()]:
+                continue  # the definition itself
+            # The call spans lines; take up to its closing paren.
+            depth, i = 0, m.end() - 1
+            while i < len(src):
+                depth += (src[i] == "(") - (src[i] == ")")
+                if depth == 0:
+                    break
+                i += 1
+            call = src[m.start():i]
+            if "serials_out" not in call:
+                line = src[:m.start()].count("\n") + 1
+                offenders.append(f"{path.name}:{line}")
+    assert not offenders, (
+        "these stage_shops callers drop the shop-identity pin: " + ", ".join(offenders))
+
+
+def test_pinned_runners_hand_the_map_to_the_agent_memory():
+    # The pin is useless in a local variable: the resolver reads it from
+    # ctx.memory["shop_serials"]. Every module that collects one must also hand
+    # it over (Staged memory/econ_memory, or a direct memory write).
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "anima2"
+    for path in sorted(root.glob("*.py")):
+        src = path.read_text()
+        if "serials_out=" not in src:
+            continue
+        assert re.search(r'["\']shop_serials["\']\s*[:\]]', src), (
+            f"{path.name} collects a pin but never puts it in an agent memory")

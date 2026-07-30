@@ -50,13 +50,18 @@ def main() -> int:
             wipe_area(gm, tx, ty, radius=8, z=tz)
             enforce_gold_provenance(gm, body, serial)
             gm.command_on(f"[AddToPack Gold {GRANT}", serial)
+            shop_serials: dict = {}
             routes, _ = stage_shops(
                 gm, z=tz, anchor=(tx, ty), exclude=serial,
                 spots={"vendor_spot": ("Tinker", VENDOR_SPOT[-1]),
-                       "banker_spot": ("Banker", BANKER_SPOT[-1])})
+                       "banker_spot": ("Banker", BANKER_SPOT[-1])},
+                serials_out=shop_serials)
         life = TinkerLife(body=body, persona=Persona(name="Pim"), routes=routes)
         for m in (life.memory, life.econ_agent.memory):
             m["craft_spot"] = (tx, ty)
+            # Identity pin: this gate's own sibling caught the resolver asking a
+            # Tinker to open a bank box when the tie broke the wrong way.
+            m["shop_serials"] = shop_serials
         life.set_leash((tx, ty), 2)
         print(f"staged: Pim@({tx},{ty}) gold={GRANT} reserve={BANK_RESERVE} — "
               f"bank_gold should fire and deposit {GRANT - BANK_RESERVE}g\n")

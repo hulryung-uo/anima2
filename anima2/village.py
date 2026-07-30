@@ -1111,10 +1111,20 @@ def _run_online_village(
                     # when idle, which can drift it out of the market skill's
                     # search radius / the smith's fixed route).
                     vx, vy = p["vendor_spot"][-1]
-                    gm.stage_npc("Blacksmith", vx, vy, gz, exclude=all_agent_serials)
+                    npc = gm.stage_npc("Blacksmith", vx, vy, gz,
+                                       exclude=all_agent_serials)
+                    if npc is not None:
+                        # Pin by the REQUESTED tile, because that is what this
+                        # runner stores as the route (unlike `stage_shops`, which
+                        # stores its readback) — the pin key must always be the
+                        # waypoint the market resolver will be handed.
+                        p.setdefault("shop_serials", {})[(vx, vy)] = npc.serial
                 if p["banker_spot"]:
                     bx, by = p["banker_spot"][-1]
-                    gm.stage_npc("Banker", bx, by, gz, exclude=all_agent_serials)
+                    npc = gm.stage_npc("Banker", bx, by, gz,
+                                       exclude=all_agent_serials)
+                    if npc is not None:
+                        p.setdefault("shop_serials", {})[(bx, by)] = npc.serial
             gm.command_on(f'[Set Name "{p["persona"].name}"', serial)
     print("staged & named. work begins.\n")
 
@@ -1324,7 +1334,11 @@ def _run_online_village(
         if p["vendor_spot"]:
             agent.memory["vendor_spot"] = p["vendor_spot"]  # blacksmith's sell route (trade pairing)
         if p["banker_spot"]:
-            agent.memory["banker_spot"] = p["banker_spot"]  # blacksmith's bank route (trade pairing)
+            agent.memory["banker_spot"] = p["banker_spot"]  # blacksmith's bank route
+        if p.get("shop_serials"):
+            # Identity pin for the market resolver: with a vendor and a banker a
+            # tile either side of a stand, nearest-to-spot is a coin flip.
+            agent.memory["shop_serials"] = p["shop_serials"]
         if capability_enabled and p["workplace"] is not None:
             agent.memory["craft_spot"] = p["workplace"]
         if chosen_threshold is not None:
@@ -1518,13 +1532,18 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # other's — the Banker-as-Weaponsmith aliasing, cross-agent edition.
         from .life_runner import stage_shops
         placed: dict[int, str] = {}
+        # One pin map spans both calls too: it is keyed by TILE, so each agent only
+        # ever looks up the waypoints its own routes carry (see `stage_shops`).
+        shop_serials: dict = {}
         w_routes, t1 = stage_shops(
             gm, z=cz, anchor=(wx, wy), exclude=allser, strict=False, placed=placed,
-            spots={"vendor_spot": ("Carpenter", (wx - 1, wy))})
+            spots={"vendor_spot": ("Carpenter", (wx - 1, wy))},
+            serials_out=shop_serials)
         c_routes, t2 = stage_shops(
             gm, z=cz, anchor=(cx, cy), exclude=allser, strict=False, placed=placed,
             spots={"vendor_spot": ("Carpenter", (cx + 1, cy)),
-                   "banker_spot": ("Banker", (cx - 1, cy))})
+                   "banker_spot": ("Banker", (cx - 1, cy))},
+            serials_out=shop_serials)
         npc_tiles = t1 | t2
         # The HANDOVER tile has to be clear too. An `[Add`-ed NPC settles a tile or two
         # off the request, and one settled exactly onto this drop on the first attempt —
@@ -1546,11 +1565,14 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     bjorn = WoodsmanLife(body=bodies["woodsman"], persona=Persona(name="Bjorn"),
                          routes={**w_routes, "carpenter_drop": drop})
     bjorn.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
+    for m in (bjorn.memory, bjorn.econ_agent.memory):
+        m["shop_serials"] = shop_serials  # identity pin, not a nearest-tile guess
     bjorn.set_leash((wx, wy))
     sten = CarpenterLife(body=bodies["carpenter"], persona=Persona(name="Sten"),
                          routes=c_routes)
     for m in (sten.memory, sten.econ_agent.memory):
         m["craft_spot"] = (cx, cy)
+        m["shop_serials"] = shop_serials
     # Leash Sten to the DROP, not to his own feet. A carpenter that drifts out of pickup
     # range stops being supplied — live-caught: he wandered nine tiles off and was never
     # once admitted a `fetch_boards` goal in 1200 ticks, while boards sat on the ground
@@ -1867,16 +1889,20 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
                               skills=prof.skills, items=list(prof.items))
         wipe_area(gm, cx, cy, radius=8, z=cz)
         gm.command_on('[Set Name "Sten"', serial)
+        shop_serials: dict = {}
         routes, _tiles = stage_shops(
             gm, z=cz, anchor=(cx, cy), exclude=serial,
             spots={"vendor_spot": ("Carpenter", VENDOR_SPOT[-1]),
-                   "banker_spot": ("Banker", BANKER_SPOT[-1])})
+                   "banker_spot": ("Banker", BANKER_SPOT[-1])},
+            serials_out=shop_serials)
         # Seed money, and ONLY that: a carpenter cannot make its own material, so with
         # an empty purse and no supplier it would correctly wait forever. The seed buys
         # exactly one batch of boards plus a spare saw; everything past that is earned.
         return Staged(routes=routes, home=(cx, cy),
-                      econ_memory={"craft_spot": (cx, cy)},
-                      memory={"craft_spot": (cx, cy)},
+                      econ_memory={"craft_spot": (cx, cy),
+                                   "shop_serials": shop_serials},
+                      memory={"craft_spot": (cx, cy),
+                              "shop_serials": shop_serials},
                       seed_gold=BOARD_BATCH_COST + SAW_COST,
                       banner=f"(reserve {BANK_RESERVE})")
 
@@ -1926,14 +1952,20 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                               items=list(prof.items))
         wipe_area(gm, wx, wy, radius=8, z=wz)
         gm.command_on('[Set Name "Bjorn"', serial)
+        shop_serials: dict = {}
         routes, _tiles = stage_shops(
             gm, z=wz, anchor=(wx, wy), exclude=serial,
             spots={"vendor_spot": ("Carpenter", (wx + 1, wy)),
                    "tool_vendor_spot": ("Weaponsmith", (wx - 1, wy)),
-                   "banker_spot": ("Banker", (wx, wy + 1))})
+                   "banker_spot": ("Banker", (wx, wy + 1))},
+            serials_out=shop_serials)
+        # THREE shops around one stand — the tightest packing any runner has, and
+        # exactly the geometry where nearest-to-spot resolution flips a coin.
         return Staged(routes=routes, home=(wx, wy),
+                      econ_memory={"shop_serials": shop_serials},
                       memory={"harvest_nodes": [(t.x, t.y, t.z, t.graphic)
-                                                for t in trees]},
+                                                for t in trees],
+                              "shop_serials": shop_serials},
                       banner="with a hatchet")
 
     def status_extra(life, obs) -> str:
