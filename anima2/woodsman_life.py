@@ -40,7 +40,7 @@ from .contract import Observation
 from .skills.craft import PICKUP_RADIUS
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.market import TOOL_BUY_AMOUNT
+from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
 from .skills.woodwork import (
     AXE_GRAPHICS,
     BOARD_GRAPHIC,
@@ -147,7 +147,7 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     if _pack_amount(obs, LOG_GRAPHIC) > 0:
         return "economy", "process_logs"
     # `>` against the SAME `bank_reserve` key the gate and BankGold's FSM read.
-    if _pack_amount(obs, GOLD_GRAPHIC) > memory.get("bank_reserve", BANK_RESERVE) \
+    if _pack_amount(obs, GOLD_GRAPHIC) > _bank_reserve(memory, BANK_RESERVE) \
             and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None

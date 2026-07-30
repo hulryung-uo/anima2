@@ -253,18 +253,28 @@ TOOL_BUY_AMOUNT = 1
 TOOL_BUY_CONFIRM_TIMEOUT = 10
 
 
-def _bank_reserve(memory) -> int:
+def _bank_reserve(memory, default: int = 0) -> int:
     """The `bank_gold` working-capital reserve to retain, clamped to a
     non-negative int. The single read point for `bank_reserve` shared by the
-    BankGold FSM (`skills/market.py`) and the capability policy
-    (`capabilities.py`), so all of them agree.
+    BankGold FSM (`skills/market.py`), the capability policy
+    (`capabilities.py`) AND every Life's decide rule, so all of them agree.
 
     A negative or otherwise malformed `bank_reserve` (a stray non-int, a float,
     a bool) is treated as 0 (no reserve): left unclamped, a negative value would
     make `_bank_ready` always true (`gold > -50`, even at 0 gold) and inflate the
     surplus past the pack, wedging the goal — it could never satisfy
     `final_pack_gold == reserve`. Default 0 (unset) stays byte-identical to B7.
+
+    `default` applies only when the KEY IS ABSENT (the Lives pass their derived
+    reserve constant; the gate/FSM keep 0) — a PRESENT-but-malformed value still
+    clamps to 0 on every reader, because a decide rule that read the raw value
+    while the gate read the clamp would want `bank_gold` the gate refuses at any
+    gold — the exact rule-vs-gate drift class this module comments on, reachable
+    through the `bank_reserve` tuning knob (review-caught when the urgent-bank
+    branch hoisted that raw read above craft).
     """
+    if "bank_reserve" not in memory:
+        return default
     reserve = memory.get("bank_reserve", 0)
     return reserve if type(reserve) is int and reserve > 0 else 0
 

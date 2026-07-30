@@ -46,7 +46,7 @@ from .skills.carpentry import (
 from .skills.craft import PICKUP_RADIUS
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.market import TOOL_BUY_AMOUNT
+from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
 from .warrior_life import WarriorLife
 
 #: Boards consumed per piece of furniture — the craft capability's own recipe.
@@ -137,7 +137,7 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
                 and _valid_spot(memory.get(BuyBoards.vendor_spot_key))):
             return "economy", "buy_boards"
         return "hunt", None  # no material and no means — wait rather than stall
-    if _pack(obs, GOLD_GRAPHIC) > memory.get("bank_reserve", BANK_RESERVE) \
+    if _pack(obs, GOLD_GRAPHIC) > _bank_reserve(memory, BANK_RESERVE) \
             and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "economy", "craft_carpentry"

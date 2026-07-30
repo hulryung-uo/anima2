@@ -211,9 +211,20 @@ class MineSmeltDeliver(MineAndSmelt):
         """
         if not self.can_run(ctx):
             return "no pickaxe and no backpack visible — cannot mine"
+        # The tool-gone confession is TERMINAL (no swings, no smelt, no delivery, no
+        # recovery without outside help) and must outrank the SELF-HEALING delivery
+        # giveup below — giveup only clears by smelting past the giveup count, which
+        # needs the very tool that is gone, so the other order masks the confession
+        # forever (review-caught: the swallowing this override used to do via
+        # `return None`, recreated one layer up).
+        if self.tool_gone(ctx):
+            return super().diagnose(ctx)
         if ctx.memory.get("smithy_drop") is not None and ctx.memory.get("deliver_giveup_ingots") is not None:
             return "delivery route blocked — gave up hauling ingots to the smithy last attempt"
-        return None
+        # Fall through to Harvest's own layers (tool-gone confession, relocating) —
+        # returning None here would swallow them for every mine-chain agent (forge4:
+        # a toolless Grimm had a confession to make and this override ate it).
+        return super().diagnose(ctx)
 
     def step(self, ctx: SkillContext) -> SkillResult:
         smithy = ctx.memory.get("smithy_drop")
@@ -225,6 +236,15 @@ class MineSmeltDeliver(MineAndSmelt):
         # time this skill runs, so `return` walks back to exactly the tile
         # `Mine`'s probing/forge reach is calibrated for.
         ctx.memory.setdefault("miner_home", (obs.player.pos.x, obs.player.pos.y))
+        # A completed relocation (previous tick, inside super().step's harvest
+        # machinery) condemned the old stand spot — the delivery return leg must
+        # come back HERE from now on, not to the dead ground it left. Without
+        # this, every haul ends with a walk back to the condemned tile, a full
+        # re-confession window, and a rotated-direction re-relocation: a
+        # random-walk between hauls (see `Harvest._clear_relocate`).
+        moved = ctx.memory.pop("harvest_relocated_to", None)
+        if moved is not None:
+            ctx.memory["miner_home"] = moved
         phase = ctx.memory.get("smelt_phase", "mine")
 
         # Only leave for delivery between mining swings, same as the mine→smelt

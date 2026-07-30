@@ -174,3 +174,12 @@ def test_telemetry_line_shows_want_admitted_and_ready_separately():
     life.persona = Persona(name="T")
     line = telemetry_line(life, "lumberjack", _obs([]))
     assert "want=sell_boards" in line and "admitted=None" in line and "ready=" in line
+
+
+def test_pickaxes_scale_with_the_budget_between_floor_and_weight_ceiling():
+    from anima2.village import _pickaxes_for
+
+    assert _pickaxes_for(120) == ["Pickaxe"] * 2       # smoke floor
+    assert _pickaxes_for(300) == ["Pickaxe"] * 3
+    assert _pickaxes_for(1200) == ["Pickaxe"] * 8      # capped: weight is capacity
+    assert _pickaxes_for(1500) == ["Pickaxe"] * 8

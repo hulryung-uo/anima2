@@ -143,20 +143,17 @@ def _run_rotations(tick, mem, *, rotations, ring, stuck_cliloc=None):
     → cursor opens → answer → reply carries `stuck_cliloc` (or nothing, a
     plain miss, if `None`). Returns the last action seen.
 
-    Runs one fewer than `rotations * ring` reply cycles: the very first
-    `tick()` call below (priming the initial swing, before any cursor has
-    ever opened) also records one "not stuck" window sample of its own
-    (`pending_target is None` and an empty journal) — harmless/correct in
-    real use (a session's first-ever tick has nothing to report yet either),
-    but it means the window fills one reply earlier than a naive
-    `rotations * ring` count of *this loop's own* replies would suggest.
+    Runs exactly `rotations * ring` reply cycles: under `Mine`'s outcome-only
+    windowing (see `Harvest.productive_clilocs`) the priming `tick()` below —
+    no cursor, empty journal — carries no swing verdict and records NO sample,
+    so every window entry comes from this loop's own replies.
     """
     from anima2.contract import TargetCursor
 
     stuck = [JournalEntry(0, "System", "", 0, 0, cliloc=stuck_cliloc)] if stuck_cliloc else []
     cursor = TargetCursor(target_type=1, cursor_id=1, cursor_flag=0)
-    last_action = tick().action  # prime the first swing
-    for _ in range(rotations * ring - 1):
+    last_action = tick().action  # prime the first swing (no verdict, no sample)
+    for _ in range(rotations * ring):
         answer = tick(pending=cursor)
         assert isinstance(answer.action, TargetGround)
         last_action = tick(journal=stuck).action
@@ -299,21 +296,24 @@ def test_mine_detects_partial_exhaustion_despite_interspersed_skill_gain():
         )
         return skill.step(SkillContext(obs=obs, persona=Persona(name="Grimm"), memory=mem))
 
-    # 40% of replies are "no metal" (well above stuck_rate_threshold=0.3); the
-    # other 60% gain skill (a reward every time) — a mix a strict streak would
-    # reset on every single one of those "good" replies, never accumulating.
-    # (window - 1): the priming `tick()` call below also records one "not
-    # stuck" sample of its own — see `_run_rotations`'s own docstring.
+    # 4 of 5 replies are "no metal" (above Mine's outcome-only threshold, 0.75);
+    # the fifth is a PRODUCTIVE reply — "you loosen some rocks" (503043, the bank
+    # still yields) with the skill gain that rides along. A strict streak would
+    # reset on every one of those good replies, never accumulating; the windowed
+    # rate keeps its memory of the many "no" verdicts around them. (Below 75%
+    # failure the ring is deliberately left alone now: a spot producing on a
+    # quarter of its verdicts is a working spot, not a dead one.)
+    productive = JournalEntry(0, "System", "", 0, 0, cliloc=503043)
     last_action = tick().action
     mining = 35.0
-    for i in range(window - 1):
+    for i in range(window):
         answer = tick(pending=cursor, mining=mining)
         assert isinstance(answer.action, TargetGround)
-        if i % 5 < 2:  # 2 of every 5 replies are a confirmed "no resource"
+        if i % 5 < 4:  # 4 of every 5 replies are a confirmed "no resource"
             last_action = tick(journal=[stuck], mining=mining).action
-        else:  # the rest gain skill — ordinary, expected mining variance
+        else:  # the fifth still finds ore-bearing rock — and gains skill
             mining += 0.1
-            last_action = tick(mining=mining).action
+            last_action = tick(journal=[productive], mining=mining).action
     assert isinstance(last_action, WalkTo)
     assert mem["harvest_relocating"] is True
 
@@ -367,3 +367,190 @@ def test_fish_rewards_each_catch():
     res = Fish().step(SkillContext(obs=obs, persona=Persona(name="M"), memory={}))
     assert res.reward >= 1.0  # the catch was rewarded
     assert len(FISH_OFFSETS) == 80  # casts up to 4 tiles (reach-4 ring)
+
+
+# --- the tool-gone confession (forge4, 2026-07-30) ------------------------------------
+#
+# Both staged pickaxes wore out (ServUO Pickaxe = 50 uses) and the miner spun the
+# open-the-pack loop silently for 320+ ticks: no swings means no swing replies, so the
+# relocation window NEVER fills — a toolless harvester is invisible to relocation BY
+# CONSTRUCTION and must confess through `diagnose` instead.
+
+def test_toolless_mining_confesses_after_the_threshold():
+    mine = Mine()
+    mem: dict = {}
+    pack = _item(BACKPACK, 0x0E75, layer=0x15, container=1)
+    for _ in range(mine.tool_missing_confess - 1):
+        res = mine.step(_ctx(items=[pack], memory=mem))
+        assert isinstance(res.action, Use) and res.action.serial == BACKPACK
+    assert mine.diagnose(_ctx(items=[pack], memory=mem)) is None  # still "revealing"
+    mine.step(_ctx(items=[pack], memory=mem))  # the tick that crosses the threshold
+    diag = mine.diagnose(_ctx(items=[pack], memory=mem))
+    assert diag is not None and "no tool" in diag and "cannot swing" in diag
+
+
+def test_tool_reappearing_withdraws_the_confession():
+    mine = Mine()
+    mem: dict = {}
+    pack = _item(BACKPACK, 0x0E75, layer=0x15, container=1)
+    for _ in range(mine.tool_missing_confess + 3):
+        mine.step(_ctx(items=[pack], memory=mem))
+    assert mine.diagnose(_ctx(items=[pack], memory=mem)) is not None
+    # A fresh pickaxe lands in the pack (bought, delivered, or GM-staged).
+    ctx = _ctx(items=[pack, _item(0x222, PICKAXE, container=BACKPACK)], memory=mem)
+    mine.step(ctx)
+    assert mine.diagnose(ctx) is None
+    assert "harvest_tool_missing" not in mem
+
+
+def test_mine_smelt_deliver_surfaces_the_confession_not_just_its_own_layers():
+    # MineSmeltDeliver.diagnose used to end in `return None`, swallowing Harvest's
+    # layered diagnostics for every mine-chain agent — exactly the agent forge4 ran.
+    from anima2.skills.smelt import MineSmeltDeliver
+
+    skill = MineSmeltDeliver()
+    mem: dict = {"harvest_tool_missing": skill.tool_missing_confess}
+    pack = _item(BACKPACK, 0x0E75, layer=0x15, container=1)
+    diag = skill.diagnose(_ctx(items=[pack], memory=mem))
+    assert diag is not None and "no tool" in diag
+
+
+def test_worn_out_equipped_tool_still_reaches_the_confession():
+    # Review-caught BEFORE this ever ran live: for requires_equipped harvesters
+    # (Chop) a worn-out axe leaves a stale remembered serial, and the equip
+    # two-step consumes every tick — a counter inside the open-the-pack branch
+    # would be unreachable exactly where the confession matters. The count now
+    # happens at the tool lookup, before any branch can eat the tick.
+    from anima2.skills.harvest import Chop
+
+    chop = Chop()
+    mem: dict = {"harvest_tool": 0x1234}  # remembered serial of the DELETED axe
+    pack = _item(BACKPACK, 0x0E75, layer=0x15, container=1)
+    for _ in range(chop.tool_missing_confess):
+        res = chop.step(_ctx(items=[pack], memory=mem))
+        assert res.action is not None  # it spins (PickUp/Equip) — that is the trap
+    diag = chop.diagnose(_ctx(items=[pack], memory=mem))
+    assert diag is not None and "no tool" in diag
+
+
+def test_confession_is_cross_checked_against_the_observation_in_hand():
+    # A stale counter alone must not confess: the counter only resets inside
+    # step(), so a tool re-armed between skill turns (bought, delivered,
+    # GM-staged) would otherwise keep confessing until step() next ran.
+    mine = Mine()
+    mem: dict = {"harvest_tool_missing": Mine.tool_missing_confess + 5}
+    pack = _item(BACKPACK, 0x0E75, layer=0x15, container=1)
+    armed = _ctx(items=[pack, _item(0x222, PICKAXE, container=BACKPACK)], memory=mem)
+    assert mine.diagnose(armed) is None
+
+
+def test_tool_gone_confession_outranks_the_delivery_giveup():
+    # The giveup only clears by smelting past the giveup count — which needs the
+    # very tool that is gone — so the other order masks the confession forever.
+    from anima2.skills.smelt import MineSmeltDeliver
+
+    skill = MineSmeltDeliver()
+    pack = _item(BACKPACK, 0x0E75, layer=0x15, container=1)
+    both = {"harvest_tool_missing": skill.tool_missing_confess,
+            "smithy_drop": (10, 10), "deliver_giveup_ingots": 8}
+    diag = skill.diagnose(_ctx(items=[pack], memory=both))
+    assert diag is not None and "no tool" in diag
+    # With the tool back in hand, the self-healing giveup layer speaks again.
+    healed = _ctx(items=[pack, _item(0x222, PICKAXE, container=BACKPACK)],
+                  memory=dict(both))
+    diag2 = skill.diagnose(healed)
+    assert diag2 is not None and "delivery route blocked" in diag2
+
+
+# --- outcome-only relocation sampling (the forge5 probe, 2026-07-30) ------------------
+#
+# A live probe at the trade mine spot watched the legacy sampler crawl: the probe
+# ring there is ~half unmineable tiles ("You can't mine that" 501862 / LOS 500237),
+# and those replies appended `0` — "not stuck" — so a fully DEAD bank rated ~0.5
+# and needed 140+ ticks to confess. Samples are now real swing verdicts only.
+
+def _swing_reply(mine, mem, cliloc, pack_items=()):
+    """One swing-reply tick: pending_target None, journal carrying `cliloc`."""
+    items = [_item(0x222, PICKAXE, container=BACKPACK), *pack_items]
+    ctx = _ctx(items=items, memory=mem)
+    ctx.obs.new_journal.append(
+        JournalEntry(serial=0, name="", text="", msg_type=0xC1, hue=0, cliloc=cliloc))
+    return mine.step(ctx)
+
+
+def test_dead_bank_confesses_within_one_window_despite_invalid_tiles():
+    from anima2.contract import WalkTo
+
+    mine = Mine()
+    mem: dict = {}
+    window = len(mine.probe_offsets) * mine.stuck_window_rotations
+    fired = None
+    for i in range(window + 2):
+        # A dead spot alternates "no metal" with "can't mine that" — BOTH are
+        # failure evidence now; neither dilutes the other.
+        res = _swing_reply(mine, mem, 503040 if i % 2 == 0 else 501862)
+        if isinstance(res.action, WalkTo):
+            fired = i
+            break
+    assert fired is not None, "a dead bank never triggered relocation"
+    assert fired <= window + 1
+
+
+def test_healthy_half_invalid_spot_stays_put():
+    mine = Mine()
+    mem: dict = {}
+    window = len(mine.probe_offsets) * mine.stuck_window_rotations
+    from anima2.contract import WalkTo
+
+    for i in range(window * 3):
+        # Half the ring is unmineable (501862) but the OTHER half yields ore
+        # (1007072 success / 503043 fail-with-ore): rate ~0.5, below the 0.75
+        # threshold — relocating away from a producing spot would be a bug.
+        cliloc = 501862 if i % 2 == 0 else (1007072 if i % 4 == 1 else 503043)
+        res = _swing_reply(mine, mem, cliloc)
+        assert not isinstance(res.action, WalkTo), f"relocated at i={i} from a producing spot"
+
+
+def test_reply_less_ticks_carry_no_verdict_and_do_not_dilute():
+    mine = Mine()
+    mem: dict = {}
+    # 10 pure no-metal verdicts...
+    for _ in range(10):
+        _swing_reply(mine, mem, 503040)
+    # ...then a burst of silent (server-lag) ticks with NO reply at all.
+    for _ in range(10):
+        ctx = _ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem)
+        mine.step(ctx)
+    recent = mem["harvest_recent_stuck"]
+    assert sum(recent) == 10 and len(recent) == 10, (
+        "silence must append nothing — the legacy sampler's 0-on-no-reply dilution")
+
+
+def test_completed_relocation_moves_the_delivery_return_spot():
+    # Without this, every haul ends with a walk back to the condemned tile, a
+    # full re-confession window, and a rotated-direction re-relocation — a
+    # random-walk between hauls.
+    from anima2.contract import PlayerView, Position, SkillView
+    from anima2.skills.smelt import MineSmeltDeliver
+
+    skill = MineSmeltDeliver()
+    mem: dict = {"smithy_drop": (90, 90), "miner_home": (100, 100),
+                 "harvest_relocating": True,
+                 "harvest_relocate_target": (108, 106)}
+    pickaxe = _item(0x222, PICKAXE, container=BACKPACK)
+
+    def _obs_at(x, y):
+        return Observation(
+            player=PlayerView(serial=1, pos=Position(x, y, 0)),
+            items=[pickaxe],
+            skills=[SkillView(id=45, value=35.0, base=35.0, cap=100.0, lock=0)],
+        )
+
+    # Tick 1: arrival tile — the relocation leg completes and leaves its note.
+    skill.step(SkillContext(obs=_obs_at(108, 106), persona=Persona(name="Grimm"),
+                            memory=mem))
+    # Tick 2: the wrapper consumes the note and re-homes the delivery return.
+    skill.step(SkillContext(obs=_obs_at(108, 106), persona=Persona(name="Grimm"),
+                            memory=mem))
+    assert mem["miner_home"] == (108, 106)
+    assert "harvest_relocated_to" not in mem

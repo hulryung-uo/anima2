@@ -215,3 +215,70 @@ def test_craft_tongs_ignores_a_carpentry_titled_gump():
 def test_gold_graphic_is_shared_bank_currency():
     # bank_gold is profession-agnostic; the tinker banks the same GOLD_GRAPHIC.
     assert GOLD_GRAPHIC == 0x0EED
+
+
+# --- the pockets-full band: banking preempts craft (forge4, 2026-07-30) --------------
+#
+# The patient bank branch sits below craft and only fires in a supply GAP — and a
+# HEALTHY miner never opens one: Pim finished a live 1500-tick day carrying 210g with
+# bank_gold in the ready set throughout. Above reserve + one restock of spare gold,
+# banking must outrank a ready craft; free ground iron still outranks the trip
+# (drops decay, pack gold does not).
+
+def _decide_obs(items):
+    from anima2.contract import Observation, PlayerView
+
+    return Observation(player=PlayerView(serial=1, pos=Position(0, 0, 0)),
+                       items=[_backpack(), _tools(), *items])
+
+
+def _decide_memory():
+    from anima2.tinker_life import BANK_RESERVE
+
+    return {"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
+            "bank_reserve": BANK_RESERVE, "craft_spot": (0, 0)}
+
+
+def test_pockets_full_banking_preempts_a_ready_craft():
+    from anima2.tinker_life import BANK_RESERVE, BANK_TRIP_SURPLUS, decide_mode
+
+    gold = BANK_RESERVE + BANK_TRIP_SURPLUS + 1
+    obs = _decide_obs([_iron(0x800, 20), _item(0x801, GOLD_GRAPHIC, amount=gold)])
+    assert decide_mode(obs, _decide_memory()) == ("economy", "bank_gold")
+
+
+def test_at_the_pockets_full_edge_craft_still_wins():
+    from anima2.tinker_life import BANK_RESERVE, BANK_TRIP_SURPLUS, decide_mode
+
+    gold = BANK_RESERVE + BANK_TRIP_SURPLUS  # not ABOVE the band -> patient order
+    obs = _decide_obs([_iron(0x800, 20), _item(0x801, GOLD_GRAPHIC, amount=gold)])
+    assert decide_mode(obs, _decide_memory()) == ("economy", "craft_tongs")
+
+
+def test_free_ground_iron_still_outranks_the_urgent_bank_trip():
+    from anima2.contract import ItemView
+    from anima2.skills.craft import PICKUP_RADIUS
+    from anima2.tinker_life import BANK_RESERVE, BANK_TRIP_SURPLUS, decide_mode
+
+    gold = BANK_RESERVE + BANK_TRIP_SURPLUS + 1
+    ground = ItemView(serial=0x900, graphic=IRON_INGOT_GRAPHIC, amount=10,
+                      pos=Position(1, 1, 0), container=None, layer=0,
+                      distance=PICKUP_RADIUS)
+    obs = _decide_obs([ground, _item(0x801, GOLD_GRAPHIC, amount=gold)])
+    assert decide_mode(obs, _decide_memory()) == ("economy", "fetch_iron")
+
+
+def test_malformed_bank_reserve_clamps_identically_for_rule_and_gate():
+    # Review-caught: decide_mode used to read bank_reserve RAW while the gate and
+    # the BankGold FSM read it through market._bank_reserve's clamp — a negative
+    # knob value (a genome/bandit axis exploring, a bad steering write) made the
+    # urgent branch want bank_gold at ANY gold while the gate refused at 0g:
+    # the rule-vs-gate drift class, recreated through the tuning knob itself.
+    from anima2.tinker_life import decide_mode
+
+    memory = _decide_memory()
+    memory["bank_reserve"] = -100  # malformed -> every reader clamps to 0
+    gold = 50  # above the clamped reserve (0), below clamp + surplus (75)
+    obs = _decide_obs([_iron(0x800, 20), _item(0x801, GOLD_GRAPHIC, amount=gold)])
+    # Urgent branch must NOT fire (50 <= 0 + 75); craft outranks the patient bank.
+    assert decide_mode(obs, memory) == ("economy", "craft_tongs")

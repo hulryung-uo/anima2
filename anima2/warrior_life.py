@@ -30,6 +30,7 @@ from .capability_cognition import CapabilityCognition
 from .contract import Observation
 from .persona import Persona
 from .profession import PROFESSIONS
+from .skills.market import _bank_reserve
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.warrior import (
@@ -176,7 +177,7 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     # number decides when to bank, what admission allows, and how much the skill
     # leaves behind. The fallback default only matters to bare-dict unit tests;
     # every Life writes the key at construction.
-    if gold > memory.get("bank_reserve", BANK_RESERVE) \
+    if gold > _bank_reserve(memory, BANK_RESERVE) \
             and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None
@@ -334,8 +335,10 @@ class WarriorLife:
         self.econ_agent.memory.update(self.routes)
         # The tuning knobs (audit proposal 5), exposed for genome axes / bandit tuning
         # / slow-loop steering. `bank_reserve` goes into the econ memory - the ONE key
-        # the rule, the bank gate, and BankGold's FSM all read, so tuning it cannot
-        # recreate the rule-vs-gate drift class.
+        # the rule, the bank gate, and BankGold's FSM all read, AND every reader goes
+        # through `market._bank_reserve`'s clamp — one key alone was not enough: a
+        # malformed value (negative, float) read raw by the rule but clamped by the
+        # gate recreated the drift class through this very knob (review-caught).
         self.econ_agent.memory["bank_reserve"] = (
             self.DEFAULT_BANK_RESERVE if bank_reserve is None else bank_reserve)
         self.econ_grace = econ_grace

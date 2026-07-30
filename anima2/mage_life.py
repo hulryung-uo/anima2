@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from .capabilities import _valid_spot
 from .contract import Observation
+from .skills.market import _bank_reserve
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.craft import PICKUP_RADIUS
@@ -91,7 +92,7 @@ def decide_candidates(obs: Observation, memory: dict) -> list[str]:
         out.append("buy_reagent")
     if _ground_gold(obs) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
         out.append("fetch_gold")
-    if gold > memory.get("bank_reserve", BANK_RESERVE) \
+    if gold > _bank_reserve(memory, BANK_RESERVE) \
             and _valid_spot(memory.get("banker_spot")):
         out.append("bank_gold")
     return out

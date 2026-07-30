@@ -311,6 +311,7 @@ def test_tinker_rule_never_wants_what_its_gates_refuse():
     )
     from anima2.tinker_life import (
         BANK_RESERVE,
+        BANK_TRIP_SURPLUS,
         IRON_BATCH_COST,
         SELL_TONGS_AT,
         TOOL_COST,
@@ -343,7 +344,11 @@ def test_tinker_rule_never_wants_what_its_gates_refuse():
                                distance=PICKUP_RADIUS + 1)],
     }
     gold_axis = sorted({0, TOOL_COST - 1, TOOL_COST, IRON_BATCH_COST - 1,
-                        IRON_BATCH_COST, BANK_RESERVE, BANK_RESERVE + 1})
+                        IRON_BATCH_COST, BANK_RESERVE, BANK_RESERVE + 1,
+                        # The pockets-full band: banking preempts craft above it
+                        # (forge4's starved patient branch) — both edges walked.
+                        BANK_RESERVE + BANK_TRIP_SURPLUS,
+                        BANK_RESERVE + BANK_TRIP_SURPLUS + 1})
 
     cases = []
     for (_, (tool, mobs)), tongs, iron, (_, ground), gold in product(

@@ -136,6 +136,24 @@ class Harvest(Skill):
     #: wiping the window's memory of the many "no" replies around them.
     no_resource_clilocs: frozenset[int] = frozenset()
     pack_full_clilocs: frozenset[int] = frozenset()
+    #: OPT-IN outcome-only windowing (forge5's probe, 2026-07-30). The legacy
+    #: sampler appends a `0` on EVERY reply-less or unrecognized tick, which
+    #: dilutes the window twice over: invalid-target replies ("You can't mine
+    #: that", "Target can not be seen" — half the probe ring at the live trade
+    #: mine spot) and server-lag silence both read as "not stuck", so a fully
+    #: DEAD bank crawled at rate ~0.5 and needed 140+ ticks to cross the
+    #: threshold — the live probe watched it happen tick by tick. With
+    #: `productive_clilocs` set, a sample is appended only when the tick
+    #: carries a REAL swing verdict: a productive reply (success, or
+    #: skill-fail-with-ore — proof the bank still yields) appends `0`; a
+    #: `no_resource`/`pack_full`/`invalid_target` reply appends `1` (all three
+    #: are evidence this stand spot yields nothing); any other tick appends
+    #: NOTHING — no reply is no information. Because invalid tiles now count
+    #: as failure evidence, a subclass opting in must raise
+    #: `stuck_rate_threshold` above its worst healthy invalid-tile fraction
+    #: (see `Mine`: 0.75 over a half-invalid ring).
+    productive_clilocs: frozenset[int] = frozenset()
+    invalid_target_clilocs: frozenset[int] = frozenset()
     #: How many probe-ring rotations the rate window spans.
     stuck_window_rotations: int = 3
     #: Fraction of a full window that must be "stuck" to act.
@@ -145,9 +163,27 @@ class Harvest(Skill):
     #: up and resumes harvesting from wherever it ended up rather than
     #: retrying forever; "somewhere different" is the goal, not an exact tile.
     relocate_stall_limit: int = 6
+    #: Consecutive tool-invisible ticks before `diagnose` confesses the tool is GONE
+    #: (worn out or lost) rather than merely unrevealed — high enough to ride out the
+    #: legitimate "pack not opened yet" transient. forge4 live (2026-07-30): both
+    #: staged pickaxes wore out (ServUO `Pickaxe.UsesRemaining = 50`), and step()'s
+    #: tool-missing loop below — open the pack, forever — makes NO swings, so the
+    #: relocation window NEVER fills and nothing named the cause for 320+ ticks. A
+    #: toolless harvester is invisible to relocation BY CONSTRUCTION (stuck samples
+    #: only come from swing replies); it must confess instead.
+    tool_missing_confess: int = 10
 
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None or self._backpack(ctx) is not None
+
+    def tool_gone(self, ctx: SkillContext) -> bool:
+        """Counted past the confession threshold AND still absent from the
+        observation actually in hand. The cross-check matters: the counter only
+        resets inside `step()`, so a tool re-armed between skill turns (bought,
+        delivered, GM-staged) would otherwise keep a stale confession alive
+        until the next step() call happens to run."""
+        return (ctx.memory.get("harvest_tool_missing", 0) >= self.tool_missing_confess
+                and self._tool(ctx) is None)
 
     def diagnose(self, ctx: SkillContext) -> str | None:
         """`None` iff `can_run`, plus a second diagnostic layered on top (mirrors
@@ -157,6 +193,10 @@ class Harvest(Skill):
         somewhere else instead of continuing to probe it."""
         if not self.can_run(ctx):
             return f"{self.name}: preconditions not met"
+        if self.tool_gone(ctx):
+            missing = ctx.memory.get("harvest_tool_missing", 0)
+            return (f"{self.name}: no tool in the pack for {missing} ticks — worn "
+                    f"out or lost; cannot swing (relocation cannot help)")
         if ctx.memory.get("harvest_relocating"):
             return f"{self.name}: local resources exhausted — relocating to a new spot"
         return None
@@ -203,15 +243,22 @@ class Harvest(Skill):
         if (self.no_resource_clilocs or self.pack_full_clilocs) and obs.pending_target is None:
             stuck_this_tick = any(
                 j.cliloc in self.no_resource_clilocs or j.cliloc in self.pack_full_clilocs
+                or j.cliloc in self.invalid_target_clilocs
                 for j in obs.new_journal
             )
-            ring = max(1, len(self.probe_offsets))
-            window = ring * self.stuck_window_rotations
-            recent = ctx.memory.get("harvest_recent_stuck")
-            if not isinstance(recent, deque) or recent.maxlen != window:
-                recent = deque(recent or (), maxlen=window)
-            recent.append(1 if stuck_this_tick else 0)
-            ctx.memory["harvest_recent_stuck"] = recent
+            # Outcome-only mode (see `productive_clilocs`): no verdict, no sample.
+            sample: int | None = 1 if stuck_this_tick else 0
+            if self.productive_clilocs and not stuck_this_tick:
+                sample = 0 if any(j.cliloc in self.productive_clilocs
+                                  for j in obs.new_journal) else None
+            if sample is not None:
+                ring = max(1, len(self.probe_offsets))
+                window = ring * self.stuck_window_rotations
+                recent = ctx.memory.get("harvest_recent_stuck")
+                if not isinstance(recent, deque) or recent.maxlen != window:
+                    recent = deque(recent or (), maxlen=window)
+                recent.append(sample)
+                ctx.memory["harvest_recent_stuck"] = recent
 
         # 1) Cursor open → target the resource. If the Control plane gave us exact
         #    node(s) (x, y, z, graphic) — required for statics like trees — target
@@ -244,6 +291,15 @@ class Harvest(Skill):
         tool = self._tool(ctx)
         if tool is not None:
             ctx.memory["harvest_tool"] = tool.serial  # remember it (vanishes on cursor)
+            ctx.memory.pop("harvest_tool_missing", None)  # seen -> not gone
+        else:
+            # Counted HERE, before the equip branch below can consume the tick: a
+            # worn-out WORN tool (Chop) leaves a stale remembered serial that the
+            # equip two-step spins PickUp/Equip on forever, so a count inside the
+            # open-the-pack branch alone would be unreachable exactly where the
+            # confession matters most (review-caught before this ever ran live).
+            ctx.memory["harvest_tool_missing"] = (
+                ctx.memory.get("harvest_tool_missing", 0) + 1)
 
         # 2) Equip the tool if it must be worn (lumberjacking). A UO equip is two
         #    steps — pick up to the cursor, then wear — and the item disappears
@@ -262,6 +318,7 @@ class Harvest(Skill):
             return SkillResult(Status.RUNNING, Equip(serial=tser, layer=self.equip_layer), reward)
 
         # 3) Tool not visible (and not mid-equip) → open the pack to reveal it.
+        #    (The tool-missing count already happened at the lookup above.)
         if tool is None:
             bp = self._backpack(ctx)
             if bp is None:
@@ -324,6 +381,14 @@ class Harvest(Skill):
 
     @staticmethod
     def _clear_relocate(ctx: SkillContext) -> None:
+        # Leave a one-shot note of where the walk ended for any WRAPPING skill
+        # that keeps its own return spot (`MineSmeltDeliver.miner_home`): a
+        # delivery leg that walks back to the OLD stand spot walks back to the
+        # very ground relocation just condemned, re-confesses it dead (~one
+        # full window) and relocates again in a rotated direction — a
+        # random-walk between every haul. Consumed via `pop` by whoever cares.
+        ctx.memory["harvest_relocated_to"] = (
+            ctx.obs.player.pos.x, ctx.obs.player.pos.y)
         for key in (
             "harvest_relocating", "harvest_relocate_target",
             "harvest_relocate_last_pos", "harvest_relocate_stall",
@@ -368,6 +433,32 @@ class Mine(Harvest):
     # live-confirmed root cause of the freeze (see the module-level comment).
     no_resource_clilocs = frozenset({503040})  # "There is no metal here to mine."
     pack_full_clilocs = frozenset({1010481})  # "Your backpack is full, ..."
+    # Outcome-only windowing (see the base attr): every id below read from
+    # `Mining.cs`/`HarvestSystem.cs` and cross-checked against a live probe at the
+    # trade mine spot (forge5, 2026-07-30) that watched the legacy sampler crawl.
+    productive_clilocs = frozenset({
+        503043,   # "You loosen some rocks but fail to find any useable ore." — the
+                  # bank HAS ore, the skill check failed: proof of life, not stuck.
+        503042,   # "Someone has gotten to the metal before you." — ditto (a race).
+        1007072, 1007073, 1007074, 1007075, 1007076, 1007077, 1007078, 1007079,
+        1007080,  # "You dig some <ore> ..." — the per-ore HarvestResource successes.
+    })
+    invalid_target_clilocs = frozenset({
+        501862,   # "You can't mine that." — the probed tile is not mineable ground.
+        500237,   # "Target can not be seen." — LOS-blocked probe tile.
+        500446,   # "That is too far away." — probe reached past the harvest range.
+    })
+    #: One rotation, not three: with outcome-only samples every entry is a real
+    #: swing verdict, and 24 verdicts over a shared 8x8 ore bank is already
+    #: conclusive — three rotations made a dead vein take 3-5 live minutes to
+    #: confess (144+ ticks watched in the forge5 probe).
+    stuck_window_rotations = 1
+    #: Above the worst HEALTHY invalid-tile fraction: invalid-target replies now
+    #: count as failure evidence, and the live trade mine spot's probe ring is
+    #: ~half unmineable tiles even when the bank is full — a healthy half-invalid
+    #: spot rates ~0.5 and must stay quiet; a dead bank rates 1.0 (every verdict
+    #: is a failure of some kind) and fires within one window.
+    stuck_rate_threshold = 0.75
 
 
 class Chop(Harvest):

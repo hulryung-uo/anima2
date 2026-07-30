@@ -19,6 +19,11 @@ The rule, in the chain-priority order the artisan taught us (finish before exten
     a lost tinker tool (no tool, no trade)
       > sell the tongs it is holding
       > collect delivered iron — free material outranks everything money can buy
+        (ground drops decay; pack gold does not)
+      > bank URGENTLY once the pack holds more than reserve + one restock of spare
+        gold — a HEALTHY supply chain never opens the idle gap the patient branch
+        below waits for (forge4 live, 2026-07-30: 1500 ticks, 210g carried,
+        bank_gold ready and starved the whole day)
       > craft, while standing where the craft gate's own radius allows
       > bank the surplus above a derived working reserve (finish before extending —
         the coverage check proved the other order never banks at all)
@@ -36,7 +41,7 @@ from .contract import Observation
 from .skills.craft import PICKUP_RADIUS
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.market import TOOL_BUY_AMOUNT
+from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
 from .skills.smelt import INGOT_GRAPHICS
 from .skills.tinkering import (
     FETCH_IRON_PACK_CAP,
@@ -57,6 +62,12 @@ SELL_TONGS_AT = SellTongs.sell_threshold
 #: The working capital a tinker KEEPS: one iron restock plus a replacement tool — the
 #: two things it cannot trade without, derived exactly like the carpenter's reserve.
 BANK_RESERVE = IRON_BATCH_COST + TOOL_COST
+#: Surplus above the reserve at which banking turns URGENT — outranking even a ready
+#: craft. Derived, not invented: one iron restock (`IRON_BATCH_COST`) is the biggest
+#: single purchase any tinker errand makes, so spare gold beyond it is profit no
+#: errand can spend. Without this band the patient bank branch only ever fires in a
+#: supply GAP, and a healthy miner never opens one.
+BANK_TRIP_SURPLUS = IRON_BATCH_COST
 
 _TOOL_GRAPHICS = frozenset(TinkerTongs.craft_tool_graphics)
 _CRAFT_RADIUS = getattr(TinkerTongs, "craft_spot_radius", 0)
@@ -111,6 +122,15 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     # margin (7g/ingot delivered vs +2g/ingot bought).
     if _iron_on_ground(obs) and iron < FETCH_IRON_PACK_CAP:
         return "economy", "fetch_iron"
+    reserve = _bank_reserve(memory, BANK_RESERVE)
+    # Pockets full -> the bank outranks even a ready craft. The patient branch below
+    # only fires when nothing above it wants a turn, and forge4 (2026-07-30) proved
+    # live that a HEALTHY supply chain never opens that gap: with the miner
+    # delivering continuously, Pim finished a 1500-tick day carrying 210g while
+    # bank_gold sat in the ready set throughout. Fetching stays above this (ground
+    # drops decay; pack gold does not).
+    if gold > reserve + BANK_TRIP_SURPLUS and _valid_spot(memory.get("banker_spot")):
+        return "economy", "bank_gold"
     # Craft while the batch is short and the material covers what is left — the craft
     # gate's own arithmetic (`per_item * (batch - made)`), and the gate's own spot
     # radius via its own predicate.
@@ -123,8 +143,7 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     # (craft, or an affordable restock) always preempts the deposit, and pack gold
     # piles up forever. The reserve is one restock plus a tool by construction, so
     # banking down to it never blocks the purchase that follows.
-    if gold > memory.get("bank_reserve", BANK_RESERVE) \
-            and _valid_spot(memory.get("banker_spot")):
+    if gold > reserve and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     if (iron < BuyIron.buy_reorder and gold >= IRON_BATCH_COST
             and _valid_spot(memory.get(BuyIron.vendor_spot_key))):

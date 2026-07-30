@@ -800,10 +800,27 @@ def _capability_mode_enabled(
     )
 
 
-def _staging_items(plan_entry: dict, capability_goals: bool) -> list[str]:
+def _pickaxes_for(ticks: int) -> list[str]:
+    """Pickaxes for a mining day of `ticks`: ServUO's Pickaxe carries 50 uses and a
+    swing costs ~2 fast-loop ticks (cursor tick + swing tick), so one pick is ~100
+    miner ticks. forge4 (2026-07-30): a fixed pair of picks wore out mid-day and the
+    miner froze SILENTLY for 320+ ticks — relocation can never fire without swings
+    (its window fills from swing replies), so a toolless miner starves its whole
+    chain. Two is the floor (one in use, one spare) for short smokes — and EIGHT the
+    ceiling: a pickaxe weighs 11 stones, and pack WEIGHT was half of the original
+    harvest-freeze root cause (docs/HISTORY.md) — tool-life must not cost ore
+    capacity."""
+    return ["Pickaxe"] * max(2, min(8, -(-ticks // 100)))
+
+
+def _staging_items(plan_entry: dict, capability_goals: bool,
+                   ticks: int | None = None) -> list[str]:
     """Provision every prerequisite the selected closed operation cannot create."""
 
     items = list(plan_entry["prof"].items)
+    if ticks is not None and plan_entry["prof"].key == "miner":
+        # The profession default (two picks) only survives a smoke-length day.
+        items = [i for i in items if i != "Pickaxe"] + _pickaxes_for(ticks)
     if _capability_mode_enabled(
         plan_entry["prof"], plan_entry["banker_spot"], capability_goals
     ):
@@ -1069,7 +1086,7 @@ def _run_online_village(
                     serial,
                     *p["workplace"],
                     skills=p["prof"].skills,
-                    items=_staging_items(p, capability_goals),
+                    items=_staging_items(p, capability_goals, ticks),
                 )
                 for stype, dx, dy in p["prof"].structures:
                     gm.command_at(f"[Add {stype}", gx + dx, gy + dy, gz)
@@ -1676,7 +1693,7 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # placement are live-calibrated; east/west of the smith stand is the miner's
         # approach and must stay clear).
         mgx, mgy, mgz = gm.stage(serials["miner"], mx, my, skills={"Mining": 35},
-                                 items=["Pickaxe", "Pickaxe"])
+                                 items=_pickaxes_for(ticks))
         gm.command_at("[Add Forge", mgx + 1, mgy + 1, mgz)
         gm.command_on('[Set Name "Grimm"', serials["miner"])
         # The tinker at the calibrated smith stand with its tool and NOTHING else.
@@ -1732,19 +1749,48 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         hours = max(1e-9, (time.monotonic() - started) / 3600.0)
         with lock:
             snap = [status[i] for i in sorted(status)]
-        # When a bank_gold goal holds the stack, show the FSM's own stage keys — an
-        # ADMITTED goal that does not progress is invisible to both the concordance
-        # suite (steady-state only) and the disagreement detector (no-goal guard), so
-        # the FSM has to say where it is stuck itself.
+        # When ANY capability goal holds the stack, show its FSM's own stage keys —
+        # an ADMITTED goal that does not progress is invisible to both the
+        # concordance suite (steady-state only) and the disagreement detector
+        # (no-goal guard), so the FSM has to say where it is stuck itself. Was
+        # bank_gold-only; forge7 (2026-07-30) spent a full 1500-tick day with an
+        # admitted-and-ready sell_tongs goal silently not progressing (53 liveness
+        # fires, zero sales) and this line was blind to the sell FSM's stage.
         bank_state = ""
         cur = pim.econ_agent.goal_stack.current
-        if cur is not None and cur.goal.params.get("capability") == "bank_gold":
+        if cur is not None:
+            capname = cur.goal.params.get("capability")
             m = pim.econ_agent.memory
-            bank_state = (f" bank(stage={m.get('bank_stage')} leg={m.get('bank_leg')} "
-                          f"banker={m.get('bank_banker')} "
-                          f"attempts={m.get('bank_deposit_attempts')} "
-                          f"popup_wait={m.get('bank_popup_wait')})")
-        print(f"— forge pair {bank_state} grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}]  "
+            if capname == "bank_gold":
+                bank_state = (f" bank(stage={m.get('bank_stage')} leg={m.get('bank_leg')} "
+                              f"banker={m.get('bank_banker')} "
+                              f"attempts={m.get('bank_deposit_attempts')} "
+                              f"popup_wait={m.get('bank_popup_wait')})")
+            elif capname:
+                stage_keys = ("mkt_phase", "bs_state", "sell_stage", "sell_vendor",
+                              "sell_find_wait", "sell_popup_wait", "cap_craft_stage",
+                              "buy_stage", "fetch_stage")
+                kv = " ".join(f"{k}={m[k]}" for k in stage_keys if k in m)
+                bank_state = f" {capname}({kv})" if kv else f" {capname}()"
+        # The tool-gone confession (skills/harvest.py): a toolless miner makes no
+        # swings, so neither relocation nor the reward stream will ever name this —
+        # the status line must.
+        tool_gone = miner.memory.get("harvest_tool_missing", 0)
+        grimm_flag = (" NO-TOOL!"
+                      if tool_gone >= MineSmeltDeliver.tool_missing_confess else "")
+        # The relocation window, live: `stuck/size` of real swing verdicts (see
+        # `Harvest.productive_clilocs`). forge6: the pair status was blind to WHY a
+        # dead-vein miner wasn't relocating — the window's own fill rate is the
+        # difference between "still deciding" and "samples are being lost".
+        recent = miner.memory.get("harvest_recent_stuck")
+        if recent is not None and len(recent) > 0:
+            grimm_flag += f" win={sum(recent)}/{len(recent)}"
+        # The MineSmeltDeliver phase: a frozen miner in `smelt` is a different
+        # wedge (forge unreachable, ore unsmeltable) than one in `mine` (dead
+        # vein / lost tool) — from outside they look identical without this.
+        grimm_flag += f" ph={miner.memory.get('smelt_phase', 'mine')}"
+        print(f"— forge pair {bank_state} "
+              f"grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}{grimm_flag}]  "
               f"drop[grimm_sees={_ground_iron(m_obs)} pim_sees={_ground_iron(p_obs)}]  "
               f"pim[{pim.mode} {telemetry_line(pim, 'tinker', p_obs)} "
               f"iron={pack_amount(p_obs, INGOT_GRAPHICS)} "
