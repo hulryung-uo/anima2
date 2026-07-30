@@ -458,20 +458,37 @@ class WarriorLife:
         Safe by the detector's own precondition: firing requires NO goal on the stack
         for `DISAGREEMENT_TICKS` straight, so no capability owns the surface being
         closed — a mid-transaction gump belongs to a live goal and is never touched
-        here. Only gumps are closable through the contract (`GumpResponse` button 0,
-        the craft FSM's own close); a stale shop window has no close action and is
-        left to report itself through the same loud line.
+        here. THREE surfaces are closable and all three have been seen live: a gump
+        (`GumpResponse` button 0 — the craft FSM's own close), and a vendor BUY or
+        SELL window, answered with an EMPTY item list. ServUO's `VendorBuyReply`
+        replies to anything that is not flag 0x02 with `EndVendorBuy`, and the
+        bridge already encodes an empty list as flag 0x00
+        (`anima-core::net::outgoing::build_buy`) — so "buy nothing" IS the close.
+        forge16 (2026-07-31) caught that version: 200 disagreement ticks with
+        `ui=shopbuy` left behind by a finished `buy_iron` trip. A stale target
+        CURSOR is left alone: the body's own target state is not the Life's to
+        clear, and cancelling one mid-flight would race the skill that opened it.
         """
-        gumps = getattr(obs, "gumps", None)
-        if not gumps:
-            return
-        from .contract import GumpResponse
+        from .contract import BuyItems, GumpResponse, SellItems
 
-        gump = gumps[0]
+        gumps = getattr(obs, "gumps", None)
+        shop_buy = getattr(obs, "shop_buy", None)
+        shop_sell = getattr(obs, "shop_sell", None)
+        if gumps:
+            surface = f"gump id={gumps[0].gump_id}"
+            action = GumpResponse(gumps[0].serial, gumps[0].gump_id, button=0)
+        elif shop_buy is not None:
+            surface = "vendor BUY window"
+            action = BuyItems(vendor=shop_buy.vendor, items=[])
+        elif shop_sell is not None:
+            surface = "vendor SELL window"
+            action = SellItems(vendor=shop_sell.vendor, items=[])
+        else:
+            return
         self._stale_ui_closes = getattr(self, "_stale_ui_closes", 0) + 1
-        print(f"  ** {self.persona.name}: closing an unowned gump "
-              f"(id={gump.gump_id}) — it was refusing every capability **")
-        self.body.act(GumpResponse(gump.serial, gump.gump_id, button=0))
+        print(f"  ** {self.persona.name}: closing an unowned {surface} — "
+              f"it was refusing every capability **")
+        self.body.act(action)
 
     # --- Agent-compatible surface, so any agent runner (e.g. village._run_worker)
     # drives a WarriorLife unchanged. The HUNT agent is the primary: it does the

@@ -438,6 +438,25 @@ def test_an_unowned_gump_is_closed_once_the_detector_fires():
     assert pack > 0, "unwedged, but the Life never picked the iron up"
 
 
+def test_a_stale_vendor_window_is_cancelled_with_an_empty_buy_list():
+    # forge16 live: 200+ disagreement ticks with `ui=shopbuy` after a finished
+    # buy_iron trip. ServUO answers anything that is not flag 0x02 with
+    # EndVendorBuy, and the bridge encodes an empty list as 0x00 — so "buy
+    # nothing" IS the close.
+    from anima2.contract import BuyItems, ShopBuy
+    from anima2.warrior_life import DISAGREEMENT_TICKS
+
+    life, body, stale = _stale_ui_life()
+    body.gumps.clear()
+    body.shop_buy = ShopBuy(vendor=0xABCD, container=0x999, entries=[])
+    for _ in range(DISAGREEMENT_TICKS * 4):
+        life.tick()
+        if any(isinstance(a, BuyItems) for a in body.actions):
+            break
+    cancels = [a for a in body.actions if isinstance(a, BuyItems) and not a.items]
+    assert cancels and cancels[0].vendor == 0xABCD
+
+
 def test_a_healthy_life_never_closes_a_gump_out_from_under_a_goal():
     # The no-goal guard is what makes the repair safe: a gump mid-transaction
     # belongs to a live capability goal and must never be closed by the Life.

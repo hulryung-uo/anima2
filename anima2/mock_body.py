@@ -53,6 +53,8 @@ class MockBody:
     #: while ANY UI surface is open, so "a gump nobody owns" is a whole class of
     #: live wedge (forge15) that was unrepresentable offline until this field.
     gumps: list = field(default_factory=list)
+    #: An open vendor BUY window, same reason as `gumps` (forge16's wedge shape).
+    shop_buy: object | None = None
     #: Every action the agent asked for, in order — the mock's only way to prove a
     #: repair was actually ATTEMPTED rather than merely decided.
     actions: list = field(default_factory=list)
@@ -76,10 +78,14 @@ class MockBody:
         new = self._journal[self._journal_cursor :]
         self._journal_cursor = len(self._journal)
         return Observation(player=self.player, mobiles=mobiles, items=items,
-                           new_journal=new, gumps=list(self.gumps))
+                           new_journal=new, gumps=list(self.gumps),
+                           shop_buy=self.shop_buy)
 
     def act(self, action: Action) -> None:
         self.actions.append(action)
+        if type(action).__name__ == "BuyItems" and not getattr(action, "items", None):
+            self.shop_buy = None  # an empty buy list is the vendor-window cancel
+            return
         if type(action).__name__ == "GumpResponse" and getattr(action, "button", None) == 0:
             # Button 0 is CLOSE, the same answer the craft FSM sends — model it, so a
             # test can prove the wedge actually clears rather than just that an action
