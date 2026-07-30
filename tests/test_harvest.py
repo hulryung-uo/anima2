@@ -582,3 +582,82 @@ def test_verdict_landing_on_a_cursor_open_tick_still_counts():
     # The trigger itself fires on the next between-swings tick.
     res = mine.step(_ctx(items=[pickaxe], memory=mem))
     assert isinstance(res.action, WalkTo)
+
+
+# --- the relocation spot pool (forge11: the blind walk left the mountain) -------------
+
+def _pool_mine(mem):
+    """A Mine one confession short of relocating, with a full stuck window."""
+    from collections import deque
+
+    mine = Mine()
+    window = len(mine.probe_offsets) * mine.stuck_window_rotations
+    mem["harvest_recent_stuck"] = deque([1] * window, maxlen=window)
+    return mine
+
+
+def test_relocation_prefers_the_surveyed_pool_over_the_blind_compass():
+    from anima2.contract import WalkTo
+
+    mem: dict = {"harvest_spot_pool": [((150, 90), [(151, 89, 12, 0)])],
+                 "harvest_nodes": [(99, 99, 0, 0)]}
+    mine = _pool_mine(mem)
+    res = mine.step(_ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem))
+    assert isinstance(res.action, WalkTo) and (res.action.x, res.action.y) == (150, 90)
+    assert mem["harvest_pending_nodes"] == [(151, 89, 12, 0)]
+    assert mem["harvest_spot_pool"] == []  # consumed
+
+
+def test_pool_arrival_installs_the_spots_nodes_and_rehomes():
+    mem: dict = {"harvest_spot_pool": [((150, 90), [(151, 89, 12, 0)])],
+                 "harvest_nodes": [(99, 99, 0, 0)], "harvest_idx": 7}
+    mine = _pool_mine(mem)
+    mine.step(_ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem))
+    # Arrive: player standing exactly on the pool stand (fresh frozen views).
+    obs = Observation(player=PlayerView(serial=1, pos=Position(150, 90, 0)),
+                      items=[_item(0x222, PICKAXE, container=BACKPACK)])
+    mine.step(SkillContext(obs=obs, persona=Persona(name="Grimm"), memory=mem))
+    assert mem["harvest_nodes"] == [(151, 89, 12, 0)]  # surveyed rock took over
+    assert mem["harvest_idx"] == 0
+    assert mem["harvest_relocated_to"] == (150, 90)  # the deliver re-home signal
+    assert "harvest_pending_nodes" not in mem
+
+
+def test_pool_giveup_drops_both_pending_and_condemned_nodes():
+    mem: dict = {"harvest_spot_pool": [((150, 90), [(151, 89, 12, 0)])],
+                 "harvest_nodes": [(99, 99, 0, 0)]}
+    mine = _pool_mine(mem)
+    mine.step(_ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem))
+    # Never move: the walk stalls out after relocate_stall_limit unmoved ticks.
+    for _ in range(mine.relocate_stall_limit + 2):
+        mine.step(_ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem))
+    assert not mem.get("harvest_relocating")
+    assert "harvest_pending_nodes" not in mem  # wrong stand -> don't target its rock
+    assert "harvest_nodes" not in mem  # the condemned face is gone too: probe mode
+
+
+def test_exhausted_pool_falls_back_to_the_blind_compass():
+    from anima2.contract import WalkTo
+    from anima2.skills.harvest import RELOCATE_OFFSETS
+
+    mem: dict = {"harvest_spot_pool": []}
+    mine = _pool_mine(mem)
+    res = mine.step(_ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem))
+    dx, dy = RELOCATE_OFFSETS[0]
+    assert isinstance(res.action, WalkTo)
+    assert (res.action.x, res.action.y) == (100 + dx, 100 + dy)
+
+
+def test_pool_arrival_within_one_tile_still_installs_nodes():
+    # forge12 live: exact-tile arrival burned pool spots to stall-giveups one
+    # step short — a stand beside a wall is exactly where the greedy mover gets
+    # deflected on the last step. One tile off still covers most of the surveyed
+    # face within ServUO's MaxRange=2.
+    mem: dict = {"harvest_spot_pool": [((150, 90), [(151, 89, 12, 0)])]}
+    mine = _pool_mine(mem)
+    mine.step(_ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem))
+    obs = Observation(player=PlayerView(serial=1, pos=Position(151, 91, 0)),  # 1 off
+                      items=[_item(0x222, PICKAXE, container=BACKPACK)])
+    mine.step(SkillContext(obs=obs, persona=Persona(name="Grimm"), memory=mem))
+    assert mem["harvest_nodes"] == [(151, 89, 12, 0)]
+    assert not mem.get("harvest_relocating")

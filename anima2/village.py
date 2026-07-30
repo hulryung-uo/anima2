@@ -43,12 +43,16 @@ from .skill_library import SkillLibrary
 from .skill_tuning import DELIVER_THRESHOLD_CANDIDATES, ParamSpec, ParamTuner
 from .skills import MineSmeltDeliver
 from .skills.base import Status
-from .uomap import find_tree_clusters
+from .uomap import find_mine_spots, find_tree_clusters
 
 # Minoc-area woods (map 1), near the mining camp — keeps the village compact.
 # Each lumberjack gets a distinct grove (a stand spot + the trees in reach).
 FOREST_BASE = (2520, 450)
 LUMBER_MAP = 1
+#: Relocation stands pre-surveyed for the forge miner — each gets its own forge
+#: at staging, so six is a provisioning cap, not a wander limit (the blind
+#: compass walk remains the fallback when the pool runs dry).
+MINE_POOL_SPOTS = 6
 
 #: Where a SOLO woodsman works. The multi-profession village keeps its lumberjacks in
 #: the Minoc woods above to stay compact, but those woods are thin — a live survey found
@@ -1702,6 +1706,21 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         mgx, mgy, mgz = gm.stage(serials["miner"], mx, my, skills={"Mining": 35},
                                  items=_pickaxes_for(ticks))
         gm.command_at("[Add Forge", mgx + 1, mgy + 1, mgz)
+        # Terrain-aware relocation (forge11's lesson: the blind compass walk
+        # marched 60+ tiles off the mountain face while the economy starved).
+        # Survey the face around the calibrated stand: exact rock nodes for HOME
+        # — targeted digs, no invalid-tile replies — plus a pool of next stands,
+        # one per 8x8 HarvestBank cell, each with its OWN forge ([Add Forge):
+        # smelting needs FORGE_REACH=2, and a relocated miner without a forge in
+        # reach silently stops smelting (ore piles up, deliveries never trigger).
+        mine_spots = find_mine_spots(LUMBER_MAP, mx, my)
+        home_nodes = next((n for s, n in mine_spots if s == (mgx, mgy)),
+                          mine_spots[0][1] if mine_spots else None)
+        spot_pool = [(s, n) for s, n in mine_spots if s != (mgx, mgy)][:MINE_POOL_SPOTS]
+        for (px, py), _nodes in spot_pool:
+            gm.command_at("[Add Forge", px + 1, py + 1, mgz)
+        print(f"mine survey: home face {len(home_nodes or [])} tiles, "
+              f"pool {[s for s, _ in spot_pool]}")
         gm.command_on('[Set Name "Grimm"', serials["miner"])
         # The tinker at the calibrated smith stand with its tool and NOTHING else.
         tgx, tgy, tgz = gm.stage(serials["tinker"], sx, sy,
@@ -1720,6 +1739,9 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     miner = Agent(body=bodies["miner"], persona=Persona(name="Grimm"),
                   planner=Planner([MineSmeltDeliver()]))
     miner.memory["smithy_drop"] = TRADE_SMITH_SPOT  # the deliver phase's only wiring
+    if home_nodes:
+        miner.memory["harvest_nodes"] = home_nodes  # dig real rock, not a blind ring
+    miner.memory["harvest_spot_pool"] = spot_pool  # relocation walks to KNOWN faces
 
     pim = TinkerLife(body=bodies["tinker"], persona=Persona(name="Pim"), routes=routes)
     for m in (pim.memory, pim.econ_agent.memory):

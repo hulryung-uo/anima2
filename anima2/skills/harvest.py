@@ -354,11 +354,23 @@ class Harvest(Skill):
         spot's own tiles haven't been sampled yet.
         """
         ctx.memory["harvest_recent_stuck"] = None
-        idx = ctx.memory.get("harvest_relocate_idx", 0)
-        ctx.memory["harvest_relocate_idx"] = idx + 1
-        dx, dy = RELOCATE_OFFSETS[idx % len(RELOCATE_OFFSETS)]
-        here = ctx.obs.player.pos
-        tx, ty = here.x + dx, here.y + dy
+        pool = ctx.memory.get("harvest_spot_pool")
+        if pool:
+            # A KNOWN next stand (Control-plane surveyed, e.g. `find_mine_spots`
+            # — one spot per 8x8 HarvestBank cell) beats the blind compass walk
+            # below every time it exists: forge11 (2026-07-30) chained blind
+            # relocations 60+ tiles off the mountain face, every ring
+            # all-invalid, while the economy starved. The spot's own nodes ride
+            # along and are installed ON ARRIVAL (`_relocate_step`) — targeting
+            # them from the wrong stand would just burn "too far away" replies.
+            (tx, ty), nodes = pool.pop(0)
+            ctx.memory["harvest_pending_nodes"] = nodes
+        else:
+            idx = ctx.memory.get("harvest_relocate_idx", 0)
+            ctx.memory["harvest_relocate_idx"] = idx + 1
+            dx, dy = RELOCATE_OFFSETS[idx % len(RELOCATE_OFFSETS)]
+            here = ctx.obs.player.pos
+            tx, ty = here.x + dx, here.y + dy
         ctx.memory["harvest_relocating"] = True
         ctx.memory["harvest_relocate_target"] = (tx, ty)
         ctx.memory.pop("harvest_relocate_last_pos", None)
@@ -377,7 +389,21 @@ class Harvest(Skill):
         """
         here = ctx.obs.player.pos
         tx, ty = ctx.memory["harvest_relocate_target"]
-        if chebyshev(here, Position(tx, ty, here.z)) == 0:
+        # Within ONE tile counts as arrived when surveyed nodes are riding along:
+        # a stand beside a mountain wall is exactly where the greedy mover gets
+        # deflected on the last step (forge12 live: exact-tile arrival burned
+        # pool spots to stall-giveups one step short). From one tile off, the
+        # face is still within ServUO's MaxRange=2 for most of the surveyed
+        # nodes; the few that fall out answer "too far" — failure verdicts the
+        # window absorbs without relocating a producing stand.
+        near_enough = 1 if ctx.memory.get("harvest_pending_nodes") else 0
+        if chebyshev(here, Position(tx, ty, here.z)) <= near_enough:
+            # ARRIVED: a pool spot's surveyed nodes take over — targeting starts
+            # on real rock immediately instead of re-probing blind.
+            nodes = ctx.memory.pop("harvest_pending_nodes", None)
+            if nodes:
+                ctx.memory["harvest_nodes"] = nodes
+                ctx.memory["harvest_idx"] = 0
             self._clear_relocate(ctx)
             return None
         cur = (here.x, here.y)
@@ -389,6 +415,13 @@ class Harvest(Skill):
         stall = ctx.memory.get("harvest_relocate_stall", 0) + 1
         ctx.memory["harvest_relocate_stall"] = stall
         if stall >= self.relocate_stall_limit:
+            # GAVE UP short of the stand: the pending spot's nodes would target
+            # rock from the wrong tile (burning "too far away" replies), and the
+            # OLD nodes belong to the ground just condemned — drop both and fall
+            # back to probing wherever this ended up.
+            if ctx.memory.pop("harvest_pending_nodes", None) is not None:
+                ctx.memory.pop("harvest_nodes", None)
+                ctx.memory.pop("harvest_idx", None)
             self._clear_relocate(ctx)
             return None
         return SkillResult(Status.RUNNING, None)
