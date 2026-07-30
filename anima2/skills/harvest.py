@@ -235,22 +235,36 @@ class Harvest(Skill):
             # cleared the relocation state and the stuck-rate window.
 
         # See the module-level comment above `no_resource_clilocs` for the
-        # windowed-rate design. One sample per swing *reply* — gated on
-        # `pending_target is None` (a reply just landed, or nothing has swung
-        # yet) so the "Where do you wish to dig?" prompt tick that always
-        # precedes it isn't also recorded as a spurious "not stuck" sample
-        # (that would silently halve the true rate).
-        if (self.no_resource_clilocs or self.pack_full_clilocs) and obs.pending_target is None:
+        # windowed-rate design. LEGACY mode samples one per swing *reply* —
+        # gated on `pending_target is None` (a reply just landed, or nothing
+        # has swung yet) so the "Where do you wish to dig?" prompt tick that
+        # always precedes it isn't also recorded as a spurious "not stuck"
+        # sample (that would silently halve the true rate). OUTCOME-ONLY mode
+        # must NOT keep that gate: at real agent cadence the verdict cliloc
+        # reliably lands in the same observation batch as the NEXT swing's
+        # already-open cursor, so the gate discarded essentially every verdict
+        # — forge8 ran a full healthy mining day with an EMPTY window (no
+        # `win=` line ever printed), and the day's end-of-vein drain sat
+        # unrelocated for 278 status samples. The dilution the gate defended
+        # against does not exist here: the prompt cliloc is neither productive
+        # nor failure, so a promptonly tick appends nothing anyway.
+        if self.no_resource_clilocs or self.pack_full_clilocs:
             stuck_this_tick = any(
                 j.cliloc in self.no_resource_clilocs or j.cliloc in self.pack_full_clilocs
                 or j.cliloc in self.invalid_target_clilocs
                 for j in obs.new_journal
             )
-            # Outcome-only mode (see `productive_clilocs`): no verdict, no sample.
-            sample: int | None = 1 if stuck_this_tick else 0
-            if self.productive_clilocs and not stuck_this_tick:
-                sample = 0 if any(j.cliloc in self.productive_clilocs
-                                  for j in obs.new_journal) else None
+            sample: int | None
+            if self.productive_clilocs:
+                # Outcome-only (see `productive_clilocs`): no verdict, no sample.
+                if stuck_this_tick:
+                    sample = 1
+                else:
+                    sample = 0 if any(j.cliloc in self.productive_clilocs
+                                      for j in obs.new_journal) else None
+            else:
+                sample = (1 if stuck_this_tick else 0) \
+                    if obs.pending_target is None else None
             if sample is not None:
                 ring = max(1, len(self.probe_offsets))
                 window = ring * self.stuck_window_rotations

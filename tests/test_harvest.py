@@ -554,3 +554,31 @@ def test_completed_relocation_moves_the_delivery_return_spot():
                             memory=mem))
     assert mem["miner_home"] == (108, 106)
     assert "harvest_relocated_to" not in mem
+
+
+def test_verdict_landing_on_a_cursor_open_tick_still_counts():
+    # forge8 (2026-07-30): at real agent cadence the verdict cliloc reliably
+    # lands in the same observation batch as the NEXT swing's already-open
+    # cursor — the legacy `pending_target is None` gate discarded essentially
+    # every verdict, so a full healthy mining day ran with an EMPTY window and
+    # the end-of-day dead vein sat unrelocated for 278 status samples. The
+    # probe missed it because 0.4s ticks observe faster than the reply cycle.
+    from anima2.contract import WalkTo
+
+    mine = Mine()
+    mem: dict = {}
+    window = len(mine.probe_offsets) * mine.stuck_window_rotations
+    cursor = TargetCursor(target_type=1, cursor_id=1, cursor_flag=0)
+    pickaxe = _item(0x222, PICKAXE, container=BACKPACK)
+    for _ in range(window):
+        ctx = _ctx(items=[pickaxe], pending=cursor, memory=mem)
+        ctx.obs.new_journal.append(
+            JournalEntry(serial=0, name="", text="", msg_type=0xC1, hue=0,
+                         cliloc=503040))
+        res = mine.step(ctx)
+        assert isinstance(res.action, TargetGround)  # still answers the cursor
+    recent = mem["harvest_recent_stuck"]
+    assert len(recent) == window and sum(recent) == window
+    # The trigger itself fires on the next between-swings tick.
+    res = mine.step(_ctx(items=[pickaxe], memory=mem))
+    assert isinstance(res.action, WalkTo)
