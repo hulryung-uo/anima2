@@ -1731,10 +1731,12 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
             enforce_gold_provenance(gm, bodies[role], serials[role])
         # One Tinker NPC serves every errand (SBTinker both sells iron at 5g and pays
         # 7g for tongs) plus a Banker — on the hand-calibrated VENDOR/BANKER spots.
+        shop_serials: dict = {}
         routes, _tiles = stage_shops(
             gm, z=tgz, anchor=(tgx, tgy), exclude=allser,
             spots={"vendor_spot": ("Tinker", VENDOR_SPOT[-1]),
-                   "banker_spot": ("Banker", BANKER_SPOT[-1])})
+                   "banker_spot": ("Banker", BANKER_SPOT[-1])},
+            serials_out=shop_serials)
 
     miner = Agent(body=bodies["miner"], persona=Persona(name="Grimm"),
                   planner=Planner([MineSmeltDeliver()]))
@@ -1746,6 +1748,10 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     pim = TinkerLife(body=bodies["tinker"], persona=Persona(name="Pim"), routes=routes)
     for m in (pim.memory, pim.econ_agent.memory):
         m["craft_spot"] = (tgx, tgy)
+        # Shop-identity pin: the Tinker and the Banker stand a tile either side
+        # of their requested spots, and the resolver's nearest-to-spot guess
+        # broke toward the wrong one two runs out of three (urgent-band gate).
+        m["shop_serials"] = shop_serials
     # Leash Pim to the DROP (his own stand): far enough for his shops, strictly inside
     # pickup reach so a delivery is always fetchable — the carpenter's derivation.
     shop_reach = max((max(abs(v[0][0] - tgx), abs(v[0][1] - tgy))

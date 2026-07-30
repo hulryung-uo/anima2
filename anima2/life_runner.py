@@ -117,7 +117,8 @@ class StagingError(RuntimeError):
 def stage_shops(gm: GmControl, *, z: int, anchor: tuple[int, int],
                 spots: dict[str, tuple[str, tuple[int, int]]],
                 exclude, strict: bool = True,
-                placed: dict[int, str] | None = None) -> tuple[dict, set]:
+                placed: dict[int, str] | None = None,
+                serials_out: dict | None = None) -> tuple[dict, set]:
     """Stage every shop in `spots` (`key -> (npc_name, (x, y))`), READ BACK where each
     actually landed, and verify identity, uniqueness and reach.
 
@@ -132,6 +133,15 @@ def stage_shops(gm: GmControl, *, z: int, anchor: tuple[int, int],
     Returns `(routes, npc_tiles)`. With `strict=False` failures print and leave the
     route unset (the older multi-agent runners' behavior); with `strict=True` they raise
     `StagingError`.
+
+    `serials_out`, when given, is filled with `{(x, y): serial}` for every shop actually
+    staged — the SHOP-IDENTITY PIN. Runners hand it to the agent as the `shop_serials`
+    memory key, and the market skills' own resolver prefers it over its
+    nearest-to-requested-spot guess. That guess is a coin flip exactly where it matters
+    most: a vendor and a banker one tile either side of a requested spot are EQUIDISTANT
+    from it, and the live urgent-band gate caught the tinker asking the Tinker NPC to
+    open a bank box (two runs out of three; the third guessed right). Identity, not
+    distance — this project's oldest lesson, applied one layer deeper than staging.
     """
     routes: dict = {}
     # `placed` may be shared across calls: a multi-anchor runner stages shops for two
@@ -148,6 +158,8 @@ def stage_shops(gm: GmControl, *, z: int, anchor: tuple[int, int],
             print(f"  {msg}")
             continue
         placed[mob.serial] = key
+        if serials_out is not None:
+            serials_out[(mob.pos.x, mob.pos.y)] = mob.serial
         reach = max(abs(mob.pos.x - anchor[0]), abs(mob.pos.y - anchor[1]))
         routes[key] = [(mob.pos.x, mob.pos.y)]
         flag = "" if reach <= SELL_REACH else "  ** OUT OF REACH **"

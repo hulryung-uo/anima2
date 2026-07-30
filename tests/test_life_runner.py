@@ -229,3 +229,66 @@ def test_run_worker_reads_the_ticks_observation_and_never_observes_again():
     assert body.observes == 5, (
         f"{body.observes} observes for 5 ticks — a second consumer is stealing "
         f"the journal batch again")
+
+
+def test_market_resolver_prefers_the_staged_pin_over_the_nearest_guess():
+    # Live (urgent-band gate, 2026-07-30): a Tinker and a Banker staged one tile
+    # either side of a requested spot are EQUIDISTANT from it, so the resolver's
+    # nearest-to-spot tie broke toward whichever the observation listed first —
+    # two runs of three asked the Tinker to open a bank box, got no Bank entry,
+    # and threw the trip away one tick after admitting the goal.
+    from anima2.contract import MobileView, Observation, PlayerView, Position
+    from anima2.persona import Persona
+    from anima2.skills.base import SkillContext
+    from anima2.skills.market import BlacksmithMarket
+
+    VENDOR, BANKER, SPOT = 0x4443, 0x4444, (10, 11)
+
+    def _mob(serial, x, y):
+        return MobileView(serial=serial, name="", pos=Position(x, y, 0), body=400,
+                          notoriety=1, hits=1, hits_max=1, distance=1)
+
+    def _ctx(memory):
+        # The vendor is listed FIRST and is exactly as close to the spot as the
+        # banker — the coin flip, made deterministic against the wrong answer.
+        obs = Observation(player=PlayerView(serial=1, pos=Position(10, 10, 0)),
+                          mobiles=[_mob(VENDOR, 10, 10), _mob(BANKER, 10, 12)])
+        return SkillContext(obs=obs, persona=Persona(name="Pim"), memory=memory)
+
+    unpinned = _ctx({})
+    assert BlacksmithMarket._find_market_mobile(unpinned, SPOT, "w") == VENDOR
+
+    pinned = _ctx({"shop_serials": {SPOT: BANKER}})
+    assert BlacksmithMarket._find_market_mobile(pinned, SPOT, "w") == BANKER
+
+    # A pin whose mobile is out of sight WAITS rather than settling for a
+    # neighbour that cannot serve the errand.
+    missing = _ctx({"shop_serials": {SPOT: 0xDEAD}})
+    assert BlacksmithMarket._find_market_mobile(missing, SPOT, "w") is None
+    assert missing.memory["w"] == 1
+
+
+def test_stage_shops_records_the_serial_it_actually_staged():
+    from anima2.life_runner import stage_shops
+
+    class _Mob:
+        def __init__(self, serial, x, y):
+            self.serial, self.pos = serial, type("P", (), {"x": x, "y": y, "z": 0})()
+
+    class _Gm:
+        def __init__(self):
+            self._n = 0
+
+        def stage_npc(self, npc, x, y, z, exclude=None):
+            self._n += 1
+            return _Mob(0x1000 + self._n, x, y)  # lands exactly where asked
+
+    out: dict = {}
+    routes, _tiles = stage_shops(_Gm(), z=0, anchor=(10, 10), exclude=1,
+                                 spots={"vendor_spot": ("Tinker", (10, 9)),
+                                        "banker_spot": ("Banker", (10, 11))},
+                                 serials_out=out)
+    assert out == {(10, 9): 0x1001, (10, 11): 0x1002}
+    # Keyed by the READBACK position — the same tuple the route's last waypoint
+    # holds, which is what the resolver is called with.
+    assert all(tuple(routes[k][-1]) in out for k in routes)

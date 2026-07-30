@@ -29,7 +29,11 @@ Verdict flags (all must hold):
   patient_would_craft — the same rule on the same observation, band out of reach, picks
                   `craft_tongs` (the exclusive discriminator)
   admitted_bank — the agent admitted `bank_gold`, so the rule steered behaviour
-  deposited     — gold reached the bank BOX and the pack settled at exactly the reserve
+  staged_as_claimed — the OBSERVATION matches the staging banner (a silently dropped
+                  `[AddToPack` or a stray delivered ingot would otherwise read exactly
+                  like "the band is not exclusive")
+  deposited     — this run's OWN deposit (against a captured baseline) equals exactly
+                  `GRANT - reserve`, and the pack settled at the reserve
 
 Gold is GRANTED here (stated plainly, like the bank gate's own note): this is a
 decision-order proof, not an economy claim — provenance is the forge pair's job.
@@ -54,8 +58,10 @@ from .live_common import (
 from .persona import Persona
 from .profession import BANKER_SPOT, PROFESSIONS, TRADE_SMITH_SPOT, VENDOR_SPOT
 from .skills.base import SkillContext
+from .skills.craft import PICKUP_RADIUS
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.tinkering import TinkerTongs
+from .skills.smelt import INGOT_GRAPHICS
+from .skills.tinkering import TONGS_GRAPHIC, TinkerTongs
 from .tinker_life import BANK_RESERVE, BANK_TRIP_SURPLUS, TinkerLife, decide_mode
 
 HOST, PORT = "127.0.0.1", 2594
@@ -67,6 +73,18 @@ IRON = TinkerTongs.craft_material_per_item * TinkerTongs.craft_batch * 4
 #: The counterfactual reserve: still under GRANT (patient branch eligible) but far
 #: enough above it that GRANT <= reserve + surplus (band out of reach).
 PATIENT_RESERVE = GRANT - BANK_TRIP_SURPLUS + 5
+
+# The discriminator is arithmetic before it is live, and every number above is DERIVED
+# from the constants under test — so a future edit to `BANK_TRIP_SURPLUS` could quietly
+# collapse the two readings onto the same branch and leave a gate that passes while
+# proving nothing. Fail at import instead (adversarial review of this file asked for
+# exactly this: the window is real, but nothing pinned it).
+assert GRANT > BANK_RESERVE + BANK_TRIP_SURPLUS, "staged gold must clear the band"
+assert PATIENT_RESERVE < GRANT <= PATIENT_RESERVE + BANK_TRIP_SURPLUS, (
+    "the counterfactual must keep the PATIENT branch eligible while the band is out "
+    "of reach — otherwise both readings agree and the gate is vacuous")
+assert IRON >= TinkerTongs.craft_material_per_item * TinkerTongs.craft_batch, (
+    "the pack must cover a full craft batch, else craft is not genuinely ready")
 
 
 def main() -> int:
@@ -85,13 +103,18 @@ def main() -> int:
             wipe_area(gm, tx, ty, radius=8, z=tz)
             enforce_gold_provenance(gm, body, serial)
             gm.command_on(f"[AddToPack Gold {GRANT}", serial)
+            shop_serials: dict = {}
             routes, _ = stage_shops(
                 gm, z=tz, anchor=(tx, ty), exclude=serial,
                 spots={"vendor_spot": ("Tinker", VENDOR_SPOT[-1]),
-                       "banker_spot": ("Banker", BANKER_SPOT[-1])})
+                       "banker_spot": ("Banker", BANKER_SPOT[-1])},
+                serials_out=shop_serials)
         life = TinkerLife(body=body, persona=Persona(name="Pim"), routes=routes)
         for m in (life.memory, life.econ_agent.memory):
             m["craft_spot"] = (tx, ty)
+            # The identity pin: without it the banker/vendor tie is a coin flip
+            # (this gate's own two failed runs asked the Tinker for a bank box).
+            m["shop_serials"] = shop_serials
         life.set_leash((tx, ty), 2)
         print(f"staged: Pim@({tx},{ty}) gold={GRANT} iron={IRON} tongs=0 "
               f"reserve={BANK_RESERVE} band>{BANK_RESERVE + BANK_TRIP_SURPLUS} — "
@@ -104,6 +127,22 @@ def main() -> int:
         econ_mem = life.econ_agent.memory
         ctx = SkillContext(obs=obs, persona=life.persona, memory=econ_mem)
         ready = ready_capability_ids("tinker", ctx)
+        # Verify the staged state from the OBSERVATION, not from the banner: a
+        # silently-dropped `[AddToPack` (GmControl.stage discards the command's
+        # bool) would otherwise read exactly like "the band is not exclusive",
+        # and a stray delivered ingot in reach would hand the trip to
+        # `fetch_iron` — which outranks the band on purpose.
+        staged = {
+            "gold": pack_amount(obs, GOLD_GRAPHIC) == GRANT,
+            "iron": pack_amount(obs, INGOT_GRAPHICS)
+            >= TinkerTongs.craft_material_per_item * TinkerTongs.craft_batch,
+            "no_tongs": pack_amount(obs, TONGS_GRAPHIC) == 0,
+            "clean_floor": not any(
+                i.graphic in INGOT_GRAPHICS and i.container is None
+                and i.distance <= PICKUP_RADIUS for i in obs.items),
+        }
+        bank_start = banked_amount(obs)
+        print(f"  staged-state check: {staged} (bank box starts at {bank_start})")
         wired = decide_mode(obs, econ_mem)
         patient_mem = dict(econ_mem, bank_reserve=PATIENT_RESERVE)
         patient = decide_mode(obs, patient_mem)
@@ -122,7 +161,7 @@ def main() -> int:
             adm = cur.goal.params.get("capability") if cur else None
             if adm:
                 admitted.add(adm)
-            banked = banked_amount(obs)
+            banked = banked_amount(obs) - bank_start
             line = (f"want={life.target_cap} adm={adm} stage={m.get('bank_stage')} "
                     f"banker={m.get('bank_banker')} popups={m.get('bank_popup_total')} "
                     f"gold={pack_amount(obs, GOLD_GRAPHIC)} banked={banked}")
@@ -147,7 +186,10 @@ def main() -> int:
             "urgent_pick": wired == ("economy", "bank_gold"),
             "patient_would_craft": patient == ("economy", "craft_tongs"),
             "admitted_bank": "bank_gold" in admitted,
-            "deposited": banked > 0,
+            "staged_as_claimed": all(staged.values()),
+            # Against THIS run's baseline, and the exact expected amount — an
+            # absolute balance would credit gold some earlier trip left behind.
+            "deposited": banked == GRANT - BANK_RESERVE,
             "reserve_kept": pack_amount(obs, GOLD_GRAPHIC) == BANK_RESERVE,
         }
         return 0 if print_gate_verdict(flags, label="URGENT BANK BAND GATE") else 1

@@ -1028,8 +1028,27 @@ class BlacksmithMarket(Blacksmith):
         `ctx.memory[wait_key]` on a miss so the caller can time out; the
         caller is responsible for actually giving up once that counter reaches
         `FIND_MOBILE_TIMEOUT` (this only searches — it doesn't stash/bail).
+
+        The nearest-to-spot guess is a COIN FLIP where it matters most: two
+        shops staged one tile either side of a requested spot are equidistant
+        from it, and the tie broke toward whichever the observation happened to
+        list first. Live (urgent-band gate, 2026-07-30, two runs of three): the
+        tinker asked the *Tinker* NPC to open a bank box, got no Bank entry, and
+        threw the whole trip away one tick after admitting the goal — silent,
+        because a `_NO_ENTRY` giveup looks exactly like a slow banker. So when
+        the Control plane has PINNED what it staged (`shop_serials`, written by
+        `life_runner.stage_shops`), that pin wins outright; the guess remains
+        for runs with no pin (older runners, foundry evals).
         """
         sx, sy = spot
+        pinned = (ctx.memory.get("shop_serials") or {}).get((sx, sy))
+        if pinned is not None:
+            if any(m.serial == pinned for m in ctx.obs.mobiles):
+                return pinned
+            # Pinned but not in sight: keep waiting for the real one rather than
+            # settling for a neighbour that cannot serve this errand.
+            ctx.memory[wait_key] = ctx.memory.get(wait_key, 0) + 1
+            return None
         cands = [m for m in ctx.obs.mobiles if chebyshev(m.pos, Position(sx, sy, m.pos.z)) <= MOBILE_SEARCH_RADIUS]
         if not cands:
             ctx.memory[wait_key] = ctx.memory.get(wait_key, 0) + 1
