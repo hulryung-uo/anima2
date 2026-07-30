@@ -442,8 +442,36 @@ class WarriorLife:
         self._disagree_streak = self._disagree_streak + 1 if disagreeing else 0
         if self._disagree_streak >= DISAGREEMENT_TICKS:
             self.rule_gate_disagreement = (self.target_cap, self._disagree_streak)
+            self._clear_stale_ui(obs)
         else:
             self.rule_gate_disagreement = None
+
+    def _clear_stale_ui(self, obs) -> None:
+        """Close a gump nobody owns — the detector as a REPAIR, not just a report.
+
+        Sixteen readiness gates share one "idle UI" clause (no gumps, no popup, no
+        shop window, no cursor), so a single surface left open refuses EVERY
+        capability at once: the ready set goes empty, the rule keeps wanting, and the
+        Life stands still with material at its feet. forge15 live, 2026-07-31: Pim
+        wanted `fetch_iron` for 156 ticks with 38 ingots on the ground and `ready=[]`.
+
+        Safe by the detector's own precondition: firing requires NO goal on the stack
+        for `DISAGREEMENT_TICKS` straight, so no capability owns the surface being
+        closed — a mid-transaction gump belongs to a live goal and is never touched
+        here. Only gumps are closable through the contract (`GumpResponse` button 0,
+        the craft FSM's own close); a stale shop window has no close action and is
+        left to report itself through the same loud line.
+        """
+        gumps = getattr(obs, "gumps", None)
+        if not gumps:
+            return
+        from .contract import GumpResponse
+
+        gump = gumps[0]
+        self._stale_ui_closes = getattr(self, "_stale_ui_closes", 0) + 1
+        print(f"  ** {self.persona.name}: closing an unowned gump "
+              f"(id={gump.gump_id}) — it was refusing every capability **")
+        self.body.act(GumpResponse(gump.serial, gump.gump_id, button=0))
 
     # --- Agent-compatible surface, so any agent runner (e.g. village._run_worker)
     # drives a WarriorLife unchanged. The HUNT agent is the primary: it does the

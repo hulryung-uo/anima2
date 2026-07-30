@@ -1832,6 +1832,24 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # The tool-gone confession (skills/harvest.py): a toolless miner makes no
         # swings, so neither relocation nor the reward stream will ever name this —
         # the status line must.
+        # WHICH surface is refusing every capability? Sixteen gates share one
+        # "idle UI" clause, so a single stale gump/shop window empties the ready
+        # set — forge15 burned 671 ticks on that with the status line unable to
+        # say which one. Named here, once, for both agents' sake.
+        def _ui(o):
+            if o is None:
+                return ""
+            flags = ["gump" for _ in (o.gumps or [])][:1]
+            if getattr(o, "popup", None) is not None:
+                flags.append("popup")
+            if getattr(o, "shop_buy", None) is not None:
+                flags.append("shopbuy")
+            if getattr(o, "shop_sell", None) is not None:
+                flags.append("shopsell")
+            if getattr(o, "pending_target", None) is not None:
+                flags.append("cursor")
+            return " ui=" + ",".join(flags) if flags else ""
+
         tool_gone = miner.memory.get("harvest_tool_missing", 0)
         grimm_flag = (" NO-TOOL!"
                       if tool_gone >= MineSmeltDeliver.tool_missing_confess else "")
@@ -1852,7 +1870,8 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
               f"pim[{pim.mode} {telemetry_line(pim, 'tinker', p_obs)} "
               f"iron={pack_amount(p_obs, INGOT_GRAPHICS)} "
               f"tongs={pack_amount(p_obs, TONGS_GRAPHIC)} "
-              f"gold={pack_amount(p_obs, GOLD_GRAPHIC)} banked={banked_amount(p_obs)} "
+              f"gold={pack_amount(p_obs, GOLD_GRAPHIC)} banked={banked_amount(p_obs)}"
+              f"{_ui(p_obs)} "
               f"net={earned:+d}g ({earned / hours:+.0f}g/h)] —")
         for line in snap:
             print(f"  {line}")

@@ -372,3 +372,79 @@ def test_every_life_writes_its_own_derived_reserve_at_construction():
             f"{cls.__name__}: a zero reserve banks the working capital too — the "
             f"threshold-vs-reserve conflation this knob exists to prevent"
         )
+
+
+# --- the detector as a repair: an unowned gump refuses every capability ---------------
+
+def _stale_ui_life():
+    """A TinkerLife wanting `fetch_iron` with delivered iron at its feet, and a gump
+    left open by nobody — the forge15 wedge, offline."""
+    from anima2.contract import GumpView, ItemView, PlayerView, Position
+    from anima2.mock_body import MockBody
+    from anima2.persona import Persona
+    from anima2.skills.harvest import BACKPACK_LAYER
+    from anima2.skills.smelt import INGOT_GRAPHICS
+    from anima2.skills.tinkering import TINKERTOOLS_GRAPHIC
+    from anima2.tinker_life import TinkerLife
+
+    IRON = sorted(INGOT_GRAPHICS)[0]
+    PIM, PACK = 0x1, 0xB1
+    items = {
+        PACK: ItemView(serial=PACK, graphic=0x0E75, amount=1, pos=Position(),
+                       container=PIM, layer=BACKPACK_LAYER, distance=0),
+        0x100: ItemView(serial=0x100, graphic=TINKERTOOLS_GRAPHIC, amount=1,
+                        pos=Position(), container=PACK, layer=0, distance=0),
+        0x200: ItemView(serial=0x200, graphic=IRON, amount=38, pos=Position(11, 10, 0),
+                        container=None, layer=0, distance=1),
+    }
+    body = MockBody(player=PlayerView(serial=PIM, name="Pim",
+                                      pos=Position(10, 10, 0)), items=items)
+    stale = GumpView(serial=PIM, gump_id=0x5AFE, elements=[])
+    body.gumps.append(stale)  # nobody's gump: no goal ever admitted it
+    life = TinkerLife(body=body, persona=Persona(name="Pim"),
+                      routes={"vendor_spot": ((12, 10),), "banker_spot": ((10, 12),)})
+    life.set_leash((10, 10), 3)
+    for m in (life.memory, life.econ_agent.memory):
+        m["craft_spot"] = (10, 10)
+    return life, body, stale
+
+
+def test_an_unowned_gump_is_closed_once_the_detector_fires():
+    from anima2.contract import GumpResponse
+    from anima2.warrior_life import DISAGREEMENT_TICKS
+
+    life, body, stale = _stale_ui_life()
+    fired = False
+    # ECON_GRACE has to elapse before the mode even becomes "economy", then
+    # DISAGREEMENT_TICKS of streak on top — the detector is deliberately slow.
+    for _ in range(DISAGREEMENT_TICKS * 4):
+        life.tick()
+        fired = fired or life.rule_gate_disagreement is not None
+        if not body.gumps:
+            break
+    assert fired, "the wedge never reported itself"  # the detector saw it
+    closes = [a for a in body.actions
+              if isinstance(a, GumpResponse) and a.button == 0
+              and a.gump_id == stale.gump_id]
+    assert closes, "the detector reported the wedge but never repaired it"
+    assert not body.gumps, "the gump survived its own close"
+    # And the repair RESTORES the economy: with the surface gone the gates admit
+    # again and the delivered iron finally reaches the pack.
+    for _ in range(60):
+        life.tick()
+    pack = sum(i.amount for i in body.items.values()
+               if i.container == 0xB1 and i.graphic in
+               __import__("anima2.skills.smelt", fromlist=["x"]).INGOT_GRAPHICS)
+    assert pack > 0, "unwedged, but the Life never picked the iron up"
+
+
+def test_a_healthy_life_never_closes_a_gump_out_from_under_a_goal():
+    # The no-goal guard is what makes the repair safe: a gump mid-transaction
+    # belongs to a live capability goal and must never be closed by the Life.
+    from anima2.contract import GumpResponse
+
+    life, body, _ = _stale_ui_life()
+    for _ in range(4):  # short of DISAGREEMENT_TICKS
+        life.tick()
+    assert life.rule_gate_disagreement is None
+    assert not [a for a in body.actions if isinstance(a, GumpResponse)]

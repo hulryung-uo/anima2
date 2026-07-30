@@ -49,6 +49,13 @@ class MockBody:
     #: Serial source for split-off stacks (high range, clear of test fixtures).
     _held_serial_seq: int = 0x7F000000
     said: list[str] = field(default_factory=list)
+    #: Open gumps, surfaced in every observation. Sixteen capability gates refuse
+    #: while ANY UI surface is open, so "a gump nobody owns" is a whole class of
+    #: live wedge (forge15) that was unrepresentable offline until this field.
+    gumps: list = field(default_factory=list)
+    #: Every action the agent asked for, in order — the mock's only way to prove a
+    #: repair was actually ATTEMPTED rather than merely decided.
+    actions: list = field(default_factory=list)
 
     # --- Body protocol ---------------------------------------------------------
 
@@ -68,9 +75,17 @@ class MockBody:
         )
         new = self._journal[self._journal_cursor :]
         self._journal_cursor = len(self._journal)
-        return Observation(player=self.player, mobiles=mobiles, items=items, new_journal=new)
+        return Observation(player=self.player, mobiles=mobiles, items=items,
+                           new_journal=new, gumps=list(self.gumps))
 
     def act(self, action: Action) -> None:
+        self.actions.append(action)
+        if type(action).__name__ == "GumpResponse" and getattr(action, "button", None) == 0:
+            # Button 0 is CLOSE, the same answer the craft FSM sends — model it, so a
+            # test can prove the wedge actually clears rather than just that an action
+            # was emitted.
+            self.gumps = [g for g in self.gumps if g.gump_id != action.gump_id]
+            return
         if isinstance(action, Walk):
             self._walk(action.dir)
         elif isinstance(action, Say):
