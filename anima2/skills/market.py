@@ -493,6 +493,23 @@ class BlacksmithMarket(Blacksmith):
         vendor_serial = ctx.memory.get("sell_vendor")
 
         if stage == "popup":
+            # Symmetric with `_buy_step`'s own block: a vendor window already open
+            # blocks this stage (the server ignores a popup request while one is
+            # up). Ours -> use it; someone else's -> cancel with an empty list.
+            open_sell = obs.shop_sell
+            if open_sell is not None:
+                if open_sell.vendor == vendor_serial:
+                    stage = ctx.memory["sell_stage"] = "list"
+                else:
+                    return SkillResult(
+                        Status.RUNNING,
+                        SellItems(vendor=open_sell.vendor, items=[]), reward)
+            open_buy = obs.shop_buy
+            if open_buy is not None and stage == "popup":
+                return SkillResult(
+                    Status.RUNNING, BuyItems(vendor=open_buy.vendor, items=[]), reward)
+
+        if stage == "popup":
             # `_popup_click` re-requests the menu every `ASK_RETRY` ticks
             # forever on its own — it has no notion of "total" time spent, so
             # this counts total ticks spent in this stage (across every
@@ -758,6 +775,26 @@ class BlacksmithMarket(Blacksmith):
             stage = ctx.memory["buy_stage"] = "popup"
 
         vendor_serial = ctx.memory.get("buy_vendor")
+
+        if stage == "popup":
+            # A vendor window ALREADY open blocks this stage completely: the server
+            # ignores a fresh popup request while one is up, so the popup counter
+            # just runs to its timeout and throws the trip away. forge15-18 live:
+            # a window left behind by an earlier trip refused every capability
+            # (all sixteen gates share the idle-UI clause) and cost a full goal
+            # lifetime per recurrence, because only the Life's own stale-UI repair
+            # could clear it — and that deliberately waits while a goal owns the
+            # surface. Handle it HERE, where the trip can act immediately: if the
+            # open window is the one we came for, use it; if it belongs to some
+            # other vendor, cancel it (an empty list is ServUO's EndVendorBuy).
+            open_window = obs.shop_buy
+            if open_window is not None:
+                if open_window.vendor == vendor_serial:
+                    stage = ctx.memory["buy_stage"] = "window"
+                else:
+                    return SkillResult(
+                        Status.RUNNING,
+                        BuyItems(vendor=open_window.vendor, items=[]), reward)
 
         if stage == "popup":
             # See `_sell_step`'s matching popup block — `_popup_click` re-requests

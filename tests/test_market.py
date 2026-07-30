@@ -1974,3 +1974,49 @@ def test_toolbuy_capability_new_goal_resets_prior_goal_evidence():
     assert "cap_toolbuy_finished_goal_id" not in mem
     assert "cap_toolbuy_offer" not in mem
     assert "cap_toolbuy_bought_tools" not in mem
+
+
+# --- an ALREADY-OPEN vendor window (forge15-18's wedge, at the FSM layer) -------------
+#
+# A window left behind by an earlier trip blocks the popup stage completely: the
+# server ignores a fresh popup request while one is up, so the counter just runs to
+# its timeout and the trip is thrown away. Live that cost a full goal lifetime per
+# recurrence — the Life's stale-UI repair can only act once NO goal owns the surface.
+# The trip itself can act immediately, so it does.
+
+def _buy_popup_mem():
+    return {"vendor_spot": VENDOR, "bs_stand": (0, 0), "mkt_phase": "buy",
+            "buy_stage": "popup", "buy_vendor": VENDOR_MOBILE,
+            "cap_buy_goal_id": 17, "cap_buy_route": (VENDOR,),
+            "cap_buy_start_ingots": 0, "cap_buy_start_gold": 100}
+
+
+def test_an_already_open_window_from_OUR_vendor_is_used_not_re_requested():
+    buy = ShopBuy(vendor=VENDOR_MOBILE, container=VENDOR_CONTAINER,
+                  entries=[ShopBuyEntry(price=5, name="iron", serial=0xABC,
+                                        graphic=IRON_INGOT_GRAPHIC, amount=100)])
+    mem = _buy_popup_mem()
+    res = BuyIngots().step(_ctx([_backpack(), _gold(0x900, amount=100)], memory=mem,
+                                pos=Position(*VENDOR, 0), shop_buy=buy, goal_id=17))
+    # Straight to the order: no PopupRequest, no waiting out the timeout.
+    assert isinstance(res.action, BuyItems) and res.action.items
+    assert mem["buy_stage"] != "popup"
+
+
+def test_an_already_open_window_from_ANOTHER_vendor_is_cancelled():
+    stranger = 0xDEAD
+    buy = ShopBuy(vendor=stranger, container=VENDOR_CONTAINER, entries=[])
+    mem = _buy_popup_mem()
+    res = BuyIngots().step(_ctx([_backpack(), _gold(0x900, amount=100)], memory=mem,
+                                pos=Position(*VENDOR, 0), shop_buy=buy, goal_id=17))
+    # An EMPTY list is ServUO's cancel (EndVendorBuy) — clear the blocker, keep the trip.
+    assert isinstance(res.action, BuyItems)
+    assert res.action.vendor == stranger and not res.action.items
+    assert mem["buy_stage"] == "popup"  # still ours to finish once the way is clear
+
+
+def test_no_open_window_still_takes_the_ordinary_popup_path():
+    mem = _buy_popup_mem()
+    res = BuyIngots().step(_ctx([_backpack(), _gold(0x900, amount=100)], memory=mem,
+                                pos=Position(*VENDOR, 0), goal_id=17))
+    assert not isinstance(res.action, BuyItems)  # popup request/wait, unchanged
