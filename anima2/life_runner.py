@@ -169,6 +169,31 @@ def telemetry_line(life, profession: str, obs: Observation | None) -> str:
 
     `want` alone is a trap: it is INTENT, and an unadmitted goal looks identical to a
     busy one from outside — that ambiguity cost three runs and one wrong root cause.
+
+    `admitted` had the SAME trap on its own side, and it cost a fourth run: a frame is
+    on the stack whether or not anybody is ticking it, so `admitted=sell_furniture`
+    printed for 280 live ticks while the orchestrator had switched to hunt mode and
+    nothing was executing that capability (2026-08-03; the fix is the exit-edge hold in
+    `WarriorLife.tick`). So `admitted` now carries the frame's AGE, in ECON-AGENT ticks:
+    the same clock `deadline_tick` is counted in, and the clock that STOPS the moment
+    the frame stops being ticked. A frozen frame is exactly one whose age no longer
+    moves while these lines keep printing every few seconds; a slow-but-progressing one
+    climbs toward its budget. Three suffixes name the state outright rather than leaving
+    it to be inferred:
+
+      `!frozen`  — a live frame whose agent is not the one being ticked. Under the hold
+                   this means death, or a frame the hold has RELEASED as overdue; it is
+                   also the REGRESSION DETECTOR for the hold itself: if it is ever
+                   bypassed or defeated by a new early return, the status line says so
+                   in the field instead of requiring a reader to correlate `[hunt]`
+                   with `admitted=X`. Nobody made that correlation on 2026-08-03, and
+                   it was printed on every line.
+      `+hold`    — the LEGITIMATE `want=None admitted=X` pairing the hold creates: the
+                   rule stopped wanting it, the orchestrator is finishing it anyway.
+      `!overdue` — the frame is past its own budget. Printed IN ADDITION to the other
+                   two, because "the age exceeds the budget" is a comparison between two
+                   numbers on the line and review-caught nobody makes it. `!frozen!overdue`
+                   is the stale frame the hold released and no longer holds for.
     """
     try:
         ready = ready_capability_ids(
@@ -176,7 +201,20 @@ def telemetry_line(life, profession: str, obs: Observation | None) -> str:
                                      memory=life.econ_agent.memory),
         ) if obs is not None else ()
         cur = life.econ_agent.goal_stack.current
-        admitted = cur.goal.params.get("capability") if cur else None
+        admitted = None
+        if cur is not None:
+            budget = ("" if cur.deadline_tick is None
+                      else f"/{cur.deadline_tick - cur.created_tick}")
+            admitted = (f"{cur.goal.params.get('capability')}"
+                        f"@{life.econ_agent.ticks - cur.created_tick}{budget}")
+            # `getattr` throughout: a Life is duck-typed here (tests and gates pass
+            # stand-ins), and telemetry must never be the thing that raises.
+            if getattr(life, "mode", "economy") != "economy":
+                admitted += "!frozen"
+            elif getattr(life, "holding_frame", False):
+                admitted += "+hold"
+            if getattr(life, "frame_overdue", False):
+                admitted += "!overdue"
     except Exception:  # noqa: BLE001 — telemetry must never break the run
         ready, admitted = ("?",), "?"
     return f"want={life.target_cap} admitted={admitted} ready={list(ready)}"

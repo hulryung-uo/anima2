@@ -678,6 +678,9 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # a craft item ~10) and far below the half-hour forge2 sat dead.
     _QUIET_TICKS = 40
     _quiet = 0
+    #: Consecutive ticks a Life has reported an overdue capability frame — same throttle
+    #: as `_quiet`, for the same reason (see the report below).
+    _overdue = 0
     _last_pulse = None
     for _ in range(ticks):
         if not agent.body.connected:
@@ -764,6 +767,23 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
         if _disagree is not None:
             print(f"  ** {agent.persona.name}: RULE-vs-GATE DISAGREEMENT — wants "
                   f"{_disagree[0]!r}, admission refuses, {_disagree[1]} ticks **")
+        # The other silent stall the Life can now self-report: a capability frame that has
+        # outlived its own deadline and still cannot reach a safe yield point, so neither
+        # the FSM's give-up ladder nor `expire_due` can close it. The orchestrator has
+        # already released its economy hold for it (`WarriorLife.tick`'s third bound) and
+        # pointed the stale-UI repair at it; what is left to say is that the frame is
+        # STILL there, because until it closes no new capability can be admitted.
+        # Throttled like NO PROGRESS beside it: the state persists for as long as the
+        # frame does, and unthrottled it measured 3,881 identical lines in one 4,000-tick
+        # run — enough to bury both of the other two alarms in this loop.
+        if getattr(agent, "frame_overdue", False):
+            if _overdue % _QUIET_TICKS == 0:
+                print(f"  ** {agent.persona.name}: FRAME OVERDUE for {_overdue + 1} ticks "
+                      f"— a transaction past its deadline that cannot yield still holds "
+                      f"the capability stack **")
+            _overdue += 1
+        else:
+            _overdue = 0
         if isinstance(action, Say):
             says += 1
             last_say = action.text
@@ -1623,26 +1643,28 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # want / admitted / ready, for BOTH sides. `want` alone is intent, and an
         # unadmitted goal looks exactly like a busy one — the pair runner shipped
         # without this and promptly needed it when Bjorn sat on 20 logs for 123 samples.
+        # ONE definition of the readout: `life_runner.telemetry_line`. This used to
+        # re-derive `adm=` here as a bare capability name, which is the very ambiguity
+        # that line's age/`+hold`/`!frozen`/`!overdue` decorations were added to kill —
+        # so the two runners that drive the carpenter and the lumberjack were the two
+        # printing the old, lying form. Review-caught as divergent copies that will
+        # drift again; only the `process_logs` counters stay local, because they are
+        # this pair's debugging, not the shared readout.
         def _layers(life, prof_key):
             try:
-                from .capabilities import ready_capability_ids
-                from .skills.base import SkillContext as _SC
+                from .life_runner import telemetry_line
                 o = getattr(life.body, "last_obs", None)
-                rdy = ready_capability_ids(
-                    prof_key, _SC(obs=o, persona=life.persona,
-                                  memory=life.econ_agent.memory)) if o is not None else ()
-                cur = life.econ_agent.goal_stack.current
-                adm = cur.goal.params.get("capability") if cur else None
                 extra = ""
-                if adm == "process_logs":
+                cur = life.econ_agent.goal_stack.current
+                if cur is not None and cur.goal.params.get("capability") == "process_logs":
                     m = life.econ_agent.memory
                     extra = (f" need={m.get('cap_process_needed')}"
                              f" delta={m.get('cap_process_board_delta')}"
                              f" left={m.get('cap_process_logs_remaining')}"
                              f" fin={m.get('cap_process_finished_goal_id')}")
-                return f"want={life.target_cap} adm={adm} rdy={list(rdy)}{extra}"
+                return telemetry_line(life, prof_key, o) + extra
             except Exception:  # noqa: BLE001 — telemetry must never break the run
-                return "want=? adm=? rdy=?"
+                return "want=? admitted=? ready=?"
 
         with lock:
             snap = [status[i] for i in sorted(status)]
@@ -2419,6 +2441,23 @@ class _ThrottledAgent:
     @property
     def mode(self):
         return getattr(self.inner, "mode", None)
+
+    # Both of a Life's SELF-REPORTS pass through, because a report the runner cannot
+    # read is not a report. `_run_worker` reads these off the object it drives, and for
+    # the throttled carpenter (`run_supply_pair`) and the throttled mage
+    # (`run_artisan_mage_village`) that object is this proxy — which has no
+    # `__getattr__`, so until these existed `getattr(agent, ..., None)` was
+    # unconditionally None and the two Lives that run their economy agent nearly every
+    # tick were the two that could never print either line. Caught by the blast-radius
+    # review of the exit-edge hold, 2026-08-03; the hold's own overdue report would have
+    # shipped dead through exactly the same hole.
+    @property
+    def rule_gate_disagreement(self):
+        return getattr(self.inner, "rule_gate_disagreement", None)
+
+    @property
+    def frame_overdue(self) -> bool:
+        return bool(getattr(self.inner, "frame_overdue", False))
 
 
 def _pipeline_progress(tin_tap, mage) -> str:

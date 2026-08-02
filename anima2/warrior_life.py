@@ -18,8 +18,13 @@ not via a shared dict. (Sharing one memory was live-caught corrupting the econom
 agent's buy FSM with the hunt agent's leftover skill state.) The economy agent is given
 the vendor `routes` it needs to shop. Each tick, `decide_mode` (a pure, testable
 function over the observation + routes) picks the mode, and the matching agent is
-ticked. The economy agent's cognition is SYNCHRONOUS on purpose (the async
-ThreadedCognition races and intermittently never proposes the goal — a live-caught flake).
+ticked — EXCEPT that a live goal frame holds the economy mode until it retires OR
+outlives its own deadline (see `tick`: the rule cannot see the goal stack, so it answers
+"hunt" on the very tick a transaction completes, and only the economy agent's own ticks
+can finish one; a frame past its budget has stopped being a transaction and releases the
+hold, so the Life is never pinned by one). The economy agent's cognition is SYNCHRONOUS
+on purpose (the async ThreadedCognition races and intermittently never proposes the goal
+— a live-caught flake).
 """
 
 from __future__ import annotations
@@ -82,6 +87,13 @@ BANK_RESERVE = WEAPON_PRICE + BANDAGE_BATCH_COST + ARMOR_PRICE
 #: running, so it wields an OWNED blade first; only a genuine loss survives the grace.
 #: Overridable per instance via `WarriorLife(..., econ_grace=...)`, clamped to at least 2
 #: — the smallest window that grants ANY hysteresis (see the constructor).
+#:
+#: ONE EXCEPTION, and it is deliberate: a transaction the orchestrator HELD the economy
+#: mode for (see `tick`) pins the streak at this value while it lasts, so the tick it
+#: retires commits straight back to the economy if the rule wants it. A completed
+#: transaction is not the mid-equip transient this knob filters — it IS the commitment —
+#: so it does not re-earn the hysteresis. Tuning this value therefore does not lengthen
+#: the gap after a held transaction; it lengthens only the un-held entry.
 ECON_GRACE = 6
 #: Consecutive ticks the rule may WANT an economy capability that admission never grants
 #: (no goal on the stack, capability absent from the ready set) before the orchestrator
@@ -96,6 +108,16 @@ ECON_GRACE = 6
 #: as a module global, precisely so a genome axis can move it; the module constant stays
 #: the default, so an untuned Life behaves exactly as before.
 DISAGREEMENT_TICKS = 10
+#: How many stale-UI closes ONE overdue frame may buy itself before the orchestrator
+#: stops extending the hold for it at all (see `tick`'s third bound). `_clear_stale_ui`
+#: knows exactly three closable surfaces — a gump, a vendor BUY window, a vendor SELL
+#: window — so three is one per surface class: enough to clear everything a finished
+#: trip can leave behind, and no more. A fourth close would mean the surface is being
+#: RE-OPENED rather than left behind, which is not a stale surface and not this repair's
+#: to fix; holding for it would be exactly the unbounded hold the bound exists to
+#: prevent. Not a knob: it is a property of `_clear_stale_ui`'s own case list, so it
+#: moves only when that list does.
+OVERDUE_REPAIRS = 3
 
 
 # The pack/worn readbacks this rule used to hand-roll — `_backpack`, `_pack_amount`,
@@ -364,6 +386,21 @@ class WarriorLife:
                                              floor=1)
         self.mode = "hunt"
         self.target_cap: str | None = None
+        #: True while the orchestrator is finishing a transaction the rule stopped
+        #: wanting (see `tick`). Telemetry marks it `+hold`; a hold that is progressing
+        #: is not a fault. A hold that is NOT progressing sets `frame_overdue` below and
+        #: is released, so `+hold` alone never means "stuck".
+        self.holding_frame = False
+        #: True whenever the frame on the economy stack has outlived its own deadline —
+        #: read off the FRAME and the economy agent's clock alone, never gated on the
+        #: hold. Gating it on the hold was review-caught: it blinded the report in
+        #: exactly the half of the wedge where the rule still happened to want the
+        #: capability, and what the rule wants has nothing to do with why the frame
+        #: cannot finish. It is both the report AND the hold's third bound (see `tick`).
+        self.frame_overdue = False
+        #: `{frame id: closes}` — stale-UI closes already spent on an overdue frame, so
+        #: the repair that extends the hold is capped per frame (`OVERDUE_REPAIRS`).
+        self._overdue_repairs: dict[int, int] = {}
         self._econ_streak = 0
         self._profession_key = profession
         self._disagree_streak = 0
@@ -401,7 +438,13 @@ class WarriorLife:
         # mode from the observation IT just cached — no extra pump (an extra observe
         # around the inner agent's own tick breaks its route/reflex cadence; live-caught).
         # The one-tick lag on the mode decision is immaterial (modes change slowly) and
-        # `self.mode` starts at "hunt", so the very first action is a hunt action.
+        # `self.mode` starts at "hunt", so the very first action is a hunt action. Exactly
+        # ONE inner agent is ticked per orchestrator tick, and that is load-bearing: two
+        # would split `new_journal` (a since-last-observe delta) between them, act twice
+        # on one body from two agents that each believe they own movement, and halve every
+        # capability deadline's wall-clock life. Which one gets the tick is `self.mode`,
+        # so the exit-edge rule below — not a second agent — is how an owed transaction
+        # gets finished.
         self.body.begin_tick()  # this tick's first observe pumps for real
         action = (self.econ_agent if self.mode == "economy" else self.hunt_agent).tick()
         obs = self.body.last_obs
@@ -421,6 +464,91 @@ class WarriorLife:
                 mode, cap = "hunt", None
         else:
             self._econ_streak = 0
+        # FINISH WHAT WE STARTED — the EXIT edge needs its own rule, and it is not the
+        # entry hysteresis mirrored. `decide` is a pure function of (obs, memory): it
+        # structurally cannot see the goal stack, so it answers "hunt" the instant the
+        # world-fact it keyed on flips — and for a sale that instant is the moment the
+        # vendor TAKES the item, i.e. MID-transaction, with the walk home still owed.
+        # Every economy branch of all five Lives is keyed on state its own transaction
+        # changes (the goods leave the pack, the coin moves, the pile is lifted), so
+        # this is structural, not the carpenter's.
+        #
+        # Leaving economy there freezes THREE things at once, because all three only
+        # advance inside `Agent.tick`: the capability FSM, the `cap_*_finished` markers
+        # it sets (retirement always needs at least one more econ tick after them —
+        # every capability step returns RUNNING, `CapabilityGoalComplete` is a planner
+        # skill selected on a LATER tick), and `GoalStack.expire_due`, whose deadline is
+        # counted in that same agent's ticks. Live 2026-08-03: a `sell_furniture` frame
+        # sat mid-`sell_return` at `mkt_phase='sell'` for 280 ticks with the econ agent's
+        # counter pinned at 5, while the status line said `admitted=sell_furniture` and
+        # nothing was executing it (docs/AUDIT-2026-07-29.md).
+        #
+        # THE HOLD IS BOUNDED THREE TIMES, and the third bound is the orchestrator's own
+        # because the first two are NOT general:
+        #  1. the FSM's give-up ladder returns `mkt_phase` to "craft" and sets
+        #     `cap_run_finished_goal_id`, which `CapabilityGoalComplete` closes as a
+        #     FAILURE. This is the usual exit, but it exists for exactly TWO capability
+        #     families: only `SellItemCapability` and `BankGoldCapability` ever write that
+        #     marker (`skills/market.py`). Every buy / tool-buy / craft / fetch / process /
+        #     deliver frame has no ladder at all.
+        #  2. the frame's own deadline, via `GoalStack.expire_due` — reachable only
+        #     because the hold keeps the economy agent ticking, since that deadline is
+        #     counted in ITS ticks. But `CapabilityPolicy.deadline_can_expire` defers at
+        #     an unsafe yield point, and EVERY `*_can_yield` in `capabilities.py` carries
+        #     the same unconditional "idle UI" clause. One unowned gump (forge15's wedge)
+        #     therefore holds bound 2 open forever, and it holds bound 1 open too, since
+        #     the readiness gates share that clause.
+        #  3. so: OVERDUE RELEASES THE HOLD. Measured, review-caught, on all five Lives:
+        #     with a gump nobody owns plus any non-sell/non-bank frame, bounds 1 and 2 are
+        #     both blocked at once and the Life was pinned in economy mode for 3000 ticks
+        #     emitting nothing — a total livelock where the pre-hold code merely carried a
+        #     zombie frame and kept hunting. A safety interrupt (`WarriorSurvive` sits
+        #     above the capability skills in the capability planner too) starves the FSM
+        #     the same way with no surface to blame at all. So the release must NOT depend
+        #     on the FSM being stepped, which is precisely what those states withhold: it
+        #     depends only on the frame's deadline and the economy agent's own clock, both
+        #     of which the hold itself keeps advancing. Worst case is now the frame's own
+        #     budget in orchestrator ticks, after which the Life is exactly the pre-hold
+        #     Life — a stale frame, but alive.
+        #
+        # The one extension: an overdue frame first gets `_clear_stale_ui` pointed at it.
+        # A frame past its FULL budget that still cannot yield has forfeited the "a
+        # mid-transaction gump belongs to a live goal" premise that otherwise keeps that
+        # repair away from a live frame, and closing the surface is what makes bounds 1
+        # and 2 reachable again — so when a close lands, the hold is extended one tick to
+        # let the economy agent USE it (the frame then expires on its next tick and the
+        # stack comes back clean, instead of the Life hunting on beside a wedged surface).
+        # Capped at `OVERDUE_REPAIRS` per frame so the extension cannot itself run away.
+        #
+        # DEATH IS THE OTHER OVERRIDE, and it covers the whole EPISODE, not just the
+        # ghost window: `RecoverDeath` is a WORK-planner reflex that runs on
+        # `dead OR death_waiting_resurrection OR death_corpse_pending`, and the corpse
+        # RUN happens entirely after `obs.player.dead` goes false. Keying the override on
+        # `dead` alone took the body away from the corpse leg the tick after
+        # resurrection and deferred gear recovery by up to the frame's whole budget
+        # (measured: 177 ticks for a warrior) — the naked death-loop this module exists
+        # to end, review-caught. The frame simply waits (nobody ticks it, and telemetry
+        # says so with `!frozen`); the hold resumes once the episode closes.
+        frame = self.econ_agent.goal_stack.current
+        self.frame_overdue = bool(
+            frame is not None and frame.deadline_tick is not None
+            and self.econ_agent.ticks > frame.deadline_tick)
+        repaired = self.frame_overdue and self._repair_overdue_frame(obs, frame)
+        holding = (mode != "economy" and frame is not None
+                   and not self._death_episode_open(obs)
+                   and (not self.frame_overdue or repaired))
+        if holding:
+            mode = "economy"
+            # The transaction IS the commitment `econ_grace` exists to establish, so the
+            # entry hysteresis is not re-earned the moment it retires; without this the
+            # Life drops into up to `econ_grace` wander ticks after EVERY transaction
+            # whose rule-side want expired mid-flight — which is every one of them.
+            self._econ_streak = max(self._econ_streak, self.econ_grace)
+        self.holding_frame = holding
+        # `cap` is deliberately NOT rewritten to the frame's capability: `want=` must
+        # stay the RULE's own answer, or fixing the `admitted=` lie re-creates the same
+        # ambiguity on the `want=` side that `telemetry_line`'s docstring says cost
+        # three runs and one wrong root cause.
         self.mode, self.target_cap = mode, cap
         # The admissible SET, for the steering client: the rule's own candidates when
         # the profession exposes them, else exactly the one capability `decide` chose.
@@ -433,6 +561,47 @@ class WarriorLife:
             self.candidates = []
         self._detect_disagreement(obs)
         return action
+
+    def _death_episode_open(self, obs) -> bool:
+        """Is a death still being recovered from — ghost window OR corpse run?
+
+        `RecoverDeath.can_run` is `dead OR death_waiting_resurrection OR
+        death_corpse_pending`, and the last of those is set only AFTER the resurrection
+        lands, so `obs.player.dead` covers barely the first half of an episode. It is
+        the HUNT agent's memory that is read, deliberately: the two agents keep separate
+        memories by design, `decide` sends every dead tick to the hunt agent, and so the
+        hunt agent is the only one that ever owns a death episode. Reading the economy
+        agent's copy instead would consult keys nothing ever writes; reading both would
+        let one stale key there suppress the hold forever.
+        """
+        return bool(
+            obs.player.dead
+            or self.hunt_agent.memory.get("death_waiting_resurrection")
+            or self.hunt_agent.memory.get("death_corpse_pending"))
+
+    def _repair_overdue_frame(self, obs, frame) -> bool:
+        """Point the stale-UI repair at an overdue frame; True if a surface was closed.
+
+        The licence is the frame's own budget: a capability that has spent ALL of it
+        without reaching a yield point is not mid-transaction in any sense a surface can
+        belong to, which is the one premise `_detect_disagreement`'s no-goal guard is
+        protecting (see `_clear_stale_ui`). The two callers can never collide — that one
+        requires an EMPTY goal stack, this one requires a live frame.
+
+        Capped at `OVERDUE_REPAIRS` closes per frame, because a close here also buys the
+        hold one more tick, and an uncapped repair-and-extend against a surface that
+        keeps re-opening would be the unbounded hold in a new costume.
+        """
+        spent = self._overdue_repairs.get(frame.id, 0)
+        if spent >= OVERDUE_REPAIRS:
+            return False
+        if not self._clear_stale_ui(obs):
+            return False
+        # Frame ids are monotonic and a retired frame is never revisited, so the ledger
+        # is REPLACED rather than added to: it holds the live frame alone and cannot
+        # grow for the lifetime of the process.
+        self._overdue_repairs = {frame.id: spent + 1}
+        return True
 
     def _detect_disagreement(self, obs) -> None:
         """Self-report the stall this project kept paying to discover live.
@@ -466,8 +635,11 @@ class WarriorLife:
         else:
             self.rule_gate_disagreement = None
 
-    def _clear_stale_ui(self, obs) -> None:
+    def _clear_stale_ui(self, obs) -> bool:
         """Close a gump nobody owns — the detector as a REPAIR, not just a report.
+
+        Returns True when a surface was actually closed (`_repair_overdue_frame` reads
+        that; `_detect_disagreement` does not care).
 
         Sixteen readiness gates share one "idle UI" clause (no gumps, no popup, no
         shop window, no cursor), so a single surface left open refuses EVERY
@@ -475,10 +647,15 @@ class WarriorLife:
         Life stands still with material at its feet. forge15 live, 2026-07-31: Pim
         wanted `fetch_iron` for 156 ticks with 38 ingots on the ground and `ready=[]`.
 
-        Safe by the detector's own precondition: firing requires NO goal on the stack
-        for `self.disagreement_ticks` straight, so no capability owns the surface being
-        closed — a mid-transaction gump belongs to a live goal and is never touched
-        here. THREE surfaces are closable and all three have been seen live: a gump
+        TWO callers, and each brings its own proof that no capability owns the surface.
+        `_detect_disagreement` brings the original: NO goal on the stack for
+        `self.disagreement_ticks` straight, so nothing is mid-transaction. The second is
+        `_repair_overdue_frame`, added when the same wedge was measured pinning a Life
+        in economy mode indefinitely: a frame that has burned its ENTIRE deadline
+        without once reaching a safe yield point has forfeited the "a mid-transaction
+        gump belongs to a live goal" premise, and the open surface is the documented
+        reason it can neither give up nor expire. A frame INSIDE its budget is still
+        never touched. THREE surfaces are closable and all three have been seen live: a gump
         (`GumpResponse` button 0 — the craft FSM's own close), and a vendor BUY or
         SELL window, answered with an EMPTY item list. ServUO's `VendorBuyReply`
         replies to anything that is not flag 0x02 with `EndVendorBuy`, and the
@@ -504,11 +681,12 @@ class WarriorLife:
             surface = "vendor SELL window"
             action = SellItems(vendor=shop_sell.vendor, items=[])
         else:
-            return
+            return False
         self._stale_ui_closes = getattr(self, "_stale_ui_closes", 0) + 1
         print(f"  ** {self.persona.name}: closing an unowned {surface} — "
               f"it was refusing every capability **")
         self.body.act(action)
+        return True
 
     # --- Agent-compatible surface, so any agent runner (e.g. village._run_worker)
     # drives a WarriorLife unchanged. The HUNT agent is the primary: it does the
