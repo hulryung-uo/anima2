@@ -117,6 +117,7 @@ from __future__ import annotations
 
 from ..contract import BuyItems, Drop, PickUp, PopupRequest, PopupSelect, Position, SellItems, Walk
 from ..geometry import chebyshev, direction_toward
+from ..knobs import knob_int
 from .base import SkillContext, SkillResult, Status
 from .craft import DAGGER_GRAPHIC, MIN_INGOTS, SMITH_TOOL_GRAPHICS, Blacksmith
 from .smelt import INGOT_GRAPHICS
@@ -272,11 +273,15 @@ def _bank_reserve(memory, default: int = 0) -> int:
     gold — the exact rule-vs-gate drift class this module comments on, reachable
     through the `bank_reserve` tuning knob (review-caught when the urgent-bank
     branch hoisted that raw read above craft).
+
+    The clamp itself now lives in `anima2/knobs.py` as `knob_int`, the general
+    form of exactly this read — because the lesson above is not about banking,
+    it is about knobs, and knob N+1 must inherit it without anybody
+    remembering to. This function keeps its name, signature and behavior
+    byte-for-byte (it is referenced by name in the Lives, in `capabilities.py`
+    and in the audit); it is the `bank_reserve` binding of the general read.
     """
-    if "bank_reserve" not in memory:
-        return default
-    reserve = memory.get("bank_reserve", 0)
-    return reserve if type(reserve) is int and reserve > 0 else 0
+    return knob_int(memory, "bank_reserve", default)
 
 
 class BlacksmithMarket(Blacksmith):

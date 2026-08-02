@@ -306,7 +306,20 @@ def _bank_ready(ctx: SkillContext) -> bool:
         # reserve (default 0 == the whole pile, byte-identical to B7). The reserve
         # keeps enough pack gold to buy iron/tools in a supply gap, so a solo
         # capability loop doesn't bank itself broke and stall — see
-        # `WORKING_CAPITAL_RESERVE` and `skills/market.py::BankGold`.
+        # `skills/market.py::BankGold`, which finishes at that same number.
+        #
+        # SIZING is the lesson, and it belongs to whoever writes the key: one
+        # material batch plus one tool replacement (for the smith, `15*5 + 1*13 ==
+        # 88`) is exactly enough that banking down to the reserve still funds both
+        # the `buy_ingots` refill and the `buy_smith_tool` replacement, so registry
+        # order (bank before buy) never needed reordering. A generic
+        # `WORKING_CAPITAL_RESERVE` constant used to sit at the bottom of this file
+        # computing that number and NOTHING ever read it: every Life derives its own
+        # reserve from its own capability configs instead (`carpenter_life.
+        # BANK_RESERVE` = board batch + saw, `tinker_life.BANK_RESERVE` = iron batch
+        # + tool, `warrior_life.BANK_RESERVE` = blade + bandages + chest). Deleted
+        # rather than left standing as a second, unread source for a number three
+        # places must agree on — the audit's single-source discipline.
         and _pack_gold(ctx) > _bank_reserve(ctx.memory)
         and ctx.memory.get("bs_state", "open") not in {"fetch", "fetch_return"}
         and _bank_idle(ctx)
@@ -988,20 +1001,6 @@ _BUY_INGOTS = CapabilityBinding(
 # buy_tool skill class as `tool_price_estimate` — the single config source the
 # leaf-func factory reads (`BuyTool.tool_price_estimate == 13` for the smith's
 # tongs, `BuyHatchet.tool_price_estimate == 25` for the lumberjack's hatchet).
-
-# Suggested working-capital reserve for `bank_gold`'s opt-in `bank_reserve`: keep
-# back enough pack gold to afford ONE iron replenishment batch AND ONE tool
-# replacement (15*5 + 1*13 == 88), so a solo capability loop that banks its
-# surplus can still fund the buy_ingots/buy_smith_tool fallbacks that bridge a
-# supply gap instead of banking itself broke and stalling. Nothing sets
-# `bank_reserve` by default (it stays 0 — byte-identical to B7); the loop/gate
-# opts in by writing `memory["bank_reserve"] = WORKING_CAPITAL_RESERVE`. The iron
-# batch cost reads `BuyIngots`' own config (`buy_amount * buy_price_estimate`) so
-# it stays in lockstep with the buy_ingots gate that spends it.
-WORKING_CAPITAL_RESERVE = (
-    BuyIngots.buy_amount * BuyIngots.buy_price_estimate
-    + TOOL_BUY_AMOUNT * BuyTool.tool_price_estimate
-)
 
 _TOOLBUY_TRANSACTION_KEYS = (
     "toolbuy_leg",

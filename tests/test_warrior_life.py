@@ -16,7 +16,7 @@ from anima2.skills.warrior import (
 from anima2.warrior_life import (
     ARMOR_PRICE,
     BANDAGE_BATCH_COST,
-    BANK_ABOVE,
+    BANK_RESERVE,
     LOW_BANDAGES,
     WEAPON_PRICE,
     decide_mode,
@@ -88,7 +88,7 @@ def test_low_bandages_restocks():
 
 
 def test_surplus_gold_banks():
-    obs = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(BANK_ABOVE + 1)])
+    obs = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(BANK_RESERVE + 1)])
     assert decide_mode(obs, dict(ROUTES)) == ("economy", "bank_gold")
 
 
@@ -129,7 +129,7 @@ def test_blade_and_bandages_outrank_armor():
     dry = _obs([_backpack(), _worn_katana(), _bandages(1), _gold(500)])  # also chestless
     assert decide_mode(dry, dict(ROUTES)) == ("economy", "buy_bandage")
     # ...and armor outranks banking a surplus.
-    rich = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(BANK_ABOVE + 1)])
+    rich = _obs([_backpack(), _worn_katana(), _bandages(50), _gold(BANK_RESERVE + 1)])
     assert decide_mode(rich, dict(ROUTES)) == ("economy", "buy_armor")
 
 
@@ -148,7 +148,7 @@ def test_a_weaker_worn_blade_is_traded_up_once_there_is_surplus():
     lean = _obs([_backpack(), _worn_cutlass(), _worn_chest(), _bandages(50), _gold(surplus - 1)])
     assert decide_mode(lean, dict(ROUTES)) == ("hunt", None)
     # Already wielding the best blade -> no upgrade (banks the surplus instead).
-    best = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(BANK_ABOVE + 1)])
+    best = _obs([_backpack(), _worn_katana(), _worn_chest(), _bandages(50), _gold(BANK_RESERVE + 1)])
     assert decide_mode(best, dict(ROUTES)) == ("economy", "bank_gold")
 
 
@@ -157,7 +157,7 @@ def test_survival_needs_outrank_a_blade_upgrade():
     from anima2.warrior_life import UPGRADE_RESERVE
 
     worn_cutlass = _item(0x702, CUTLASS_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
-    rich = _gold(WEAPON_PRICE + UPGRADE_RESERVE + BANK_ABOVE)
+    rich = _gold(WEAPON_PRICE + UPGRADE_RESERVE + BANK_RESERVE)
     # Dry on bandages while holding a weaker blade -> restock first, upgrade later.
     dry = _obs([_backpack(), worn_cutlass, _worn_chest(), _bandages(1), rich])
     assert decide_mode(dry, dict(ROUTES)) == ("economy", "buy_bandage")
@@ -360,13 +360,83 @@ def test_a_tuned_econ_grace_changes_the_hysteresis_window():
     assert life.mode == "economy"       # tick 2: tuned grace elapsed
 
 
+def test_a_malformed_econ_grace_clamps_to_two_not_zero_or_one():
+    # `knob_param`'s natural floor is 0, and 0 here means NO hysteresis: `_econ_streak`
+    # is incremented before `streak < grace` is tested, so 1 is no better — both commit
+    # to the economy on the first tick the rule asks for it. That is precisely the
+    # mid-equip window ECON_GRACE exists to filter (blade on the cursor, absent from
+    # `items`): switching there interrupts EquipWeapon, strands the blade, and buys a
+    # second sword. So the floor is 2, the smallest window that grants any grace at all.
+    # Review-caught: this shipped at floor 0, where every malformed write landed — a
+    # clamp that was numerically real and behaviorally a no-op.
+    from anima2.warrior_life import WarriorLife
+
+    weaponless = _obs([_backpack(), _bandages(50), _gold(100)])
+    for malformed in (-100, -1, 0, 1, 2.5, True, "6", [3]):
+        life = WarriorLife(body=_MockBody([weaponless] * 6),
+                           persona=Persona(name="Bram"),
+                           routes={"weapon_vendor_spot": ((10, 10),)},
+                           econ_grace=malformed)
+        assert life.econ_grace == 2, f"econ_grace={malformed!r} escaped the floor"
+        life.tick()
+        assert life.mode == "hunt", (
+            f"econ_grace={malformed!r} switched on the FIRST tick — a genome axis "
+            f"exploring must get a floor, not a Life with no hysteresis"
+        )
+        life.tick()
+        assert life.mode == "economy"   # the floor is a grace, not a refusal to switch
+
+
+def test_a_tuned_disagreement_window_moves_the_detectors_trigger():
+    # The §E "retry policy" axis. RULE-ONLY — nothing outside `warrior_life` reads it —
+    # so tuning it cannot pull the rule away from a gate; what it moves is how long the
+    # orchestrator tolerates a want-vs-refuse standoff before reporting AND repairing
+    # it. forge15 sat 156 ticks in that state and forge16 200, which is the evidence
+    # this axis exists to search.
+    from anima2.warrior_life import DISAGREEMENT_TICKS, ECON_GRACE, WarriorLife
+
+    obs = _rich_unarmed_obs()
+    life = WarriorLife(body=_MockBody([obs] * (ECON_GRACE + DISAGREEMENT_TICKS + 4)),
+                       persona=Persona(name="Bram"),
+                       routes={"weapon_vendor_spot": ((10, 10),)},
+                       disagreement_ticks=2)
+    life.econ_agent.memory["bs_state"] = "fetch"  # a stale mid-fetch marker
+    for _ in range(ECON_GRACE + 2):
+        life.tick()
+    assert life.rule_gate_disagreement is not None, "the tuned window never fired"
+    cap, streak = life.rule_gate_disagreement
+    # Fired EARLY: at the module default this streak is still far short of the trigger.
+    assert cap == "buy_weapon" and 2 <= streak < DISAGREEMENT_TICKS
+
+
+def test_a_malformed_disagreement_window_clamps_to_one_not_zero():
+    # The floor is the point. `knob_int`'s natural floor is 0 (right for a gold
+    # reserve), and at 0 this comparison — `streak >= window` — is true on every tick
+    # including a healthy one, so a HEALTHY life would report a disagreement and close
+    # a UI surface every tick. An exploring axis must get a floor, not that.
+    from anima2.warrior_life import ECON_GRACE, WarriorLife
+
+    obs = _rich_unarmed_obs()
+    life = WarriorLife(body=_MockBody([obs] * (ECON_GRACE + 6)),
+                       persona=Persona(name="Bram"),
+                       routes={"weapon_vendor_spot": ((10, 10),)},
+                       disagreement_ticks=0)
+    assert life.disagreement_ticks == 1
+    for _ in range(ECON_GRACE + 4):  # healthy: the gate agrees, no stale market state
+        life.tick()
+    assert life.rule_gate_disagreement is None
+
+
 def test_every_life_writes_its_own_derived_reserve_at_construction():
     from anima2.carpenter_life import CarpenterLife
     from anima2.mage_life import MageLife
+    from anima2.tinker_life import TinkerLife
     from anima2.warrior_life import WarriorLife
     from anima2.woodsman_life import WoodsmanLife
 
-    for cls in (WarriorLife, MageLife, WoodsmanLife, CarpenterLife):
+    # TinkerLife was missing from this loop although it defines its own
+    # DEFAULT_BANK_RESERVE — the fifth Life inherited the mechanism and not the proof.
+    for cls in (WarriorLife, MageLife, WoodsmanLife, CarpenterLife, TinkerLife):
         life = cls(body=_MockBody([]), persona=Persona(name="T"))
         assert life.econ_agent.memory["bank_reserve"] == cls.DEFAULT_BANK_RESERVE > 0, (
             f"{cls.__name__}: a zero reserve banks the working capital too — the "

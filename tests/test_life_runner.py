@@ -143,7 +143,7 @@ def test_forgetting_a_load_bearing_spec_field_is_a_construction_error():
     # The whole point of the harness: omission is a TypeError, not a live rediscovery.
     with pytest.raises(TypeError):
         LifeSpec(profession="carpenter", persona_name="Sten",
-                 account_prefix="x", life_factory=lambda *a: None)  # no stage
+                 account_prefix="x", life_factory=lambda *a, **k: None)  # no stage
 
 
 def test_monitor_ports_allocates_distinct_ports_only_when_enabled():
@@ -338,3 +338,74 @@ def test_pinned_runners_hand_the_map_to_the_agent_memory():
             continue
         assert re.search(r'["\']shop_serials["\']\s*[:\]]', src), (
             f"{path.name} collects a pin but never puts it in an agent memory")
+
+
+# --- the staged line: the reserve a live operator reads must be the one in force -----
+
+
+class _MockBody:
+    """A body that answers `observe()` with nothing; no shard, no pumps."""
+
+    connected = True
+
+    def observe(self):
+        return None
+
+    def act(self, action):
+        pass
+
+
+def _carpenter_spec(**knobs):
+    from anima2.carpenter_life import CarpenterLife
+
+    return LifeSpec(profession="carpenter", persona_name="Sten", account_prefix="x",
+                    life_factory=lambda body, persona, routes, **k: CarpenterLife(
+                        body=body, persona=persona, routes=routes, **k),
+                    stage=lambda gm, s, b: None, knobs=dict(knobs))
+
+
+def test_the_staged_line_reports_the_reserve_the_life_actually_keeps():
+    """`run_carpenter_life` baked `carpenter_life.BANK_RESERVE` into `Staged.banner`
+    inside its `stage()` — which `LifeRunner.run` calls BEFORE `build_life()`, so the
+    number was structurally incapable of tracking a tuned value. Accurate only while
+    nothing tuned that runner, and a false number printed to a live operator the moment
+    one did. It is read off the BUILT Life now, through `market._bank_reserve` — the one
+    read point the decide rule, the `bank_gold` gate and `BankGold`'s FSM already share.
+    """
+    from anima2.carpenter_life import BANK_RESERVE
+    from anima2.life_runner import LifeRunner, Staged
+
+    staged = Staged(routes={}, home=(10, 20), seed_gold=99, banner="with a saw")
+
+    plain = LifeRunner(_carpenter_spec())
+    line = plain.staged_line(plain.build_life(_MockBody(), {}), staged)
+    assert line == f"staged: Sten@(10, 20) and 99g seed  (reserve {BANK_RESERVE})  with a saw"
+
+    tuned = LifeRunner(_carpenter_spec(bank_reserve=4242))
+    assert "(reserve 4242)" in tuned.staged_line(tuned.build_life(_MockBody(), {}), staged)
+    assert f"reserve {BANK_RESERVE}" not in tuned.staged_line(
+        tuned.build_life(_MockBody(), {}), staged)
+
+
+def test_a_specs_own_econ_memory_reserve_is_what_the_line_reports():
+    """The read must happen AFTER `staged.econ_memory` lands, because that write is the
+    last one — a spec that carries `bank_reserve` itself would otherwise be reported at
+    the constructor's value while the rule and the gate used the spec's."""
+    from anima2.life_runner import LifeRunner, Staged
+
+    runner = LifeRunner(_carpenter_spec())
+    life = runner.build_life(_MockBody(), {})
+    staged = Staged(routes={}, home=(1, 2), econ_memory={"bank_reserve": 77})
+    life.econ_agent.memory.update(staged.econ_memory)   # the ordering `run()` uses
+    assert runner.staged_line(life, staged) == "staged: Sten@(1, 2), broke  (reserve 77)"
+
+
+def test_a_malformed_reserve_is_reported_at_the_floor_every_reader_sees():
+    """A genome axis explores. Whatever it writes, the printed number must be the number
+    the rule and the gate act on — a line that reported the raw value would document the
+    exact rule-vs-gate drift it was supposed to make visible."""
+    from anima2.life_runner import LifeRunner, Staged
+
+    runner = LifeRunner(_carpenter_spec(bank_reserve=-500))
+    life = runner.build_life(_MockBody(), {})
+    assert "(reserve 0)" in runner.staged_line(life, Staged(routes={}, home=(0, 0)))

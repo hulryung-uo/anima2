@@ -38,8 +38,8 @@ from __future__ import annotations
 
 from .capabilities import _valid_spot, craft_spot_within
 from .contract import Observation
-from .skills.craft import PICKUP_RADIUS
-from .skills.harvest import BACKPACK_LAYER
+from .knobs import knob_int
+from .obsview import on_ground, owns, pack_amount
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
 from .skills.smelt import INGOT_GRAPHICS
@@ -67,37 +67,26 @@ BANK_RESERVE = IRON_BATCH_COST + TOOL_COST
 #: single purchase any tinker errand makes, so spare gold beyond it is profit no
 #: errand can spend. Without this band the patient bank branch only ever fires in a
 #: supply GAP, and a healthy miner never opens one.
+#:
+#: Overridable per instance via `TinkerLife(..., bank_trip_surplus=...)` — a §E
+#: "priority band" axis. RULE-ONLY: the only bank gate is `gold > bank_reserve`
+#: (`capabilities.py::_bank_ready`), and the urgent band `gold > reserve + surplus` is
+#: STRICTLY STRICTER than that for any surplus >= 0, so tuning it up can never make the
+#: rule want a deposit the gate refuses. That "for any surplus >= 0" is why the read
+#: below goes through `knobs.knob_int` and not `memory.get`: at a NEGATIVE value the
+#: band becomes looser than the gate and the rule wants `bank_gold` the gate refuses —
+#: the same drift `bank_reserve` already paid for, arriving through a second knob.
 BANK_TRIP_SURPLUS = IRON_BATCH_COST
 
 _TOOL_GRAPHICS = frozenset(TinkerTongs.craft_tool_graphics)
 _CRAFT_RADIUS = getattr(TinkerTongs, "craft_spot_radius", 0)
 
 
-def _backpack(obs: Observation) -> int | None:
-    return next((i.serial for i in obs.items
-                 if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-
-
-def _pack(obs: Observation, graphics) -> int:
-    bp = _backpack(obs)
-    if bp is None:
-        return 0
-    if isinstance(graphics, int):
-        graphics = {graphics}
-    return sum(i.amount for i in obs.items if i.graphic in graphics and i.container == bp)
-
-
-def _owns_tool(obs: Observation) -> bool:
-    """Held or worn — the definition the widened `_owned_tool` gate shares."""
-    bp = _backpack(obs)
-    return any(i.graphic in _TOOL_GRAPHICS and i.container in (bp, obs.player.serial)
-               for i in obs.items)
-
-
-def _iron_on_ground(obs: Observation) -> bool:
-    """Delivered ingots WITHIN PICKUP REACH — the fetch gate's own distance clause."""
-    return any(i.graphic in INGOT_GRAPHICS and i.container is None
-               and i.distance <= PICKUP_RADIUS for i in obs.items)
+# This life was written after the audit and still copy-pasted `_backpack`, `_pack`,
+# `_owns_tool` and `_iron_on_ground` from the carpenter — which is the clearest evidence
+# there is that the copies were the defect and not the habit. They are `obsview`'s
+# `pack_amount`, `owns` and `on_ground` now: held-or-worn is the definition the widened
+# `_owned_tool` gate shares, and the ground check is the fetch gate's own distance clause.
 
 
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
@@ -109,27 +98,30 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """
     if obs.player.dead:
         return "hunt", None  # RecoverDeath (a work-planner reflex) owns the death window
-    gold = _pack(obs, GOLD_GRAPHIC)
-    if not _owns_tool(obs):
+    gold = pack_amount(obs, GOLD_GRAPHIC)
+    if not owns(obs, _TOOL_GRAPHICS):
         if gold >= TOOL_COST and _valid_spot(memory.get(BuyTinkerTool.vendor_spot_key)):
             return "economy", "buy_tinker_tool"
         return "hunt", None  # no tool and no means — wait, never stall at a shop
-    tongs = _pack(obs, TONGS_GRAPHIC)
+    tongs = pack_amount(obs, TONGS_GRAPHIC)
     if tongs >= SELL_TONGS_AT and _valid_spot(memory.get(SellTongs.vendor_spot_key)):
         return "economy", "sell_tongs"
-    iron = _pack(obs, INGOT_GRAPHICS)
+    iron = pack_amount(obs, INGOT_GRAPHICS)
     # Free material outranks everything money can buy: delivered iron is the whole
     # margin (7g/ingot delivered vs +2g/ingot bought).
-    if _iron_on_ground(obs) and iron < FETCH_IRON_PACK_CAP:
+    if on_ground(obs, INGOT_GRAPHICS) and iron < FETCH_IRON_PACK_CAP:
         return "economy", "fetch_iron"
     reserve = _bank_reserve(memory, BANK_RESERVE)
+    # Both knobs read through the same clamp (`knobs.py`), so a malformed value moves
+    # this rule and the `bank_gold` gate to the same place instead of prying them apart.
+    surplus = knob_int(memory, "bank_trip_surplus", BANK_TRIP_SURPLUS)
     # Pockets full -> the bank outranks even a ready craft. The patient branch below
     # only fires when nothing above it wants a turn, and forge4 (2026-07-30) proved
     # live that a HEALTHY supply chain never opens that gap: with the miner
     # delivering continuously, Pim finished a 1500-tick day carrying 210g while
     # bank_gold sat in the ready set throughout. Fetching stays above this (ground
     # drops decay; pack gold does not).
-    if gold > reserve + BANK_TRIP_SURPLUS and _valid_spot(memory.get("banker_spot")):
+    if gold > reserve + surplus and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     # Craft while the batch is short and the material covers what is left — the craft
     # gate's own arithmetic (`per_item * (batch - made)`), and the gate's own spot
@@ -160,7 +152,23 @@ class TinkerLife(WarriorLife):
 
     decide = staticmethod(decide_mode)
     DEFAULT_BANK_RESERVE = BANK_RESERVE
+    #: Per-class default for the `bank_trip_surplus` the constructor writes.
+    DEFAULT_BANK_TRIP_SURPLUS = BANK_TRIP_SURPLUS
+    #: EXTENDS the base allowlist, never replaces it — the tinker is the only profession
+    #: with a knob of its own, and a spec that dropped the inherited three would reject
+    #: `bank_reserve` on the one Life whose reserve matters most (it is the flagship
+    #: positive-margin loop).
+    KNOBS = WarriorLife.KNOBS | {"bank_trip_surplus"}
 
     def __init__(self, body, persona, profession: str = "tinker",
-                 routes: dict | None = None, **knobs) -> None:
+                 routes: dict | None = None, *,
+                 bank_trip_surplus: int | None = None, **knobs) -> None:
         super().__init__(body, persona, profession=profession, routes=routes, **knobs)
+        # A MEMORY KEY, not an instance attribute, because `decide_mode` is a
+        # staticmethod over `(obs, memory)` — a knob a rule reads has to be somewhere
+        # the rule can see, and the econ memory is the very dict the gates read. Written
+        # raw; every reader clamps (`knobs.knob_int`), which is what keeps the two sides
+        # from disagreeing about a malformed value.
+        self.econ_agent.memory["bank_trip_surplus"] = (
+            self.DEFAULT_BANK_TRIP_SURPLUS if bank_trip_surplus is None
+            else bank_trip_surplus)

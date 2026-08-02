@@ -13,8 +13,10 @@ contents, bank contents).
 Two halves, deliberately separated:
 
 - **`Milestone`/`MILESTONES`** — pure data, mirroring v1 `../anima/anima/
-  planner/modes.py::Mode`'s zero-import discipline: no anima2-internal imports
-  beyond `contract`/`skills.base`. `is_achieved`/`progress` mirror v1 `../anima/
+  planner/modes.py::Mode`'s zero-import discipline: it never reaches into a
+  `Skill` SUBCLASS's own module for a graphic or a skill id (see the banner
+  above `Milestone` for why that, and not "zero anima2-internal imports", is
+  the property that was ever true). `is_achieved`/`progress` mirror v1 `../anima/
   anima/planner/goals.py::Goal`'s `is_satisfied_fn`/`progress_fn` shape exactly
   (a predicate + a `[0, 1]`-clamped progress float, each independently callable
   against a `SkillContext`).
@@ -59,17 +61,31 @@ from .cognition import CognitionDecision, _parse_json  # module-private, reused 
 from .contract import Observation, Position
 from .llm import LLMClient
 from .memory import Episode, EpisodicMemory
+from .obsview import bank_amount, pack_amount
 from .skills.base import Goal, SkillContext
 
 # ============================================================================
-# Pure data: `Milestone` + `MILESTONES`. Zero anima2-internal imports beyond
-# `contract`/`skills.base` from here down to `_mid_transaction` — mirrors v1
-# `modes.py::Mode`'s "loads anywhere" discipline (item 3's own citation of the
-# same file, for the same reason). Graphic/skill-id constants below are
+# Pure data: `Milestone` + `MILESTONES`. Graphic/skill-id constants below are
 # duplicated from the relevant `skills/*.py` module rather than imported —
 # this codebase's own established convention (`skills/hunt.py` duplicates
 # `GOLD_GRAPHIC` instead of importing `skills/market.py`'s identical one) —
-# so this section never has to reach into a `Skill` subclass's own module.
+# so this section never has to reach into a `Skill` SUBCLASS's own module.
+#
+# That last clause is what the discipline actually protects, and it is worth
+# stating precisely because the old wording ("zero anima2-internal imports
+# beyond `contract`/`skills.base`", mirroring v1 `modes.py::Mode`'s "loads
+# anywhere" property) had already been overtaken by its own file: this
+# module's own `from .skills.base import ...` executes `anima2/skills/
+# __init__.py`, which imports all twelve Skill modules — measured, not
+# assumed (`import
+# anima2.curriculum` leaves `anima2.skills.market`, `.craft`, `.harvest` and
+# `.hunt` in `sys.modules`, which is `obsview`'s ENTIRE import closure). So
+# `from .obsview import ...` above adds nothing to the dependency graph and
+# cannot cycle (`obsview` imports neither `curriculum` nor `profession`).
+# `obsview` is the layer BELOW the skills, not a Skill module: it is the one
+# definition of what an Observation says we have, and the four hand-written
+# readbacks that used to live here were four more copies of exactly the
+# functions whose drift `obsview.py`'s docstring records.
 # ============================================================================
 
 
@@ -95,8 +111,9 @@ class Milestone:
 
 # --- shared obs-scanning helpers -------------------------------------------
 
-_BACKPACK_LAYER = 0x15  # Server/Item.cs Layer.Backpack — matches skills/harvest.py::BACKPACK_LAYER
-_BANKBOX_LAYER = 0x1D  # Server/Item.cs Layer.Bank — matches skills/market.py::BANKBOX_LAYER
+# `_BACKPACK_LAYER`/`_BANKBOX_LAYER` (Server/Item.cs Layer.Backpack 0x15 and Layer.Bank
+# 0x1D) are gone with the two readbacks that were their only readers: `obsview`'s
+# `pack_serial`/`bank_serial` own those layer ids now, and they own them ONCE.
 
 _MINING_SKILL_ID = 45  # matches skills/harvest.py::SKILL_MINING
 _FISHING_SKILL_ID = 18  # matches skills/harvest.py::SKILL_FISHING
@@ -111,26 +128,22 @@ _GOLD_GRAPHIC = 0x0EED  # Scripts/Items/Consumables/Gold.cs — matches skills/h
 _DAGGER_GRAPHIC = 0x0F52  # matches skills/craft.py::DAGGER_GRAPHIC
 
 
-def _backpack(obs: Observation) -> Any:
-    return next((i for i in obs.items if i.layer == _BACKPACK_LAYER and i.container == obs.player.serial), None)
-
-
-def _bankbox(obs: Observation) -> Any:
-    return next((i for i in obs.items if i.layer == _BANKBOX_LAYER and i.container == obs.player.serial), None)
-
-
-def _pack_amount(obs: Observation, graphics: frozenset[int]) -> int:
-    bp = _backpack(obs)
-    if bp is None:
-        return 0
-    return sum(i.amount for i in obs.items if i.graphic in graphics and i.container == bp.serial)
-
-
-def _bankbox_amount(obs: Observation, graphics: frozenset[int]) -> int:
-    box = _bankbox(obs)
-    if box is None:
-        return 0
-    return sum(i.amount for i in obs.items if i.graphic in graphics and i.container == box.serial)
+# `_backpack`, `_bankbox`, `_pack_amount` and `_bankbox_amount` were four more
+# hand-written copies of `obsview`'s readbacks. The milestone builders below call
+# `obsview.pack_amount`/`obsview.bank_amount` directly now — no local alias, because an
+# alias is a second name for the definition and a second name is how the copies started.
+#
+# This copy carried NONE of the three drift defects `obsview.py`'s docstring records —
+# it had the `bp is None` guard, the `in graphics` form and the owner filter, all three.
+# Which is exactly why it is worth deduping rather than leaving alone: the copies that
+# broke live were also correct on the day they were written, and every one of them
+# drifted only once the definition had moved somewhere else.
+#
+# `bank_amount(obs, graphics)` is NEW in `obsview` and exists because of this file:
+# `obsview.banked_amount` was pinned to gold, `_bankbox_amount` was graphics-
+# parameterised, and narrowing the general one to fit would have changed
+# `_bankbox_threshold`'s documented shape. So the general form went into `obsview` and
+# `banked_amount` became its gold binding, keeping its own deposit-proof lesson.
 
 
 def _skill_base(obs: Observation, skill_id: int) -> float | None:
@@ -173,25 +186,25 @@ def _pack_threshold(graphics: frozenset[int], threshold: int) -> tuple[Callable[
     compose several reward-bearing phases under one skill name)."""
 
     def is_achieved(ctx: SkillContext) -> bool:
-        return _pack_amount(ctx.obs, graphics) >= threshold
+        return pack_amount(ctx.obs, graphics) >= threshold
 
     def progress(ctx: SkillContext) -> float:
-        return _clamp(_pack_amount(ctx.obs, graphics) / threshold)
+        return _clamp(pack_amount(ctx.obs, graphics) / threshold)
 
     return is_achieved, progress
 
 
 def _bankbox_threshold(graphics: frozenset[int], threshold: int) -> tuple[Callable[[SkillContext], bool], Callable[[SkillContext], float]]:
     """Same shape as `_pack_threshold`, but reading the bank box's own
-    container contents (`_bankbox_amount`) — the spec's own "bank 100 gold"
+    container contents (`obsview.bank_amount`) — the spec's own "bank 100 gold"
     example: obs-derived, unambiguous, and immune to a pack count that's
     merely passing through on its way to the vendor."""
 
     def is_achieved(ctx: SkillContext) -> bool:
-        return _bankbox_amount(ctx.obs, graphics) >= threshold
+        return bank_amount(ctx.obs, graphics) >= threshold
 
     def progress(ctx: SkillContext) -> float:
-        return _clamp(_bankbox_amount(ctx.obs, graphics) / threshold)
+        return _clamp(bank_amount(ctx.obs, graphics) / threshold)
 
     return is_achieved, progress
 

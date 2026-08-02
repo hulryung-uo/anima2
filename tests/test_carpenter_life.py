@@ -26,7 +26,15 @@ BP = 0x50
 SAW = sorted(BuySaw.owned_tool_graphics)[0]
 BOARD = sorted(FetchBoards.fetched_graphics)[0]
 FURNITURE = SellFurniture.sold_graphic
-ROUTES = {"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),)}
+#: The REAL wiring, not a reduced one: both production construction sites write
+#: `craft_spot` into the economy agent's memory before the first tick
+#: (`village.run_supply_pair` and `run_carpenter_life`'s `Staged.econ_memory`), and the
+#: craft gate reads it. `_obs` stands the player at (5, 5), so this is "on the stand" —
+#: without the key the fixture was testing a configuration that never runs, and the rule
+#: wanted a craft the gate refuses. `tests/test_life_gate_concordance.py` and
+#: `tests/test_tinkering.py` already carried the key for exactly this reason.
+ROUTES = {"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
+          "craft_spot": (5, 5)}
 
 
 def _item(serial, graphic, amount=1, *, container=BP, layer=0):
@@ -183,3 +191,68 @@ def test_wanting_a_pickup_it_cannot_reach_is_refused():
     far = _obs([_backpack(), _saw(), _far_boards(PICKUP_RADIUS + 1),
                 _item(0x902, GOLD_GRAPHIC, BOARD_BATCH_COST)])
     assert decide_mode(far, dict(ROUTES)) == ("economy", "buy_boards")
+
+
+# --- the craft branch: the one place this rule used to break its own invariant -------
+#
+# Found by a differential probe over 30,000 randomized carpenter states — the ONLY
+# forward-concordance violation across all five Lives (150,000 states), 308 of them. The
+# terminal `return "economy", "craft_carpentry"` was unguarded while the gate
+# (`capabilities._make_craft_ready`) applies TWO more clauses, so the rule could want a
+# craft admission refuses. That is not a missed craft, it is a PERMANENT want-but-never-
+# ready: with boards already in the pack nothing below fires, and once
+# `disagreement_ticks` elapses `warrior_life._clear_stale_ui` closes a UI surface EVERY
+# tick on a perfectly healthy agent (16 unowned-vendor-window closes in 30 ticks,
+# measured). Both tests below fail without the guard.
+
+
+def _stocked():
+    return [_backpack(), _saw(), _item(0x901, BOARD, BOARDS_PER_ITEM)]
+
+
+def _gate_refuses(obs, memory) -> bool:
+    from anima2.capabilities import ready_capability_ids
+    from anima2.skills.base import SkillContext
+
+    ctx = SkillContext(obs=obs, persona=Persona(name="T"), memory=dict(memory))
+    return "craft_carpentry" not in ready_capability_ids("carpenter", ctx)
+
+
+def test_a_carpenter_off_its_stand_waits_instead_of_wanting_a_refused_craft():
+    # The live-shaped half: `FetchBoards` walks up to PICKUP_RADIUS (6) to a delivered
+    # pile — TWICE the craft radius — and has no walk-home leg, so a carpenter can end a
+    # fetch standing outside the gate's own drift tolerance with a full pack of boards.
+    from anima2.carpenter_life import _CRAFT_RADIUS
+
+    obs = _obs(_stocked())  # the player stands at (5, 5)
+    on_stand = {**ROUTES, "craft_spot": (5, 5)}
+    assert decide_mode(obs, on_stand) == ("economy", "craft_carpentry")
+    edge = {**ROUTES, "craft_spot": (5 + _CRAFT_RADIUS, 5 + _CRAFT_RADIUS)}
+    assert decide_mode(obs, edge) == ("economy", "craft_carpentry")
+    wandered = {**ROUTES, "craft_spot": (5 + _CRAFT_RADIUS + 1, 5)}
+    assert _gate_refuses(obs, wandered)
+    assert decide_mode(obs, wandered) == ("hunt", None)
+    # ...and the same for a spot that was never wired, or wired malformed.
+    for spot in ({}, {"craft_spot": None}, {"craft_spot": (5, "5")}):
+        memory = {k: v for k, v in ROUTES.items() if k != "craft_spot"} | spot
+        assert _gate_refuses(obs, memory), spot
+        assert decide_mode(obs, memory) == ("hunt", None), spot
+
+
+def test_a_throne_it_cannot_sell_does_not_become_a_forever_craft():
+    # The gate allows one throne per goal (`CarpenterCraft.craft_batch == 1`) and refuses
+    # while one is already in the pack. `sell_furniture` is the only way to clear it and
+    # it needs a vendor route — and `run_supply_pair` stages with `strict=False`, so an
+    # UNSET vendor_spot is a tolerated, documented live outcome (a Banker resolving to
+    # the Weaponsmith's serial leaves the key unset and the run proceeds). Sten still
+    # has his staged saw and still gets boards from Bjorn, so without this clause he
+    # crafts exactly one throne and then wants a craft the gate refuses forever.
+    from anima2.carpenter_life import CRAFT_BATCH
+
+    unrouted = {k: v for k, v in ROUTES.items() if k != "vendor_spot"}
+    held = _obs([*_stocked(), _item(0x903, FURNITURE, CRAFT_BATCH)])
+    assert _gate_refuses(held, unrouted)
+    assert decide_mode(held, unrouted) == ("hunt", None)
+    # With the route wired it is a SALE, not a wait — the clause blocks the craft, not
+    # the chain.
+    assert decide_mode(held, dict(ROUTES)) == ("economy", "sell_furniture")

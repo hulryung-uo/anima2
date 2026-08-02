@@ -18,6 +18,7 @@ import argparse
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from .agent import Agent
 from .capabilities import CAPABILITIES, CapabilityPolicy
@@ -26,6 +27,13 @@ from .contract import Observation, Say, Walk
 from .control import GmControl
 from .ipc_body import IpcBody, ResilientIpcBody
 from .memory import Episode
+# The ONE definition of "what does this Observation say we have" (see `obsview.py`'s
+# docstring for what the hand-written copies drifted into). Module level, not
+# function-local like most of this file's imports: `obsview` sits BELOW everything
+# village.py touches — its whole import closure is `contract` + four `skills` modules,
+# every one of which is already loaded by this file's own top-level imports — so it
+# costs nothing and cannot cycle.
+from .obsview import pack_amount, pack_serial
 from .persona import Persona
 from .profession import (
     BANKER_SPOT,
@@ -87,21 +95,21 @@ def _persona_for(prof: Profession, idx: int) -> Persona:
 # `--chronicle` is set — every detector returns `None` when nothing fired.
 # ============================================================================
 
+#: Ingots one dagger consumes — the arithmetic `_crafted_daggers` checks a craft against.
+_CHRONICLE_DAGGER_INGOTS = 3
 #: Mirrors `skills/smelt.py::INGOT_GRAPHICS`/`curriculum.py::_INGOT_GRAPHICS`
 #: — duplicated, not imported, matching this codebase's established
 #: "duplicate a handful of graphic constants rather than reach into a
 #: skill's own module" convention (see curriculum.py's own module docstring).
-_CHRONICLE_BACKPACK_LAYER = 0x15
-_CHRONICLE_DAGGER_INGOTS = 3
 _CHRONICLE_INGOT_GRAPHICS = frozenset({0x1BEF, 0x1BF0, 0x1BF1, 0x1BF2})
 
 
 def _pack_ingot_count(obs: Observation) -> int:
-    bp = next((i for i in obs.items if i.layer == _CHRONICLE_BACKPACK_LAYER
-              and i.container == obs.player.serial), None)
-    if bp is None:
-        return 0
-    return sum(i.amount for i in obs.items if i.graphic in _CHRONICLE_INGOT_GRAPHICS and i.container == bp.serial)
+    """Ingots in OUR backpack. The body was a hand-written readback (its own
+    `_CHRONICLE_BACKPACK_LAYER`, its own owner filter, its own `bp is None` guard); it is
+    `obsview.pack_amount` now. The NAME and signature stay: `live_chronicle.py`,
+    `live_forum_chronicle.py` and `tests/test_village_chronicle.py` all import it."""
+    return pack_amount(obs, _CHRONICLE_INGOT_GRAPHICS)
 
 
 def _reward_if_named(
@@ -1465,7 +1473,6 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     from .carpenter_life import SAW_COST, CarpenterLife
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .skills.carpentry import SellFurniture
-    from .skills.harvest import BACKPACK_LAYER
     from .skills.hunt import GOLD_GRAPHIC
     from .skills.craft import PICKUP_RADIUS
     from .skills.woodwork import BOARD_GRAPHIC, LOG_GRAPHIC
@@ -1599,14 +1606,10 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
         t.start()
         time.sleep(0.7)
 
-    def _pack(obs, graphic):
-        if obs is None:
-            return 0
-        bp = next((i.serial for i in obs.items if i.layer == BACKPACK_LAYER
-                   and i.container == obs.player.serial), None)
-        return sum(i.amount for i in obs.items
-                   if i.graphic == graphic and i.container == bp) if bp else 0
-
+    # `_pack` was written out here; it is `obsview.pack_amount` now, and it carried BOTH
+    # recorded drift defects at once — `... if bp else 0` (a backpack whose serial is
+    # literally 0 reads as ABSENT) and `i.graphic == graphic` (hand a set to that form and
+    # it answers a silent 0, not an error). See `obsview.pack_amount`'s docstring.
     while any(t.is_alive() for t in threads):
         time.sleep(4.0)
         w_obs = getattr(bjorn.body, "last_obs", None)
@@ -1646,11 +1649,14 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
         print(f"  bjorn: {_layers(bjorn, 'lumberjack')}")
         print(f"  sten : {_layers(sten, 'carpenter')}")
         print(f"— supply pair  bjorn[{bjorn.mode}/{bjorn.target_cap} "
-              f"logs={_pack(w_obs, LOG_GRAPHIC)} boards={_pack(w_obs, BOARD_GRAPHIC)} "
-              f"gold={_pack(w_obs, GOLD_GRAPHIC)}]  "
+              f"logs={pack_amount(w_obs, LOG_GRAPHIC)} "
+              f"boards={pack_amount(w_obs, BOARD_GRAPHIC)} "
+              f"gold={pack_amount(w_obs, GOLD_GRAPHIC)}]  "
               f"drop[bjorn_sees={_ground(w_obs)} sten_sees={_ground(c_obs)}]  "
-              f"sten[{sten.mode}/{sten.target_cap} boards={_pack(c_obs, BOARD_GRAPHIC)} "
-              f"furniture={_pack(c_obs, FURNITURE)} gold={_pack(c_obs, GOLD_GRAPHIC)}] —")
+              f"sten[{sten.mode}/{sten.target_cap} "
+              f"boards={pack_amount(c_obs, BOARD_GRAPHIC)} "
+              f"furniture={pack_amount(c_obs, FURNITURE)} "
+              f"gold={pack_amount(c_obs, GOLD_GRAPHIC)}] —")
         for line in snap:
             print(f"  {line}")
     for t in threads:
@@ -1690,7 +1696,8 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     from .skills.smelt import INGOT_GRAPHICS, MineSmeltDeliver
     from .skills.tinkering import TONGS_GRAPHIC
     from .planner import Planner
-    from .tinker_life import BANK_RESERVE, TinkerLife
+    from .skills.market import _bank_reserve
+    from .tinker_life import TinkerLife
 
     print(f"raising the forge pair at {host}:{port}")
     bodies = {}
@@ -1779,8 +1786,12 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     shop_reach = max((max(abs(v[0][0] - tgx), abs(v[0][1] - tgy))
                       for v in routes.values()), default=1)
     pim.set_leash((tgx, tgy), min(max(1, shop_reach), PICKUP_RADIUS - 1))
+    # Read off PIM, through the clamp every other reader of this key uses — not off the
+    # module constant. Identical today (nothing tunes this runner), and it stays true the
+    # day something does; `run_carpenter_life`'s banner was the same shape and would have
+    # started lying the moment that runner grew a `knobs` argument.
     print(f"staged: Grimm@({mgx},{mgy}) -> drop {TRADE_SMITH_SPOT} -> Pim@({tgx},{tgy}) "
-          f"(reserve {BANK_RESERVE}, both broke)\n")
+          f"(reserve {_bank_reserve(pim.econ_agent.memory)}, both broke)\n")
 
     status: dict[int, str] = {}
     lock = threading.Lock()
@@ -1882,7 +1893,8 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
 
 def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
                        ticks: int = 900, account_prefix: str = "animacarp",
-                       monitor: bool = False) -> None:
+                       monitor: bool = False,
+                       knobs: dict[str, Any] | None = None) -> None:
     """Run ONE carpenter LIVING the full autonomous loop via `CarpenterLife`.
 
     The fourth life, and the first for a profession with no work skill — everything it
@@ -1891,8 +1903,31 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
     harness, which owns staging verification, provenance, the leash on both agent
     memories, and the standard telemetry — see `life_runner.py` for why those are
     structural rather than per-runner.
+
+    `knobs` is the ENTRY POINT of the tuning channel, and it exists for one reason:
+    without it the channel is wireless at the only end that matters. `LifeSpec.knobs`
+    forwards to `life_factory` and `CarpenterLife.__init__` accepts `**knobs`, but no
+    production caller could set one — a caller had to hand-build a spec, which is the
+    shape of a mechanism only the tests have. CLAUDE.md defers the Phase-7
+    evolution-vs-random rerun on precondition (a), "the genome's axes can steer a full
+    Life", and a multi-hour single-GM live budget is gated on that being TRUE; this
+    parameter is where a genome axis, a bandit or a tuning sweep reaches the Life.
+
+    Optional by design (`None` == the shipped constants, byte-identical to every
+    existing caller). Every key must be a knob the Life routes through `anima2/knobs.py`
+    — `bank_reserve`, `econ_grace`, `disagreement_ticks` today. A raw threshold tuned
+    from out here is a new drift avenue, not an axis: a malformed value read raw on one
+    side and clamped on the other is the rule-vs-gate class arriving through the very
+    knob that was supposed to be safe (see that module's docstring).
+
+    That "must" is now ENFORCED rather than documented: `LifeSpec.__post_init__` checks
+    every key against `CarpenterLife.KNOBS` and raises here, before the login. It was a
+    comment alone until a reviewer walked `knobs={"profession": "mage"}` through it and
+    got a Life that staged and reported as a carpenter while deciding as a mage.
     """
-    from .carpenter_life import BANK_RESERVE, BOARD_BATCH_COST, SAW_COST, CarpenterLife
+    # No `BANK_RESERVE` here on purpose: the staged line's reserve is read off the built
+    # Life by `LifeRunner.run`, which is the only place a TUNED value exists.
+    from .carpenter_life import BOARD_BATCH_COST, SAW_COST, CarpenterLife
     from .life_runner import LifeRunner, LifeSpec, Staged, pack_amount, stage_shops
     from .life_runner import owned_tool_readout
     from .live_common import wipe_area
@@ -1922,8 +1957,7 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
                                    "shop_serials": shop_serials},
                       memory={"craft_spot": (cx, cy),
                               "shop_serials": shop_serials},
-                      seed_gold=BOARD_BATCH_COST + SAW_COST,
-                      banner=f"(reserve {BANK_RESERVE})")
+                      seed_gold=BOARD_BATCH_COST + SAW_COST)
 
     def status_extra(life, obs) -> str:
         return (f"saw={owned_tool_readout(obs, SAW_GRAPHICS)} "
@@ -1933,9 +1967,19 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
     LifeRunner(
         LifeSpec(profession="carpenter", persona_name="Sten",
                  account_prefix=account_prefix,
-                 life_factory=lambda body, persona, routes: CarpenterLife(
-                     body=body, persona=persona, routes=routes),
-                 stage=stage, status_extra=status_extra),
+                 # `**k` is the spec's tuning channel (named `k` only to keep it clear
+                 # of the runner's own `knobs` argument, which is what FILLS it): a
+                 # factory that drops it would silently swallow every axis a caller set.
+                 life_factory=lambda body, persona, routes, **k: CarpenterLife(
+                     body=body, persona=persona, routes=routes, **k),
+                 stage=stage, status_extra=status_extra,
+                 # Read off the CLASS the factory builds, not spelled out here: the spec
+                 # then tracks a subclass that gains a knob, and can never disagree with
+                 # the constructor it splats into about which keys are thresholds.
+                 knob_names=CarpenterLife.KNOBS,
+                 # Copied, not aliased: the spec outlives this call and a caller that
+                 # kept its dict could otherwise retune a running Life by mutating it.
+                 knobs=dict(knobs or {})),
         host=host, port=port, ticks=ticks, monitor=monitor,
     ).run(_run_worker)
 
@@ -1943,13 +1987,21 @@ def run_carpenter_life(*, host: str = "127.0.0.1", port: int = 2594,
 def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                       ticks: int = 600, account_prefix: str = "animawood",
                       monitor: bool = False, persist_insights: bool = False,
-                      forest: tuple[int, int] = YEW_FOREST) -> None:
+                      forest: tuple[int, int] = YEW_FOREST,
+                      knobs: dict[str, Any] | None = None) -> None:
     """Run ONE lumberjack LIVING the full autonomous loop via `WoodsmanLife`.
 
     The third profession to get a life of its own, and the first that does not fight
     for a living: its chain is tree -> log -> board -> gold, and its tool is
     consumable. Runs on the `LifeRunner` harness (staging verification, provenance,
     both-memory leash, standard telemetry — see `life_runner.py`).
+
+    `knobs` is the tuning channel's ENTRY POINT — see `run_carpenter_life` for the whole
+    reason it exists (a channel that stops at the spec is a channel only tests can
+    reach, and CLAUDE.md gates a multi-hour live budget on it reaching a Life). Optional:
+    `None` is byte-identical to every existing caller. Keys must be knobs the Life routes
+    through `anima2/knobs.py`, and `LifeSpec.__post_init__` enforces that against
+    `WoodsmanLife.KNOBS` before the login rather than trusting this sentence.
     """
     from .life_runner import LifeRunner, LifeSpec, Staged, pack_amount, stage_shops
     from .life_runner import owned_tool_readout
@@ -2006,9 +2058,17 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
     LifeRunner(
         LifeSpec(profession="lumberjack", persona_name="Bjorn",
                  account_prefix=account_prefix,
-                 life_factory=lambda body, persona, routes: WoodsmanLife(
-                     body=body, persona=persona, routes=routes),
-                 stage=stage, status_extra=status_extra),
+                 # `**k` is the spec's tuning channel (named `k` only to keep it clear
+                 # of the runner's own `knobs` argument, which is what FILLS it): a
+                 # factory that drops it would silently swallow every axis a caller set.
+                 life_factory=lambda body, persona, routes, **k: WoodsmanLife(
+                     body=body, persona=persona, routes=routes, **k),
+                 stage=stage, status_extra=status_extra,
+                 # Read off the CLASS the factory builds — see `run_carpenter_life`.
+                 knob_names=WoodsmanLife.KNOBS,
+                 # Copied, not aliased: the spec outlives this call and a caller that
+                 # kept its dict could otherwise retune a running Life by mutating it.
+                 knobs=dict(knobs or {})),
         host=host, port=port, ticks=ticks, monitor=monitor,
         persist_insights=persist_insights,
     ).run(_run_worker)
@@ -2026,10 +2086,9 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
     prey supply the monitor tops up (spawn one per confirmed kill — no accumulating
     swarm). Uses `_run_worker` unchanged (`WarriorLife` duck-types as an `Agent`).
     """
+    from .life_runner import enforce_gold_provenance
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle
     from .profession import HUNTING_SPOT
-    from .skills.harvest import BACKPACK_LAYER
-    from .skills.hunt import GOLD_GRAPHIC
     from .warrior_life import WarriorLife
 
     hx, hy = HUNTING_SPOT
@@ -2083,14 +2142,14 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                 gm.command_on(c, serial)
             gm.command_on(f'[Set Name "Bram{i}"', serial)
             # Delete the ~1000 starter gold (else the warrior banks it immediately
-            # instead of hunting) and seed a small reserve, below BANK_ABOVE, so it
-            # can re-arm a lost blade before it has looted much.
-            staged = [body.observe() for _ in range(3)][-1]
-            pack = next((it.serial for it in staged.items
-                         if it.layer == BACKPACK_LAYER and it.container == serial), None)
-            for it in staged.items:
-                if it.container == pack and it.graphic == GOLD_GRAPHIC:
-                    gm.command_on("[Delete", it.serial)
+            # instead of hunting) and seed a small reserve, below BANK_RESERVE, so it
+            # can re-arm a lost blade before it has looted much. This runner predates
+            # the harness and had `enforce_gold_provenance` INLINED — the same three
+            # observes, the same owner-filtered pack lookup, the same delete loop. It is
+            # the function now: a duplicated function drifts exactly the way the
+            # duplicated readbacks did (`obsview.py`'s docstring), and provenance is the
+            # one thing a measured-income claim rests on.
+            enforce_gold_provenance(gm, body, serial)
             gm.command_on("[AddToPack Gold 50", serial)
             # Vendors pushed well OUT of the hunting pocket (>=10 tiles, spread apart):
             # near the stand they'd distract Greet/Wander (the warrior drifts to greet a
@@ -2364,20 +2423,13 @@ class _ThrottledAgent:
 
 def _pipeline_progress(tin_tap, mage) -> str:
     """What the pipeline has actually moved, read off each agent's last observation."""
-    from .skills.harvest import BACKPACK_LAYER
     from .skills.hunt import GOLD_GRAPHIC
     from .skills.mage import SULFUROUS_ASH_GRAPHIC
 
     TONGS = 0x0FBB
 
-    def _pack(obs, graphic):
-        if obs is None:
-            return 0
-        bp = next((i.serial for i in obs.items
-                   if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-        return sum(i.amount for i in obs.items
-                   if i.graphic == graphic and i.container == bp) if bp else 0
-
+    # `_pack` was written out here too — the same falsy-backpack and `==`-vs-`in` forms
+    # `run_supply_pair`'s copy had. It is `obsview.pack_amount` now.
     t_obs = tin_tap.last_obs
     m_obs = getattr(mage.body, "last_obs", None)
 
@@ -2405,10 +2457,11 @@ def _pipeline_progress(tin_tap, mage) -> str:
     # hunt far better than any guess about its planner.
     p = m_obs.player if m_obs else None
     vit = "?" if p is None else ("DEAD" if p.dead else f"{p.hits}/{p.hits_max}")
-    return (f"artisan[tongs={_pack(t_obs, TONGS)} gold={_pack(t_obs, GOLD_GRAPHIC)}] "
+    return (f"artisan[tongs={pack_amount(t_obs, TONGS)} "
+            f"gold={pack_amount(t_obs, GOLD_GRAPHIC)}] "
             f"purse[mage_sees={ground} artisan_sees={dropped}{near}] "
-            f"mage[hp={vit} gold={_pack(m_obs, GOLD_GRAPHIC)} "
-            f"ash={_pack(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
+            f"mage[hp={vit} gold={pack_amount(m_obs, GOLD_GRAPHIC)} "
+            f"ash={pack_amount(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
 
 
 
@@ -2472,7 +2525,6 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
     from .capability_cognition import CapabilityCognition
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .mage_life import MageLife
-    from .skills.harvest import BACKPACK_LAYER
 
     print(f"raising an artisan+mage village at {host}:{port}")
     bodies = {}
@@ -2539,8 +2591,12 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         for role in ("mage", "tinker"):
             enforce_gold_provenance(gm, bodies[role], serials[role])
         st = [bodies["mage"].observe() for _ in range(3)][-1]
-        pack = next((i.serial for i in st.items
-                     if i.layer == BACKPACK_LAYER and i.container == serials["mage"]), None)
+        # `pack_serial` reads OUR pack out of `st` by `st.player.serial`, which IS
+        # `serials["mage"]`: `ResilientIpcBody` enforces
+        # `observation.player.serial == ready["player"]["serial"]` on every observe, so
+        # this is a body-level invariant rather than an assumption about whose body
+        # answered.
+        pack = pack_serial(st)
         # A staged spellbook is EMPTY; ServUO refuses a cast whose spell is not in the book.
         book = next((i for i in st.items if i.graphic in (0x0EFA, 0x0EFB)
                      and i.container in (pack, serials["mage"])), None)

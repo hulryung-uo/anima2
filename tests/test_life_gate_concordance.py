@@ -21,6 +21,29 @@ The memory handed to both sides is the REAL memory the orchestrators wire (route
 fixture that omits what the orchestrator writes would test a configuration that never
 runs.
 
+**Every lattice point is also walked at every KNOB setting**, which is the half this
+suite was missing. It used to pin each knob to its module default, and at the default
+both sides agree BY CONSTRUCTION — so a knob converted on the rule side only would have
+sailed straight through (proved with a probe, not assumed: a one-line rule-side-only
+`sell_boards_at` knob passed the whole suite untouched, and failed it the moment the
+fixture carried a tuned value). The assertion was always the right one; it simply was
+not pointed at the knobs. `_knob_sweep` points it: tuned off the constant in both
+directions, never written at all, and malformed four ways — because the drift class this
+suite exists for is now reachable THROUGH a knob (see `anima2/knobs.py`), and a knob
+whose two readers disagree about a malformed value is the same six live failures wearing
+a tuning axis.
+
+**And WHERE the agent is standing is an axis too** (`_craft_spot_axis`), which is the
+other half this suite was missing. Both craft lattices used to PIN `craft_spot` to the
+player's own tile, so neither craft Life was ever walked off its stand — and a
+differential probe over 150,000 randomized states found exactly one forward-concordance
+violation in the whole codebase hiding in that blind spot: the carpenter's terminal craft
+branch, unguarded against the two clauses `capabilities._make_craft_ready` applies
+(`_craft_at_spot` and `0 <= made < batch`). 308 disagreeing states, and the shape is a
+PERMANENT want-but-never-ready — nothing else in a craft chain fires with material
+already in the pack, so `_clear_stale_ui` then closes a UI surface every tick on a
+healthy agent. A pinned fixture is a fixture that tests one point of an axis.
+
 A coverage assertion rides along: every capability in a Life's economy set must be WANTED
 somewhere in its lattice. A capability no lattice point can want is a dead branch — the
 shape of the woodsman's original unreachable BANK_ABOVE=300.
@@ -44,6 +67,9 @@ PLAYER = 1
 BP = 0x50
 OTHER = 0x99        # a vendor standing beside the agent
 OTHER_PACK = 0x9A   # ...and its backpack
+#: Where `_obs` stands the player. Named because the craft-spot axis below is defined
+#: RELATIVE to it — a lattice whose spot and player tile drift apart tests nothing.
+PLAYER_TILE = (5, 5)
 
 _serial = [0x1000]
 
@@ -70,32 +96,153 @@ def _other_pack():
 
 
 def _obs(items, mobiles=()):
-    return Observation(player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0)),
+    return Observation(player=PlayerView(serial=PLAYER, pos=Position(*PLAYER_TILE, 0)),
                        items=[_backpack(), *items], mobiles=list(mobiles))
 
 
-def _assert_concordance(profession, decide, cases, expected_caps):
-    """Forward: rule wants cap => gate ready. Coverage: every cap wanted somewhere."""
+def _craft_spot_axis(radius: int) -> dict:
+    """`(label, memory patch)` for every `craft_spot` a live run actually produces.
+
+    The axis this suite was missing, and it is the reason it could not catch the one
+    forward-concordance violation a differential probe later found: both craft lattices
+    pinned `craft_spot` to the player's own tile, so NEITHER craft Life was ever walked
+    at an out-of-radius or missing spot. Every craft gate applies `_craft_at_spot`
+    (`capabilities._make_craft_ready`), so a rule that does not ask the same question
+    wants a craft admission refuses — forever, since nothing else in a craft chain fires
+    with material already in the pack.
+
+    `WANDERED` is the live-shaped one, not the exotic one: `FetchBoards` walks up to
+    `PICKUP_RADIUS` (6) to a delivered pile, twice the carpenter's craft radius, and has
+    no walk-home leg. `ABSENT` and `MALFORMED` are the tuning/staging shapes — a spot
+    key is a memory write like any other.
+    """
+    px, py = PLAYER_TILE
+    return {
+        "at": {"craft_spot": (px, py)},
+        "edge": {"craft_spot": (px + radius, py + radius)},
+        "wandered": {"craft_spot": (px + radius + 1, py)},
+        "absent": {},
+        "malformed": {"craft_spot": (px, "5")},
+    }
+
+
+def _knob_sweep(memory, key):
+    """`(label, memory)` at every setting a tuning write can actually produce for `key`.
+
+    SET (both directions off the module constant — a genome axis explores, it does not
+    stop at the shipped value), ABSENT (the bare-dict shape: the two sides deliberately
+    take DIFFERENT defaults, the Life's own constant on the rule side and 0 on the gate
+    side, and forward safety must survive that asymmetry), and MALFORMED four ways.
+
+    The malformed row is the one with a scar: negative, float, bool and string all land
+    on the clamp floor in `anima2/knobs.py`, and they must land there on EVERY reader.
+    A rule reading raw while a gate read the clamp made the rule want `bank_gold` at any
+    gold while the gate refused at 0g — the rule-vs-gate drift class, recreated through
+    the very knob that was supposed to be safe (review-caught on the tinker's urgent
+    band). `True` is in the list on purpose: `bool` is an `int` subclass, so an
+    `isinstance` clamp would honour it as `1` instead of rejecting it.
+    """
+    wired = memory[key]
+    return [
+        ("wired", dict(memory)),
+        ("tuned_down", {**memory, key: 1}),
+        ("tuned_up", {**memory, key: wired * 3 + 7}),
+        ("absent", {k: v for k, v in memory.items() if k != key}),
+        ("malformed_negative", {**memory, key: -100}),
+        ("malformed_float", {**memory, key: 12.5}),
+        ("malformed_bool", {**memory, key: True}),
+        ("malformed_string", {**memory, key: "80"}),
+    ]
+
+
+#: Registry capabilities a Life's own rule DELIBERATELY never proposes, per profession.
+#: Checked for equality, not membership, by `_assert_concordance` — see it for why.
+#:
+#: The tinker's five are the whole reason this allow-list exists (review-caught): its
+#: registry has 11 entries and `TinkerLife.decide_mode` can return 6, so `craft_saw`,
+#: `craft_hatchet`, `deliver_saw`, `deliver_hatchet` and `deliver_gold` go READY in
+#: randomized states and are then unreachable — `WarriorLife.tick` sets `self.candidates`
+#: from `decide`/`decide_all`, and `_LifeClient._pick` may only return a member of that
+#: list, so the CapabilityCognition attached to a TinkerLife cannot propose anything else.
+#: That makes the Brick-10 tinker→carpenter/lumberjack tool-supply link and the
+#: tinker→mage gold hand-off unreachable THROUGH A LIFE. Inert rather than harmful today
+#: only because no shipped runner wires a TinkerLife's drop keys: `run_forge_pair` (the
+#: only TinkerLife runner) stages `vendor_spot` and `banker_spot` alone, and the one
+#: production `mage_drop` write belongs to `run_artisan_mage_village`'s artisan, which is
+#: a plain Agent under `CapabilityCognition(None)`. Deliberately NOT closed by adding
+#: branches here: that is a live-behaviour change to the flagship positive-margin Life,
+#: and nothing offline can tell us what it does to a real forge day. Recorded, enforced,
+#: and left — if a runner ever wires those drops, this list is where the bill arrives.
+_NOT_DRIVEN_BY_THE_LIFE = {
+    "tinker": frozenset({"craft_saw", "craft_hatchet", "deliver_saw", "deliver_hatchet",
+                         "deliver_gold"}),
+}
+
+
+def _registry_ids(profession: str) -> frozenset[str]:
+    """Every capability id the immutable registry binds for `profession`."""
+    from anima2.capabilities import CAPABILITIES
+
+    return frozenset(b.capability_id for (prof, _c), b in CAPABILITIES.items()
+                     if prof == profession)
+
+
+def _assert_concordance(profession, decide, cases, expected_caps,
+                        knobs=("bank_reserve",)):
+    """Forward: rule wants cap => gate ready. Coverage: every cap wanted somewhere.
+
+    Each lattice point is walked once per knob per `_knob_sweep` setting (one knob moved
+    at a time, the rest as wired — a cross product would buy combinations no tuner
+    produces at the price of a suite nobody runs). Coverage is over the UNION, so the
+    dead-branch check still only needs one reachable point.
+
+    Coverage is checked TWICE, against two different sources, because the hand-written
+    one cannot see the defect the registry one exists for. `expected_caps` is a list
+    written here, so it can only catch a branch that USED to be reachable and stopped;
+    a capability the Life's rule never proposed in the first place is simply absent from
+    both sides and passes. The tinker shipped exactly that way — 5 of its 11 registry
+    capabilities go ready and are never wanted — and the 6-id `expected_caps` beside it
+    was structurally incapable of noticing. So the second check is REGISTRY-DERIVED and
+    is an equality: whatever the lattice never wants must be spelled out in
+    `_NOT_DRIVEN_BY_THE_LIFE` with a reason, which turns "dead capacity" from something
+    you have to go looking for into something you have to write down.
+    """
     wanted: set[str] = set()
     for obs, memory in cases:
-        mode, cap = decide(obs, dict(memory))
-        if mode != "economy" or cap is None:
-            continue
-        wanted.add(cap)
-        ctx = SkillContext(obs=obs, persona=Persona(name="T"), memory=dict(memory))
-        ready = ready_capability_ids(profession, ctx)
-        assert cap in ready, (
-            f"{profession}: the rule wants {cap!r} but the gate refuses "
-            f"(ready={sorted(ready)}).\nThis is the exact stall shape that cost six "
-            f"live runs. Observation items: "
-            + ", ".join(f"g=0x{i.graphic:X} c={i.container} l={i.layer} d={i.distance} "
-                        f"n={i.amount}" for i in obs.items)
-        )
+        for knob in knobs:
+            for label, tuned in _knob_sweep(memory, knob):
+                mode, cap = decide(obs, dict(tuned))
+                if mode != "economy" or cap is None:
+                    continue
+                wanted.add(cap)
+                ctx = SkillContext(obs=obs, persona=Persona(name="T"),
+                                   memory=dict(tuned))
+                ready = ready_capability_ids(profession, ctx)
+                assert cap in ready, (
+                    f"{profession}: the rule wants {cap!r} but the gate refuses "
+                    f"(ready={sorted(ready)}) with {knob} {label} "
+                    f"({tuned.get(knob, '<unset>')!r}).\nThis is the exact stall shape "
+                    f"that cost six live runs — here reached through a tuning knob, "
+                    f"which is why every reader must clamp through anima2/knobs.py. "
+                    f"Observation items: "
+                    + ", ".join(f"g=0x{i.graphic:X} c={i.container} l={i.layer} "
+                                f"d={i.distance} n={i.amount}" for i in obs.items)
+                )
     missing = set(expected_caps) - wanted
     assert not missing, (
         f"{profession}: no lattice point ever WANTS {sorted(missing)} — either the "
         f"lattice lost an axis or the rule has a dead branch (the unreachable "
         f"BANK_ABOVE=300 shape)."
+    )
+    undriven = _registry_ids(profession) - wanted
+    assert undriven == _NOT_DRIVEN_BY_THE_LIFE.get(profession, frozenset()), (
+        f"{profession}: the registry binds {sorted(undriven)} which no lattice point "
+        f"ever wants, and that set is not the one _NOT_DRIVEN_BY_THE_LIFE declares "
+        f"({sorted(_NOT_DRIVEN_BY_THE_LIFE.get(profession, ()))}). Either the Life's "
+        f"rule gained/lost a branch, the lattice lost an axis, or a capability is DEAD "
+        f"CAPACITY — ready in the gate, unreachable through the rule, so the "
+        f"CapabilityCognition on this Life can never propose it. Whichever it is, it "
+        f"gets written down there with a reason rather than discovered by a sweep."
     )
 
 
@@ -255,14 +402,21 @@ def test_carpenter_rule_never_wants_what_its_gates_refuse():
         BOARD_BATCH_COST,
         BOARDS_PER_ITEM,
         SAW_COST,
+        _CRAFT_RADIUS,
     )
     from anima2.skills.carpentry import BuySaw, FetchBoards, SellFurniture
 
     SAW = sorted(BuySaw.owned_tool_graphics)[0]
     BOARD = sorted(FetchBoards.fetched_graphics)[0]
     FURNITURE = SellFurniture.sold_graphic
-    memory = {"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
-              "bank_reserve": BANK_RESERVE, "craft_spot": (5, 5)}
+    # No `craft_spot` here: it is an AXIS now (see `_craft_spot_axis`), because pinning
+    # it to the player's own tile is what let the carpenter's craft branch ship for a
+    # release wanting a craft the gate refuses whenever the agent had walked off its
+    # stand — 308 disagreeing states in a 30,000-state differential probe.
+    # `vendor_spot` is likewise an axis: `run_supply_pair` stages with `strict=False`,
+    # so an UNSET vendor route is a tolerated, documented live outcome, and it is the
+    # state in which a finished throne can never be cleared.
+    base_memory = {"banker_spot": ((10, 10),), "bank_reserve": BANK_RESERVE}
 
     saw_axis = {
         "none": [],
@@ -281,10 +435,13 @@ def test_carpenter_rule_never_wants_what_its_gates_refuse():
     gold_axis = sorted({0, SAW_COST - 1, SAW_COST, BOARD_BATCH_COST - 1,
                         BOARD_BATCH_COST, BANK_RESERVE, BANK_RESERVE + 1})
 
+    vendor_axis = {"routed": {"vendor_spot": ((10, 10),)}, "unrouted": {}}
+
     cases = []
-    for (_, saw), packb, (_, groundb), furn, gold in product(
+    for (_, saw), packb, (_, groundb), furn, gold, (_, spot), (_, vendor) in product(
             saw_axis.items(), pack_board_axis, ground_board_axis.items(),
-            furniture_axis, gold_axis):
+            furniture_axis, gold_axis, _craft_spot_axis(_CRAFT_RADIUS).items(),
+            vendor_axis.items()):
         items = [*saw, *groundb]
         if packb:
             items.append(_item(BOARD, packb))
@@ -292,7 +449,7 @@ def test_carpenter_rule_never_wants_what_its_gates_refuse():
             items.append(_item(FURNITURE, furn))
         if gold:
             items.append(_item(GOLD_GRAPHIC, gold))
-        cases.append((_obs(items), memory))
+        cases.append((_obs(items), {**base_memory, **spot, **vendor}))
 
     _assert_concordance("carpenter", carpenter_decide, cases,
                         {"craft_carpentry", "sell_furniture", "fetch_boards",
@@ -315,16 +472,21 @@ def test_tinker_rule_never_wants_what_its_gates_refuse():
         IRON_BATCH_COST,
         SELL_TONGS_AT,
         TOOL_COST,
+        _CRAFT_RADIUS,
         decide_mode as tinker_decide,
     )
 
     IRON = sorted(INGOT_GRAPHICS)[0]
     TOOL = sorted(TinkerTongs.craft_tool_graphics)[0]
-    memory = {"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
-              "bank_reserve": BANK_RESERVE,
-              # The craft gate allows a small drift radius around this; the player
-              # fixture stands at (5, 5), inside it — the REAL wiring.
-              "craft_spot": (5, 5)}
+    base_memory = {"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
+                   "bank_reserve": BANK_RESERVE,
+                   # The second knob `TinkerLife.__init__` writes. Both are swept below:
+                   # this Life is the only one with two, so it is the only place a knob
+                   # can be tuned while ANOTHER knob is what the gate compares against.
+                   "bank_trip_surplus": BANK_TRIP_SURPLUS}
+    # `craft_spot` is an AXIS here too (`_craft_spot_axis`), not a pin. The tinker's rule
+    # has mirrored the gate's radius since birth, so this walks a guard that already
+    # holds — which is the point: it is the assertion that keeps holding it.
 
     tool_axis = {
         "none": ([], []),
@@ -351,8 +513,9 @@ def test_tinker_rule_never_wants_what_its_gates_refuse():
                         BANK_RESERVE + BANK_TRIP_SURPLUS + 1})
 
     cases = []
-    for (_, (tool, mobs)), tongs, iron, (_, ground), gold in product(
-            tool_axis.items(), tongs_axis, iron_axis, ground_axis.items(), gold_axis):
+    for (_, (tool, mobs)), tongs, iron, (_, ground), gold, (_, spot) in product(
+            tool_axis.items(), tongs_axis, iron_axis, ground_axis.items(), gold_axis,
+            _craft_spot_axis(_CRAFT_RADIUS).items()):
         items = [*tool, *ground]
         if tongs:
             items.append(_item(TONGS_GRAPHIC, tongs))
@@ -360,8 +523,109 @@ def test_tinker_rule_never_wants_what_its_gates_refuse():
             items.append(_item(IRON, iron))
         if gold:
             items.append(_item(GOLD_GRAPHIC, gold))
-        cases.append((_obs(items, mobs), memory))
+        cases.append((_obs(items, mobs), {**base_memory, **spot}))
 
     _assert_concordance("tinker", tinker_decide, cases,
                         {"buy_tinker_tool", "sell_tongs", "fetch_iron", "craft_tongs",
-                         "buy_iron", "bank_gold"})
+                         "buy_iron", "bank_gold"},
+                        knobs=("bank_reserve", "bank_trip_surplus"))
+
+
+# --- the state every lattice above hides: OUR OWN PACK out of the observation --------
+#
+# `_obs` injects a backpack into every fixture in this file, and that is exactly why the
+# suite could not see the missing-backpack drift (docs/AUDIT-2026-07-29.md, follow-up 1).
+# The state is real, not hypothetical: docs/WOODSMAN.md records a run "with our own
+# backpack out of view". It has TWO halves and both are asserted below, because fixing
+# one alone only renames the disagreement:
+#
+#   - the OWNED half: a ground item's container is `None`, so an unguarded
+#     `i.container in (bp, player)` matched it whenever `bp` was `None` too — the rule
+#     claimed to own a saw the gate said we did not have;
+#   - the GROUND half: every fetch gate opens with `_backpack_serial(ctx) is not None`,
+#     so a rule that fetched without asking the same question wanted a pickup admission
+#     always refuses. Guarding only `owns` moved the woodsman from wanting nothing to
+#     wanting `fetch_hatchet` against `ready=[]` — a NEW disagreement, review-caught.
+
+
+def _obs_no_pack(items, mobiles=()):
+    """The same observation shape as `_obs`, minus our own backpack."""
+    return Observation(player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0)),
+                       items=list(items), mobiles=list(mobiles))
+
+
+def test_a_ground_tool_is_not_owned_and_not_fetchable_without_our_pack():
+    from anima2.obsview import ground_amount, on_ground, owns, pack_amount
+    from anima2.skills.woodwork import AXE_GRAPHICS
+
+    axe = sorted(AXE_GRAPHICS)[0]
+    obs = _obs_no_pack([_item(axe, container=None, distance=0),
+                        _item(GOLD_GRAPHIC, 500, container=None, distance=0)])
+    assert owns(obs, AXE_GRAPHICS) is False, (
+        "a hatchet lying on the ground is not a hatchet we own — the guard "
+        "`warrior._has_weapon` had from the start and three later Lives did not"
+    )
+    assert on_ground(obs, AXE_GRAPHICS) is False, (
+        "with no pack in the observation there is nowhere to put it, which is the "
+        "fetch gate's own first clause"
+    )
+    assert ground_amount(obs, GOLD_GRAPHIC) == 0
+    assert pack_amount(obs, GOLD_GRAPHIC) == 0
+    # ...and with our pack back in view both answers flip, so the clause is a guard and
+    # not a blanket refusal.
+    with_pack = _obs([_item(axe, container=None, distance=0),
+                      _item(GOLD_GRAPHIC, 500, container=None, distance=0)])
+    assert owns(with_pack, AXE_GRAPHICS) is False   # still ground, still not ours
+    assert on_ground(with_pack, AXE_GRAPHICS) is True
+    assert ground_amount(with_pack, GOLD_GRAPHIC) == 500
+
+
+def test_no_life_wants_anything_the_gate_refuses_with_our_pack_out_of_view():
+    from anima2.skills.carpentry import BuySaw, FetchBoards
+    from anima2.skills.smelt import INGOT_GRAPHICS
+    from anima2.skills.tinkering import TONGS_GRAPHIC
+    from anima2.skills.woodwork import AXE_GRAPHICS, BOARD_GRAPHIC
+    from anima2.tinker_life import decide_mode as tinker_decide
+
+    # Every art a Life can want off the ground, all at our feet at once — the state that
+    # made four of the five rules ask for a fetch admission can never grant.
+    ground = [_item(art, 20, container=None, distance=0) for art in sorted({
+        GOLD_GRAPHIC, BOARD_GRAPHIC, TONGS_GRAPHIC,
+        *AXE_GRAPHICS, *INGOT_GRAPHICS,
+        *BuySaw.owned_tool_graphics, *FetchBoards.fetched_graphics,
+    })]
+    obs = _obs_no_pack(ground, [_other_mobile(), _other_pack()])
+    # Every route wired, so nothing is declined for the WRONG reason (an unset spot).
+    #
+    # The keys are READ OFF THE SKILL CLASSES, never spelled out. Spelled out is how this
+    # fixture shipped, and eight of its fourteen names did not exist: `reagent_vendor_spot`
+    # / `saw_vendor_spot` / `carpentry_vendor_spot` / `board_vendor_spot` /
+    # `lumber_vendor_spot` / `hatchet_vendor_spot` / `tinker_vendor_spot` /
+    # `iron_vendor_spot` against the real `mage_vendor_spot` (BuyReagent),
+    # `tool_vendor_spot` (BuyHatchet) and a plain shared `vendor_spot` (everything else).
+    # So every buy/sell branch except the warrior's was declined for exactly the unset-spot
+    # reason this comment claimed it was not, and the fetch concordance the test is named
+    # for was only ever reached because the fetch branches sit ABOVE those. Review-caught.
+    from anima2.skills.mage import BuyReagent
+    from anima2.skills.tinkering import BuyIron, BuyTinkerTool, SellTongs
+    from anima2.skills.woodwork import BuyHatchet, DeliverBoards, SellBoards
+
+    route_keys = {c.vendor_spot_key for c in (
+        BuyReagent, BuyHatchet, SellBoards, BuySaw, BuyTinkerTool, SellTongs, BuyIron)}
+    route_keys |= {DeliverBoards.drop_key,
+                   "weapon_vendor_spot", "healer_spot", "armorer_spot", "banker_spot"}
+    memory = {k: ((10, 10),) for k in route_keys}
+    for profession, decide in (("swordsman", warrior_decide), ("mage", mage_decide),
+                               ("lumberjack", woodsman_decide),
+                               ("carpenter", carpenter_decide),
+                               ("tinker", tinker_decide)):
+        mode, cap = decide(obs, dict(memory))
+        if mode != "economy" or cap is None:
+            continue
+        ctx = SkillContext(obs=obs, persona=Persona(name="T"), memory=dict(memory))
+        ready = ready_capability_ids(profession, ctx)
+        assert cap in ready, (
+            f"{profession}: with our own pack out of the observation the rule wants "
+            f"{cap!r} but the gate refuses (ready={sorted(ready)}). Every fetch gate "
+            f"requires a backpack; the rule side must ask the same question."
+        )

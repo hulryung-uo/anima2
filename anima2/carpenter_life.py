@@ -34,8 +34,9 @@ point of having a village rather than a set of hermits.
 
 from __future__ import annotations
 
-from .capabilities import _valid_spot
+from .capabilities import _valid_spot, craft_spot_within
 from .contract import Observation
+from .obsview import on_ground, owns, pack_amount
 from .skills.carpentry import (
     BuyBoards,
     BuySaw,
@@ -43,8 +44,6 @@ from .skills.carpentry import (
     FetchBoards,
     SellFurniture,
 )
-from .skills.craft import PICKUP_RADIUS
-from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
 from .warrior_life import WarriorLife
@@ -62,50 +61,24 @@ SELL_FURNITURE_AT = SellFurniture.sell_threshold
 #: reserve is derived from its axe — a round number here would be a number that agrees
 #: with nothing. Written into the economy agent's memory as `bank_reserve`, the key the
 #: `bank_gold` gate and `BankGold`'s own FSM already share, so the rule that decides to
-#: bank and the skill that performs it keep the same amount.
+#: bank and the skill that performs it keep the same amount. The rule below banks ABOVE
+#: it with `>`, not `>=`, matching the gate's own comparison exactly.
 BANK_RESERVE = BOARD_BATCH_COST + SAW_COST
-#: Bank above that reserve. `>` not `>=`, matching the gate's own comparison exactly.
-BANK_ABOVE = BANK_RESERVE
+#: One craft's worth of output — the craft gate's own `0 <= made < batch` clause, read
+#: off the same skill class the gate reads it from.
+CRAFT_BATCH = CarpenterCraft.craft_batch
 
 _SAW_GRAPHICS = frozenset(BuySaw.owned_tool_graphics)
 _BOARD_GRAPHICS = frozenset(FetchBoards.fetched_graphics)
 _FURNITURE_GRAPHIC = SellFurniture.sold_graphic
+#: The craft gate's own drift tolerance at the stand — read off the skill class the gate
+#: reads it from, exactly as `tinker_life` does, so the two can never be tuned apart.
+_CRAFT_RADIUS = getattr(CarpenterCraft, "craft_spot_radius", 0)
 
-
-def _backpack(obs: Observation) -> int | None:
-    return next((i.serial for i in obs.items
-                 if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-
-
-def _pack(obs: Observation, graphics) -> int:
-    bp = _backpack(obs)
-    if bp is None:
-        return 0
-    if isinstance(graphics, int):
-        graphics = {graphics}
-    return sum(i.amount for i in obs.items if i.graphic in graphics and i.container == bp)
-
-
-def _owns(obs: Observation, graphics) -> bool:
-    """Held or worn — the same definition the skills and the readiness gate now share
-    (see `capabilities._owned_tool`, widened after a worn axe cost a woodsman a run)."""
-    bp = _backpack(obs)
-    return any(i.graphic in graphics and i.container in (bp, obs.player.serial)
-               for i in obs.items)
-
-
-def _on_ground(obs: Observation, graphics) -> bool:
-    """Material lying in the world WITHIN PICKUP REACH.
-
-    The distance test is the point. The fetch gate requires a ground item within
-    `PICKUP_RADIUS`, and a rule that ignored distance would want `fetch_boards` for
-    boards it can merely SEE across the clearing — a goal admission must then refuse,
-    producing the stall this project keeps paying for. Live-caught here: a carpenter
-    wandered nine tiles off its drop and spent the whole run wanting a pickup the gate
-    would never allow (`adm=fetch_boards` zero times in 1200 ticks).
-    """
-    return any(i.graphic in graphics and i.container is None and i.distance <= PICKUP_RADIUS
-               for i in obs.items)
+# `_backpack`, `_pack`, `_owns` and `_on_ground` now come from `obsview` as `pack_amount`,
+# `owns` and `on_ground`. `_on_ground`'s docstring — the nine-tile stall that made the
+# distance clause non-negotiable — moved with it, and is the reason the other three Lives'
+# ground checks now read from the same definition instead of remembering to copy it.
 
 
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
@@ -113,34 +86,58 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
 
     Nearly always the latter: this profession has no work skill, so the "hunt" answer
     here means only "leave this tick to the work planner's reflexes" — in practice, the
-    death window. Priority is the saw, then finishing the chain (sell), then material
-    (free before bought), then banking, then crafting.
+    death window, plus the two waits below (no tool and no means, no material and no
+    means) and the craft the gate would refuse. Priority is the saw, then finishing the
+    chain (sell), then material (free before bought), then banking, then crafting —
+    each branch guarded by the same precondition the matching gate applies.
     """
     if obs.player.dead:
         return "hunt", None  # RecoverDeath (a work-planner reflex) owns the death window
-    if not _owns(obs, _SAW_GRAPHICS):
-        if _on_ground(obs, _SAW_GRAPHICS):
+    if not owns(obs, _SAW_GRAPHICS):
+        if on_ground(obs, _SAW_GRAPHICS):
             return "economy", "fetch_saw"
-        if (_pack(obs, GOLD_GRAPHIC) >= SAW_COST
+        if (pack_amount(obs, GOLD_GRAPHIC) >= SAW_COST
                 and _valid_spot(memory.get(BuySaw.vendor_spot_key))):
             return "economy", "buy_saw"
         return "hunt", None  # no tool and no way to get one — do not stall at a shop
     # Finish the chain before extending it: turn finished furniture into gold first.
-    if (_pack(obs, _FURNITURE_GRAPHIC) >= SELL_FURNITURE_AT
+    if (pack_amount(obs, _FURNITURE_GRAPHIC) >= SELL_FURNITURE_AT
             and _valid_spot(memory.get(SellFurniture.vendor_spot_key))):
         return "economy", "sell_furniture"
-    if _pack(obs, _BOARD_GRAPHICS) < BOARDS_PER_ITEM:
+    if pack_amount(obs, _BOARD_GRAPHICS) < BOARDS_PER_ITEM:
         # A neighbour's delivery is free; a vendor's boards are not. Ground first.
-        if _on_ground(obs, _BOARD_GRAPHICS):
+        if on_ground(obs, _BOARD_GRAPHICS):
             return "economy", "fetch_boards"
-        if (_pack(obs, GOLD_GRAPHIC) >= BOARD_BATCH_COST
+        if (pack_amount(obs, GOLD_GRAPHIC) >= BOARD_BATCH_COST
                 and _valid_spot(memory.get(BuyBoards.vendor_spot_key))):
             return "economy", "buy_boards"
         return "hunt", None  # no material and no means — wait rather than stall
-    if _pack(obs, GOLD_GRAPHIC) > _bank_reserve(memory, BANK_RESERVE) \
+    if pack_amount(obs, GOLD_GRAPHIC) > _bank_reserve(memory, BANK_RESERVE) \
             and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
-    return "economy", "craft_carpentry"
+    # Mirror the craft gate's own two remaining clauses (`capabilities._make_craft_ready`:
+    # `_craft_at_spot` and `0 <= made < batch`) via the gate's OWN predicate, the way
+    # `tinker_life` has since birth. This branch was the terminal fallthrough — the ONE
+    # place the carpenter broke the invariant its two sibling branches above already keep
+    # — and a differential probe over 30,000 randomized carpenter states found it: the
+    # only forward-concordance violation across all five Lives (150,000 states), 308 of
+    # them, every one failing on the spot radius, the batch clause, or both.
+    #
+    # What it cost is not a missed craft, it is a PERMANENT one: the rule wants
+    # `craft_carpentry` against `ready=[]` forever, nothing else in the chain fires
+    # (sell needs a vendor route, fetch/buy are skipped with boards in the pack), and once
+    # `disagreement_ticks` elapses `warrior_life._clear_stale_ui` fires EVERY TICK on a
+    # perfectly healthy agent — 16 unowned-vendor-window closes in 30 ticks, measured.
+    # Both halves are live-shaped: `run_supply_pair` stages with `strict=False`, so an
+    # unset `vendor_spot` is a tolerated, documented outcome, and a carpenter that then
+    # crafts its one throne can never clear the batch; and `FetchBoards` walks up to
+    # `PICKUP_RADIUS` (6) — twice this radius — to a delivered pile with no walk-home leg.
+    # The material clause is already exact here: this branch is reached only with
+    # boards >= BOARDS_PER_ITEM, which with made == 0 IS the gate's per_item * (batch - made).
+    if (pack_amount(obs, _FURNITURE_GRAPHIC) < CRAFT_BATCH
+            and craft_spot_within(obs, memory, _CRAFT_RADIUS)):
+        return "economy", "craft_carpentry"
+    return "hunt", None  # nothing admissible — wait for the world, never stall
 
 
 class CarpenterLife(WarriorLife):

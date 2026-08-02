@@ -8,7 +8,7 @@ from anima2.skills.harvest import BACKPACK_LAYER
 from anima2.skills.hunt import GOLD_GRAPHIC
 from anima2.skills.mage import SULFUROUS_ASH_GRAPHIC
 from anima2.mage_life import (
-    BANK_ABOVE,
+    BANK_RESERVE,
     LOW_REAGENTS,
     REAGENT_BATCH_COST,
     MageLife,
@@ -79,10 +79,10 @@ def test_reagents_outrank_collecting_a_purse():
 
 
 def test_surplus_gold_banks_but_only_when_nothing_is_needed():
-    rich = _obs([_backpack(), _ash(50), _gold(BANK_ABOVE + 1)])
+    rich = _obs([_backpack(), _ash(50), _gold(BANK_RESERVE + 1)])
     assert decide_mode(rich, dict(ROUTES)) == ("economy", "bank_gold")
     # ...and a dry pouch still wins over banking.
-    dry = _obs([_backpack(), _ash(0), _gold(BANK_ABOVE + 1)])
+    dry = _obs([_backpack(), _ash(0), _gold(BANK_RESERVE + 1)])
     assert decide_mode(dry, dict(ROUTES)) == ("economy", "buy_reagent")
 
 

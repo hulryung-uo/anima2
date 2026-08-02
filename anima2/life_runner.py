@@ -36,11 +36,14 @@ from .contract import Observation
 from .control import GmControl
 from .ipc_body import ResilientIpcBody
 from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle
+from .obsview import banked_amount, pack_amount
+from .obsview import owned_tool_readout, pack_serial  # noqa: F401 — re-exported, see below
 from .persona import Persona
 from .skills.base import SkillContext
 from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.market import BANKBOX_LAYER, SELL_REACH
+from .skills.market import SELL_REACH, _bank_reserve
+from .warrior_life import WarriorLife
 
 #: First HTTP port handed to `--monitor`; each agent gets the next one up. Loopback
 #: only (the bridge hardcodes 127.0.0.1), so this never exposes a shard to the network.
@@ -59,50 +62,20 @@ def monitor_ports(enabled: bool, roles: list[str]) -> dict[str, int | None]:
     return {r: MONITOR_PORT_BASE + i for i, r in enumerate(roles)}
 
 
-# --- observation readbacks (the ~15 copy-pasted `_pack` helpers, once) ---------------
-
-def pack_serial(obs: Observation | None) -> int | None:
-    """OUR backpack — owner-filtered, since a neighbour's pack shares the layer."""
-    if obs is None:
-        return None
-    return next((i.serial for i in obs.items
-                 if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-
-
-def pack_amount(obs: Observation | None, graphics) -> int:
-    """Summed amount of `graphics` (an int or a set) in OUR backpack."""
-    bp = pack_serial(obs)
-    if bp is None:
-        return 0
-    if isinstance(graphics, int):
-        graphics = {graphics}
-    return sum(i.amount for i in obs.items if i.graphic in graphics and i.container == bp)
-
-
-def banked_amount(obs: Observation | None) -> int:
-    """Gold sitting in THIS character's bank box — the deposit proof `live_bank_goal.py`
-    uses. A falling pack count alone is not evidence of banking: it is equally
-    consistent with spending it, dropping it, or dying with it."""
-    if obs is None:
-        return 0
-    box = next((i.serial for i in obs.items
-                if i.layer == BANKBOX_LAYER and i.container == obs.player.serial), None)
-    if box is None:
-        return 0
-    return sum(i.amount for i in obs.items
-               if i.graphic == GOLD_GRAPHIC and i.container == box)
-
-
-def owned_tool_readout(obs: Observation | None, graphics) -> str:
-    """`"yes"`/`"NO"` for a tool WE could actually use — ours or loose on the ground,
-    never a neighbour's. Reporting "yes" for the Weaponsmith's axe is how a status line
-    once hid the exact defect that broke a run."""
-    if obs is None:
-        return "NO"
-    bp = pack_serial(obs)
-    return "yes" if any(i.graphic in graphics
-                        and i.container in (bp, obs.player.serial, None)
-                        for i in obs.items) else "NO"
+# --- observation readbacks — now in `obsview.py`, re-exported here -------------------
+#
+# This section was headed "the ~15 copy-pasted `_pack` helpers, once". The count was
+# right; the "once" was not. These four were canonical only for the RUNNERS — the five
+# Life modules went on keeping twenty hand-written copies of the same readbacks, and
+# drifted anyway: a distance clause that was never back-ported, a missing-backpack guard
+# that was never forward-ported. `obsview.py` is the one definition now; see its module
+# docstring for what each drift cost live.
+#
+# `pack_serial`, `pack_amount`, `banked_amount` and `owned_tool_readout` are RE-EXPORTED
+# from the import above (hence its `noqa: F401` — `pack_serial` and `owned_tool_readout`
+# are no longer used inside this module, only through it), because `village.py`,
+# `live_tinker_bank_gate.py`, `live_urgent_bank_gate.py` and `tests/test_life_runner.py`
+# all import them from HERE. Moving the definitions must not move anybody's imports.
 
 
 # --- staging (verified, never assumed) -----------------------------------------------
@@ -248,12 +221,70 @@ class LifeSpec:
     profession: str                       #: capability-registry key AND worker job label
     persona_name: str
     account_prefix: str
-    life_factory: Callable[..., Any]      #: (body, persona, routes) -> Life
+    life_factory: Callable[..., Any]      #: (body, persona, routes, **knobs) -> Life
     #: (gm, serial, body) -> Staged. Runs inside the GM context; use `stage_shops` and
     #: the module helpers rather than re-implementing them.
     stage: Callable[[GmControl, int, Any], Staged]
     #: Optional extra status fields: (life, obs) -> str appended to the standard line.
     status_extra: Callable[[Any, Observation | None], str] | None = None
+    #: Tuning knobs forwarded to `life_factory` as keyword arguments — the harness's
+    #: only channel from a caller (a genome, a bandit, a sweep script) into a Life's
+    #: thresholds. It has a default because it is genuinely optional, NOT because it is
+    #: decoration: audit proposal 5 gave the Lives knob PARAMETERS while the spec's
+    #: factory type stayed `(body, persona, routes)`, so a spec could not express a
+    #: threshold at all. That gap made CLAUDE.md's deferral precondition (a), "the
+    #: genome's axes can steer a full Life", false in practice, and the Phase-7
+    #: evolution-vs-random rerun waits on exactly that. Filled by the two shipped
+    #: runners' own `knobs=` argument (`village.run_carpenter_life` /
+    #: `run_woodsman_life`) — the ENTRY POINT, added because a channel wireless at the
+    #: caller's end is a channel only the tests can reach, which is the same "asserted
+    #: but not wired" shape `build_life` below exists to prevent. Every key here must be
+    #: a knob the Life routes through `anima2/knobs.py` — a raw threshold tuned from out
+    #: here is a new drift avenue, not an axis (see that module's docstring for what one
+    #: already cost). ENFORCED by `__post_init__` against `knob_names`; that sentence
+    #: was a comment and nothing else until a reviewer walked a non-knob through it.
+    knobs: dict[str, Any] = field(default_factory=dict)
+    #: The allowlist `knobs` is checked against — the KNOBS set of the class this spec's
+    #: factory actually builds (`CarpenterLife.KNOBS`, `TinkerLife.KNOBS`, ...). Defaults
+    #: to the base `WarriorLife.KNOBS`, which is the right set for four of the five Lives
+    #: and FAIL-SAFE for the fifth: a tinker spec that forgets to declare it rejects
+    #: `bank_trip_surplus` loudly, offline, at construction — the wrong direction to fail
+    #: in, but the harmless one. The factory is a lambda closing over its Life class, so
+    #: the spec cannot introspect the set; it has to be told.
+    knob_names: frozenset[str] = WarriorLife.KNOBS
+
+    def __post_init__(self) -> None:
+        """Reject a `knobs` key that is not a knob, at SPEC construction.
+
+        Two separate failures, one check. The first is silent: `build_life` splats
+        `knobs` into the Life constructor, whose other parameters are identity rather
+        than thresholds, so `knobs={"profession": "mage"}` on a carpenter spec built a
+        Life that staged, labelled and reported itself as a carpenter (`spec.profession`
+        drives all three, including the `ready=` list in `telemetry_line`) while its goal
+        policy, capability cognition and disagreement detector ran as a mage, with the
+        carpenter's `decide` rule still choosing what to want. A permanent want-vs-refuse
+        standoff that the operator's own status line contradicts — the exact rule-vs-gate
+        class `obsview.py` and `knobs.py` were written to end, re-entered through the
+        tuning channel. See `WarriorLife.KNOBS` for why `profession` is the likely key
+        and not a contrived one.
+
+        The second is merely loud, but expensively placed: a genuine TYPO
+        (`disagreement_tick`) does raise `TypeError` — from `build_life`, which `run()`
+        reaches only AFTER the login, the GM staging, the provenance gold-wipe and the
+        seed grant. Nobody has spent a shard slot on that yet; the point is that the
+        first person to would get a spawned, logged-in, seeded character abandoned behind
+        an unhandled traceback for a one-character mistake. `knobs` is fully known here,
+        before the first packet, so this is where it is checked.
+        """
+        unknown = set(self.knobs) - set(self.knob_names)
+        if unknown:
+            raise ValueError(
+                f"{self.profession} spec: {sorted(unknown)} is not a tuning knob. "
+                f"Knobs for this Life: {sorted(self.knob_names)}. Every key must be a "
+                "threshold the Life reads back through anima2/knobs.py's clamp; a "
+                "constructor parameter that is identity (profession) or cognition "
+                "(steering) is not one, and tuning it here recreates the rule-vs-gate "
+                "drift this channel exists to avoid.")
 
 
 class LifeRunner:
@@ -265,6 +296,45 @@ class LifeRunner:
         self.spec = spec
         self.host, self.port, self.ticks, self.monitor = host, port, ticks, monitor
         self.persist_insights = persist_insights
+
+    def build_life(self, body, routes: dict):
+        """Construct the Life the way `run()` does — the spec's factory plus its KNOBS.
+
+        A named seam, not a wrapper for its own sake: `run()` needs a live shard (a
+        spawned body, a GM context, a worker thread), so the knob channel could only
+        ever be proved by re-implementing this one line in a test, which is exactly how
+        a channel ends up asserted-but-not-wired. Offline tests call THIS, and the live
+        path calls it too, so "the tuned value reaches the constructed Life" is one
+        fact rather than two that must be kept in step.
+
+        The splat is safe only because `LifeSpec.__post_init__` already checked every
+        key against the Life's own `KNOBS` allowlist — see it for what rode this line
+        unvalidated before, and why the check belongs at spec construction and not here.
+        """
+        spec = self.spec
+        return spec.life_factory(body, Persona(name=spec.persona_name), routes,
+                                 **spec.knobs)
+
+    def staged_line(self, life, staged: Staged) -> str:
+        """The one line a live operator reads before the day starts: where this Life
+        stands, what it was seeded with, and the reserve it will actually keep.
+
+        A named seam for the same reason `build_life` is one. The reserve is read off
+        the BUILT Life through `market._bank_reserve` — the single read point the decide
+        rule, the `bank_gold` gate and `BankGold`'s own FSM share — and it MUST be read
+        here rather than composed by the spec: `run()` calls `spec.stage()` BEFORE
+        `build_life()`, so a `Staged.banner` is structurally incapable of seeing a tuned
+        value. `run_carpenter_life` baked `carpenter_life.BANK_RESERVE` into its banner
+        exactly that way; accurate only while nothing tuned that runner, and it would
+        have started printing a false number to a live operator the moment the runner
+        grew its `knobs` argument. Call it AFTER `econ_memory` lands — a spec's own
+        `econ_memory` may carry `bank_reserve`, and that write is the last one.
+        """
+        seed = f" and {staged.seed_gold}g seed" if staged.seed_gold else ", broke"
+        reserve = _bank_reserve(life.econ_agent.memory)
+        return (f"staged: {self.spec.persona_name}@{staged.home}{seed}"
+                f"  (reserve {reserve})"
+                + (f"  {staged.banner}" if staged.banner else ""))
 
     def run(self, worker: Callable) -> None:
         """`worker` is the village's `_run_worker` (injected to avoid an import cycle —
@@ -293,14 +363,14 @@ class LifeRunner:
             if staged.seed_gold:
                 gm.command_on(f"[AddToPack Gold {staged.seed_gold}", serial)
 
-        life = spec.life_factory(body, Persona(name=spec.persona_name), staged.routes)
+        life = self.build_life(body, staged.routes)
         self._wire_persistence(life)
         life.memory.update(staged.memory)
         life.econ_agent.memory.update(staged.econ_memory)
         life.set_leash(staged.home, staged.leash)
-        seed = f" and {staged.seed_gold}g seed" if staged.seed_gold else ", broke"
-        print(f"staged: {spec.persona_name}@{staged.home}{seed}"
-              + (f"  {staged.banner}" if staged.banner else "") + "\n")
+        # AFTER `econ_memory` — see `staged_line` for why that ordering is the only
+        # correct read point for the reserve.
+        print(self.staged_line(life, staged) + "\n")
 
         status: dict[int, str] = {}
         lock = threading.Lock()

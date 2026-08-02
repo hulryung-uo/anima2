@@ -26,10 +26,9 @@ from __future__ import annotations
 
 from .capabilities import _valid_spot
 from .contract import Observation
+from .obsview import ground_amount, pack_amount
 from .skills.market import _bank_reserve
-from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.craft import PICKUP_RADIUS
 from .skills.mage import FETCH_GOLD_PACK_CAP, BuyReagent, SULFUROUS_ASH_GRAPHIC
 from .warrior_life import WarriorLife
 
@@ -48,32 +47,14 @@ COLLECT_ABOVE = 1
 #: (nothing wrote `bank_reserve`), so the mage would have banked every coin at 400 and
 #: kept nothing for ash — the threshold-vs-reserve conflation, mage edition.
 BANK_RESERVE = FETCH_GOLD_PACK_CAP
-#: Back-compat alias (tests referenced the old name).
-BANK_ABOVE = BANK_RESERVE
 
 
-def _backpack(obs: Observation) -> int | None:
-    return next((i.serial for i in obs.items
-                 if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-
-
-def _pack_amount(obs: Observation, graphic: int) -> int:
-    bp = _backpack(obs)
-    return sum(i.amount for i in obs.items if i.graphic == graphic and i.container == bp) if bp else 0
-
-
-def _ground_gold(obs: Observation) -> int:
-    """Gold lying in the world WITHIN PICKUP REACH — never our own pack gold.
-
-    The distance test mirrors the fetch gate's own `PICKUP_RADIUS` clause. Without it
-    this rule wanted `fetch_gold` for a purse it could merely SEE, which admission must
-    refuse — the audit found exactly that drift latent here after the carpenter's
-    identical fix was never back-ported (docs/AUDIT-2026-07-29.md), and the concordance
-    suite now fails on it if either side moves alone.
-    """
-    return sum(i.amount for i in obs.items
-               if i.graphic == GOLD_GRAPHIC and i.container is None
-               and i.distance <= PICKUP_RADIUS)
+# `_backpack`, `_pack_amount` and `_ground_gold` used to be written out here. They are
+# `obsview.pack_amount` and `obsview.ground_amount` now — and this module is the reason
+# that module exists: `_ground_gold`'s docstring recorded that the carpenter's identical
+# `PICKUP_RADIUS` fix "was never back-ported", so the drift was sitting here in writing,
+# waiting to be found by the audit rather than by the code. One definition means there is
+# nothing left to back-port. The lesson itself moved with the function.
 
 
 def decide_candidates(obs: Observation, memory: dict) -> list[str]:
@@ -85,12 +66,12 @@ def decide_candidates(obs: Observation, memory: dict) -> list[str]:
     if obs.player.dead:
         return []
     out: list[str] = []
-    gold = _pack_amount(obs, GOLD_GRAPHIC)
-    if (_pack_amount(obs, SULFUROUS_ASH_GRAPHIC) < LOW_REAGENTS
+    gold = pack_amount(obs, GOLD_GRAPHIC)
+    if (pack_amount(obs, SULFUROUS_ASH_GRAPHIC) < LOW_REAGENTS
             and gold >= REAGENT_BATCH_COST
             and _valid_spot(memory.get("mage_vendor_spot"))):
         out.append("buy_reagent")
-    if _ground_gold(obs) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
+    if ground_amount(obs, GOLD_GRAPHIC) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
         out.append("fetch_gold")
     if gold > _bank_reserve(memory, BANK_RESERVE) \
             and _valid_spot(memory.get("banker_spot")):

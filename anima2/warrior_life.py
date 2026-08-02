@@ -28,10 +28,11 @@ from .agent import Agent
 from .capabilities import CapabilityPolicy, _valid_spot
 from .capability_cognition import CapabilityCognition
 from .contract import Observation
+from .knobs import knob_param
+from .obsview import owns, pack_amount, pack_has
 from .persona import Persona
 from .profession import PROFESSIONS
 from .skills.market import _bank_reserve
-from .skills.harvest import BACKPACK_LAYER
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.warrior import (
     BANDAGE_GRAPHIC,
@@ -74,13 +75,13 @@ UPGRADE_TARGET_RANK = SWORD_RANK.get(UpgradeWeapon.offer_graphic, 0)
 #: memory's `bank_reserve`, the ONE key the rule below, the `bank_gold` gate, and
 #: `BankGold`'s own FSM all read.
 BANK_RESERVE = WEAPON_PRICE + BANDAGE_BATCH_COST + ARMOR_PRICE
-#: Back-compat alias (tests and docs referenced the old name).
-BANK_ABOVE = BANK_RESERVE
 #: Require the economy condition to PERSIST this many ticks before switching. This
 #: filters the 1-2 tick transient where a blade is on the cursor mid-equip (gone from
 #: `items`, so it momentarily reads "weaponless") — diverting to the economy then would
 #: interrupt EquipWeapon and strand the blade. During the grace the hunt agent keeps
 #: running, so it wields an OWNED blade first; only a genuine loss survives the grace.
+#: Overridable per instance via `WarriorLife(..., econ_grace=...)`, clamped to at least 2
+#: — the smallest window that grants ANY hysteresis (see the constructor).
 ECON_GRACE = 6
 #: Consecutive ticks the rule may WANT an economy capability that admission never grants
 #: (no goal on the stack, capability absent from the ready set) before the orchestrator
@@ -88,42 +89,22 @@ ECON_GRACE = 6
 #: trip it: ready gates deliberately de-assert MID-transaction (a buy in flight holds a
 #: goal and shows not-ready), which is why the no-goal guard below is mandatory, not an
 #: optimization.
+#:
+#: Overridable per instance via `WarriorLife(..., disagreement_ticks=...)` — the §E
+#: "retry policy" axis, and RULE-ONLY: nothing outside this module reads it (no gate, no
+#: skill), so tuning it cannot pull the rule away from a gate. It is read off `self`, not
+#: as a module global, precisely so a genome axis can move it; the module constant stays
+#: the default, so an untuned Life behaves exactly as before.
 DISAGREEMENT_TICKS = 10
 
 
-def _backpack(obs: Observation) -> int | None:
-    return next((i.serial for i in obs.items
-                if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-
-
-def _pack_amount(obs: Observation, graphic: int) -> int:
-    bp = _backpack(obs)
-    return sum(i.amount for i in obs.items if i.graphic == graphic and i.container == bp) if bp else 0
-
-
-def _has_weapon(obs: Observation) -> bool:
-    """A sword worn at the one-handed layer OR sitting in the pack (just bought)."""
-    bp = _backpack(obs)
-    player = obs.player.serial
-    return any(
-        i.graphic in SWORD_GRAPHICS
-        and ((i.layer == WEAPON_LAYER and i.container == player) or (bp is not None and i.container == bp))
-        for i in obs.items
-    )
-
-
-def _has_chest(obs: Observation) -> bool:
-    """A plate chest worn at its body layer OR sitting in the pack (just bought)."""
-    bp = _backpack(obs)
-    player = obs.player.serial
-    return any(
-        i.graphic == PLATE_CHEST_GRAPHIC
-        and (
-            (i.container == player and i.layer == PLATE_ARMOR_LAYERS[PLATE_CHEST_GRAPHIC])
-            or (bp is not None and i.container == bp)
-        )
-        for i in obs.items
-    )
+# The pack/worn readbacks this rule used to hand-roll — `_backpack`, `_pack_amount`,
+# `_has_weapon`, `_has_chest`, `_pack_has_sword` — now come from `obsview`, which is the
+# single definition all five Lives share. `owns(..., layer=...)` is exactly what
+# `_has_weapon`/`_has_chest` were: a sword worn at the ONE-HANDED layer (any other worn
+# plate is not "wearing a chest") OR sitting in the pack, just bought and not yet
+# equipped. `_worn_blade_rank` below stays here — it is not a readback anybody else
+# duplicated, and it needs this profession's own `SWORD_RANK`.
 
 
 def _worn_blade_rank(obs: Observation) -> int | None:
@@ -135,13 +116,6 @@ def _worn_blade_rank(obs: Observation) -> int | None:
         and i.layer == WEAPON_LAYER and i.container == obs.player.serial
     ]
     return max(ranks) if ranks else None
-
-
-def _pack_has_sword(obs: Observation) -> bool:
-    bp = _backpack(obs)
-    return bp is not None and any(
-        i.graphic in SWORD_GRAPHICS and i.container == bp for i in obs.items
-    )
 
 
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
@@ -156,20 +130,22 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """
     if obs.player.dead:
         return "hunt", None  # RecoverDeath (a hunt-planner reflex) owns the death window
-    gold = _pack_amount(obs, GOLD_GRAPHIC)
-    if not _has_weapon(obs) and gold >= WEAPON_PRICE and _valid_spot(memory.get("weapon_vendor_spot")):
+    gold = pack_amount(obs, GOLD_GRAPHIC)
+    if (not owns(obs, SWORD_GRAPHICS, layer=WEAPON_LAYER) and gold >= WEAPON_PRICE
+            and _valid_spot(memory.get("weapon_vendor_spot"))):
         return "economy", "buy_weapon"
-    if _pack_amount(obs, BANDAGE_GRAPHIC) < LOW_BANDAGES and gold >= BANDAGE_BATCH_COST \
+    if pack_amount(obs, BANDAGE_GRAPHIC) < LOW_BANDAGES and gold >= BANDAGE_BATCH_COST \
             and _valid_spot(memory.get("healer_spot")):
         return "economy", "buy_bandage"
-    if not _has_chest(obs) and gold >= ARMOR_PRICE and _valid_spot(memory.get("armorer_spot")):
+    if (not owns(obs, PLATE_CHEST_GRAPHIC, layer=PLATE_ARMOR_LAYERS[PLATE_CHEST_GRAPHIC])
+            and gold >= ARMOR_PRICE and _valid_spot(memory.get("armorer_spot"))):
         return "economy", "buy_armor"
     # Growth, once the necessities are covered: trade a weaker worn blade up to the
     # vendor's best, but only with surplus beyond a re-arm reserve, and only while the
     # pack holds no sword (the arrival proof requires it to start empty of them).
     worn_rank = _worn_blade_rank(obs)
     if (worn_rank is not None and worn_rank < UPGRADE_TARGET_RANK
-            and not _pack_has_sword(obs)
+            and not pack_has(obs, SWORD_GRAPHICS)
             and gold >= WEAPON_PRICE + UPGRADE_RESERVE
             and _valid_spot(memory.get("weapon_vendor_spot"))):
         return "economy", "upgrade_weapon"
@@ -295,10 +271,30 @@ class WarriorLife:
     #: override with their own derived reserve.
     DEFAULT_BANK_RESERVE = BANK_RESERVE
 
+    #: The ALLOWLIST for the tuning channel: exactly the constructor parameters that are
+    #: knobs, i.e. that route through `anima2/knobs.py`'s clamp. A subclass with its own
+    #: knob extends it (`TinkerLife.KNOBS`), never replaces it.
+    #:
+    #: `LifeSpec.knobs` splats into this constructor, and the other parameters it can
+    #: reach are NOT knobs — they are identity. `profession` is the worst of them, and
+    #: review-caught: a spec built for the carpenter with `knobs={"profession": "mage"}`
+    #: kept `spec.profession="carpenter"` for staging, the worker label and the
+    #: `ready=` telemetry list while the Life got `_profession_key="mage"` for its goal
+    #: policy, its capability cognition and its disagreement detector — with `decide`
+    #: still the CARPENTER rule. That is the rule-vs-gate drift class this whole change
+    #: set exists to kill, rebuilt out of the channel that was supposed to be the safe
+    #: way to tune. It is not a contrived key either: `foundry/archive.py::Genome`'s
+    #: first axis is literally named `profession`, and the genome is the searcher this
+    #: channel is being built for. `steering` is excluded for the milder version of the
+    #: same reason: it is a cognition-tier switch that builds a real LLM client at
+    #: construction time, and it is clamped by nothing.
+    KNOBS: frozenset[str] = frozenset({"bank_reserve", "econ_grace", "disagreement_ticks"})
+
     def __init__(self, body, persona: Persona, profession: str = "swordsman",
                  routes: dict | None = None, *,
                  bank_reserve: int | None = None,
-                 econ_grace: int = ECON_GRACE,
+                 econ_grace: int | None = None,
+                 disagreement_ticks: int | None = None,
                  steering: str = "scripted") -> None:
         prof = PROFESSIONS[profession]
         #: Steering evidence: every LLM consult as (candidates, chosen, used_llm).
@@ -341,14 +337,38 @@ class WarriorLife:
         # gate recreated the drift class through this very knob (review-caught).
         self.econ_agent.memory["bank_reserve"] = (
             self.DEFAULT_BANK_RESERVE if bank_reserve is None else bank_reserve)
-        self.econ_grace = econ_grace
+        # The two RULE-ONLY knobs — nothing outside this module reads either, so they
+        # ride instance attributes rather than memory keys (`decide` is a staticmethod
+        # over `(obs, memory)` and can only see a knob that is a KEY; a knob only
+        # `tick()`/a method reads must not be one, or the rule cannot find it). Both go
+        # through `knobs.knob_param`, the same clamp `bank_reserve` uses, so a genome
+        # axis exploring a negative value gets a floor instead of a Life that switches
+        # instantly (`econ_grace`, floor 2) or self-reports a disagreement every single
+        # tick and closes a UI surface on each one (`disagreement_ticks`, floor 1).
+        #
+        # Each floor is the SMALLEST value that still does the job its knob exists for,
+        # and NEITHER is `knob_param`'s natural 0. For `econ_grace`, 1 is no better than
+        # 0: `_econ_streak` is incremented BEFORE `self._econ_streak < self.econ_grace`
+        # is tested, so at 0 and at 1 alike the orchestrator commits to the economy on
+        # the FIRST tick the rule asks for it — no hysteresis at all, which is the
+        # mid-equip window ECON_GRACE was added for (blade on the cursor, absent from
+        # `items`, so the rule reads "weaponless" and wants `buy_weapon`): switching
+        # there interrupts EquipWeapon, strands the blade and buys a second sword.
+        # Review-caught, because floor 0 shipped here first and EVERY malformed write
+        # (`-1`, `2.5`, `True`, `"6"`) landed on it — the clamp this comment already
+        # claimed was a floor was a behavioral no-op, and worse than the plain `int`
+        # parameter it replaced, which at least raised loudly on a string.
+        self.econ_grace = knob_param(econ_grace, ECON_GRACE, floor=2)
+        #: Ticks a want-vs-refuse standoff must persist before it is reported+repaired.
+        self.disagreement_ticks = knob_param(disagreement_ticks, DISAGREEMENT_TICKS,
+                                             floor=1)
         self.mode = "hunt"
         self.target_cap: str | None = None
         self._econ_streak = 0
         self._profession_key = profession
         self._disagree_streak = 0
         #: `(capability_id, streak)` once a rule-vs-gate disagreement has persisted for
-        #: `DISAGREEMENT_TICKS`; `None` while healthy. Runners print this loudly — six
+        #: `self.disagreement_ticks`; `None` while healthy. Runners print this loudly — six
         #: live failures were exactly this state with no outward signature.
         self.rule_gate_disagreement: tuple[str, int] | None = None
 
@@ -418,7 +438,7 @@ class WarriorLife:
         """Self-report the stall this project kept paying to discover live.
 
         The shape: the rule WANTS an economy capability, no goal is on the stack, and the
-        capability's own readiness gate refuses — for `DISAGREEMENT_TICKS` straight. Each
+        capability's own readiness gate refuses — for `self.disagreement_ticks` straight. Each
         of the six documented live failures sat in exactly this state, outwardly
         indistinguishable from an agent at work, until a bespoke instrumentation round
         named it. The no-goal guard is mandatory: gates de-assert mid-transaction by
@@ -440,7 +460,7 @@ class WarriorLife:
             except Exception:  # noqa: BLE001 — a detector must never break the life
                 disagreeing = False
         self._disagree_streak = self._disagree_streak + 1 if disagreeing else 0
-        if self._disagree_streak >= DISAGREEMENT_TICKS:
+        if self._disagree_streak >= self.disagreement_ticks:
             self.rule_gate_disagreement = (self.target_cap, self._disagree_streak)
             self._clear_stale_ui(obs)
         else:
@@ -456,7 +476,7 @@ class WarriorLife:
         wanted `fetch_iron` for 156 ticks with 38 ingots on the ground and `ready=[]`.
 
         Safe by the detector's own precondition: firing requires NO goal on the stack
-        for `DISAGREEMENT_TICKS` straight, so no capability owns the surface being
+        for `self.disagreement_ticks` straight, so no capability owns the surface being
         closed — a mid-transaction gump belongs to a live goal and is never touched
         here. THREE surfaces are closable and all three have been seen live: a gump
         (`GumpResponse` button 0 — the craft FSM's own close), and a vendor BUY or

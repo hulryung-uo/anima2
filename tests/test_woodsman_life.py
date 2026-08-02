@@ -12,7 +12,7 @@ from anima2.skills.harvest import BACKPACK_LAYER
 from anima2.skills.hunt import GOLD_GRAPHIC
 from anima2.skills.woodwork import BOARD_GRAPHIC, LOG_GRAPHIC
 from anima2.woodsman_life import (
-    BANK_ABOVE,
+    BANK_RESERVE,
     HATCHET_COST,
     SELL_BOARDS_AT,
     WoodsmanLife,
@@ -94,10 +94,10 @@ def test_boards_below_the_threshold_are_carried_not_hauled():
 
 
 def test_surplus_gold_banks_but_only_when_nothing_is_needed():
-    rich = _obs([_backpack(), _axe(), _item(0x902, GOLD_GRAPHIC, BANK_ABOVE + 1)])
+    rich = _obs([_backpack(), _axe(), _item(0x902, GOLD_GRAPHIC, BANK_RESERVE + 1)])
     assert decide_mode(rich, dict(ROUTES)) == ("economy", "bank_gold")
     # ...and an unfinished chain still wins over banking.
-    busy = _obs([_backpack(), _axe(), _item(0x902, GOLD_GRAPHIC, BANK_ABOVE + 1),
+    busy = _obs([_backpack(), _axe(), _item(0x902, GOLD_GRAPHIC, BANK_RESERVE + 1),
                  _item(0x904, LOG_GRAPHIC, 4)])
     assert decide_mode(busy, dict(ROUTES)) == ("economy", "process_logs")
 

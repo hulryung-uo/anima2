@@ -284,6 +284,81 @@ def test_malformed_bank_reserve_clamps_identically_for_rule_and_gate():
     assert decide_mode(obs, memory) == ("economy", "craft_tongs")
 
 
+# --- the urgent band as a tuning knob (audit #5, the second knob) --------------------
+#
+# `bank_trip_surplus` is the tinker's own §E "priority band" axis and the first knob
+# added AFTER the clamp was generalized into `anima2/knobs.py`. It is RULE-ONLY: the
+# only bank gate is `gold > bank_reserve`, and the urgent band `gold > reserve +
+# surplus` is strictly stricter for any surplus >= 0 — which is exactly why the read
+# is clamped, since at a NEGATIVE value the band goes LOOSER than the gate and the
+# rule wants a deposit admission refuses. Same drift class, second knob.
+
+def _gate_ready(obs, memory):
+    from anima2.capabilities import ready_capability_ids
+    from anima2.skills.base import SkillContext
+
+    return ready_capability_ids(
+        "tinker", SkillContext(obs=obs, persona=Persona(name="Pim"),
+                               memory=dict(memory)))
+
+
+def test_a_tuned_bank_trip_surplus_moves_the_urgent_band():
+    from anima2.tinker_life import BANK_RESERVE, decide_mode
+
+    memory = dict(_decide_memory(), bank_trip_surplus=10)
+    gold = BANK_RESERVE + 11  # inside the DEFAULT band, above the tuned one
+    obs = _decide_obs([_iron(0x800, 20), _item(0x801, GOLD_GRAPHIC, amount=gold)])
+    assert decide_mode(obs, memory) == ("economy", "bank_gold")
+    # ...and untuned, the same gold leaves craft on top — the knob moved the rule,
+    # not the fixture.
+    assert decide_mode(obs, _decide_memory()) == ("economy", "craft_tongs")
+    # The gate agrees at both settings: it reads `bank_reserve`, which the band only
+    # ever narrows.
+    assert "bank_gold" in _gate_ready(obs, memory)
+
+
+def test_bank_trip_surplus_clamps_identically_for_rule_and_gate():
+    """Set, absent and MALFORMED — the three states a tuning write can leave behind.
+
+    The malformed row is the whole reason this knob is read through `knob_int`: at
+    `-100` an unclamped band would fire at 1g of surplus while `_bank_ready` still
+    refuses below the reserve, which is the stall shape six live runs paid for.
+    """
+    from anima2.tinker_life import BANK_RESERVE, BANK_TRIP_SURPLUS, decide_mode
+
+    gold = BANK_RESERVE + 1  # one coin of surplus: inside every non-zero band
+    obs = _decide_obs([_iron(0x800, 20), _item(0x801, GOLD_GRAPHIC, amount=gold)])
+    for label, value in [("set", BANK_TRIP_SURPLUS), ("absent", None),
+                         ("negative", -100), ("float", 2.5), ("bool", True),
+                         ("string", "0")]:
+        memory = _decide_memory()
+        if value is not None:
+            memory["bank_trip_surplus"] = value
+        mode, cap = decide_mode(obs, memory)
+        if cap is not None:
+            assert cap in _gate_ready(obs, memory), (
+                f"{label}: the rule wants {cap!r} the gate refuses — the knob pried "
+                f"the two apart"
+            )
+        # Every malformed value collapses to the same clamped band (surplus 0), so
+        # one coin above the reserve is already urgent; a healthy value keeps craft.
+        expected = "bank_gold" if label not in {"set", "absent"} else "craft_tongs"
+        assert cap == expected, f"{label}: wanted {cap!r}"
+
+
+def test_the_tinker_writes_its_own_urgent_band_at_construction():
+    # The knob is a MEMORY key because `decide_mode` is a staticmethod over
+    # `(obs, memory)` — a rule can only see a knob that lives where it looks.
+    from anima2.mock_body import MockBody
+    from anima2.tinker_life import BANK_TRIP_SURPLUS, TinkerLife
+
+    life = TinkerLife(body=MockBody(), persona=Persona(name="Pim"))
+    assert life.econ_agent.memory["bank_trip_surplus"] == BANK_TRIP_SURPLUS
+    tuned = TinkerLife(body=MockBody(), persona=Persona(name="Pim"),
+                       bank_trip_surplus=5)
+    assert tuned.econ_agent.memory["bank_trip_surplus"] == 5
+
+
 def test_a_given_up_bank_goal_closes_its_frame_instead_of_zombieing():
     # forge1 (audit #6's one anomaly) and forge13 live, root-caused offline: a
     # bank run whose FSM gives up (banker not found — here structurally, the

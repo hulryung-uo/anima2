@@ -37,8 +37,7 @@ from __future__ import annotations
 
 from .capabilities import _valid_spot
 from .contract import Observation
-from .skills.craft import PICKUP_RADIUS
-from .skills.harvest import BACKPACK_LAYER
+from .obsview import on_ground, owns, pack_amount
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
 from .skills.woodwork import (
@@ -78,36 +77,20 @@ BANK_RESERVE_AXES = 6
 #: precisely the outcome this constant's own comment claims to prevent. Having a
 #: threshold is not the same as keeping a reserve, and conflating them cost nothing here
 #: only because no run had reached the threshold yet.
+#:
+#: The rule below banks ABOVE it — `>`, not `>=`, the same comparison the gate makes —
+#: so the rule can never want a deposit the gate would refuse. That clause used to live
+#: on a separate `BANK_ABOVE = BANK_RESERVE` alias, and having a second NAME for one
+#: number is how the threshold and the reserve came apart in the first place; it belongs
+#: on the number itself.
 BANK_RESERVE = HATCHET_COST * BANK_RESERVE_AXES
-#: Bank once the purse is above that reserve — the same comparison the gate makes, so
-#: the rule can never want a deposit the gate would refuse.
-BANK_ABOVE = BANK_RESERVE
 
 
-def _backpack(obs: Observation) -> int | None:
-    return next((i.serial for i in obs.items
-                 if i.layer == BACKPACK_LAYER and i.container == obs.player.serial), None)
-
-
-def _pack_amount(obs: Observation, graphic: int) -> int:
-    bp = _backpack(obs)
-    return sum(i.amount for i in obs.items if i.graphic == graphic and i.container == bp) if bp else 0
-
-
-def _has_axe(obs: Observation) -> bool:
-    """An axe held or worn — the tool `Chop` and `ProcessLogs` both require."""
-    bp = _backpack(obs)
-    return any(i.graphic in AXE_GRAPHICS
-               and (i.container == bp or i.container == obs.player.serial)
-               for i in obs.items)
-
-
-def _axe_on_ground(obs: Observation) -> bool:
-    """An axe lying in the world WITHIN PICKUP REACH — the fetch gate's own condition.
-    Wanting to fetch something too far to pick up is a goal admission must refuse (see
-    `carpenter_life._on_ground`, where ignoring distance cost a whole run)."""
-    return any(i.graphic in AXE_GRAPHICS and i.container is None
-               and i.distance <= PICKUP_RADIUS for i in obs.items)
+# `_backpack`, `_pack_amount`, `_has_axe` and `_axe_on_ground` now come from `obsview`.
+# `owns(obs, AXE_GRAPHICS)` is what `_has_axe` was — an axe HELD OR WORN, the tool `Chop`
+# and `ProcessLogs` both require, and the widening that a worn axe cost this very
+# profession a whole run to learn. `on_ground(obs, AXE_GRAPHICS)` is `_axe_on_ground`,
+# distance clause and all. Both docstrings moved with them.
 
 
 def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
@@ -121,15 +104,15 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """
     if obs.player.dead:
         return "hunt", None  # RecoverDeath (a work-planner reflex) owns the death window
-    if not _has_axe(obs):
+    if not owns(obs, AXE_GRAPHICS):
         # A dropped axe is free; buying one is not. Prefer the ground.
-        if _axe_on_ground(obs):
+        if on_ground(obs, AXE_GRAPHICS):
             return "economy", "fetch_hatchet"
-        if (_pack_amount(obs, GOLD_GRAPHIC) >= HATCHET_COST
+        if (pack_amount(obs, GOLD_GRAPHIC) >= HATCHET_COST
                 and _valid_spot(memory.get(BuyHatchet.vendor_spot_key))):
             return "economy", "buy_hatchet"
         return "hunt", None  # no tool and no way to get one — keep living, not stalling
-    boards = _pack_amount(obs, BOARD_GRAPHIC)
+    boards = pack_amount(obs, BOARD_GRAPHIC)
     # A partner outranks the shop. Configuring `carpenter_drop` IS the statement that
     # this woodsman supplies somebody — without it nothing changes and it sells as
     # before. Note what this costs in gold, because it is not nothing: the vendor buys
@@ -144,10 +127,10 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     if (boards >= SELL_BOARDS_AT
             and _valid_spot(memory.get(SellBoards.vendor_spot_key))):
         return "economy", "sell_boards"
-    if _pack_amount(obs, LOG_GRAPHIC) > 0:
+    if pack_amount(obs, LOG_GRAPHIC) > 0:
         return "economy", "process_logs"
     # `>` against the SAME `bank_reserve` key the gate and BankGold's FSM read.
-    if _pack_amount(obs, GOLD_GRAPHIC) > _bank_reserve(memory, BANK_RESERVE) \
+    if pack_amount(obs, GOLD_GRAPHIC) > _bank_reserve(memory, BANK_RESERVE) \
             and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     return "hunt", None
