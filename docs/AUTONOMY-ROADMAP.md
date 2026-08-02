@@ -693,6 +693,14 @@ capabilities:
   one tool (`15×5 + 1×13 == 88`), so banking down to the reserve leaves *precisely*
   enough to afford both a `buy_ingots` refill (75) and a `buy_smith_tool`
   replacement (13). No registry reorder was needed.
+  - *Name update (2026-08-02):* the `WORKING_CAPITAL_RESERVE` constant named in the
+    two bullets above no longer exists. Nothing ever read it — every Life derives its
+    own reserve from its own capability configs (`tinker_life.BANK_RESERVE` = iron
+    batch + tool, `carpenter_life.BANK_RESERVE` = board batch + saw,
+    `warrior_life.BANK_RESERVE` = blade + bandages + chest) — so it was deleted rather
+    than left standing as a second, unread source for a number three places must agree
+    on. The SIZING lesson is unchanged and now lives beside the key it sizes, in
+    `capabilities.py::_bank_ready`. The `bank_reserve` memory key itself is untouched.
 - **Craft re-fire works** (village-proven: `banked_gold@127 → crafted_daggers@168`);
   a solo probe only stalled it by omitting the profession's forge/anvil structures.
 
@@ -725,3 +733,37 @@ on free iron with zero routine GM intervention. What remains for the full capsto
 is the multi-hour village run at scale (the mechanism is proven; endurance is not),
 the supply-gap `buy_ingots` bridge in the *village* (proven in the solo harness),
 and sections C (self-provisioning), D (liveness/recovery watchdog), E (learning).
+
+### E — the tuning channel: what can actually be steered (2026-08-02, partial)
+
+§E's criterion for the evolution-vs-random rerun ("every searched axis changes a
+meaningful live trajectory") needs a channel from a searcher into a Life. Half of that
+channel now EXISTS: `village.run_carpenter_life(knobs={...})` /
+`run_woodsman_life(knobs={...})` → `LifeSpec.knobs` → `LifeRunner.build_life()` →
+`village.py`'s factories → a Life's memory or instance attributes, with every reader
+clamped through `anima2/knobs.py`. Before 2026-08-02 none of it existed: audit proposal
+5's constructor parameters had no caller-side wiring at all
+(`docs/AUDIT-2026-07-29.md`, "Proposal 5 was WIRELESS"), and until that same day the
+runners themselves took no `knobs` argument, so the channel could only be exercised from
+a hand-built spec in a test. The half that is still missing is the SEARCHER end — see
+below the table. §E's own named bottlenecks, honestly scored against it:
+
+| §E bottleneck | Status |
+|---|---|
+| retry policy | ✅ `disagreement_ticks` (all Lives), `econ_grace` — instance attrs, floor-clamped to 1 and 2 respectively, each the smallest value that still does the job its knob exists for (`knob_param`'s natural floor of 0 is a behavioral no-op for both) |
+| stock targets | ◐ the RESERVE is tunable (`bank_reserve`; tinker `bank_trip_surplus`); reorder points are not — they are gate-side constants captured into import-time closures |
+| exploration radius | ◐ `wander_leash` is tunable, but through `Staged.leash`, not `LifeSpec.knobs`, and with its own inline clamp |
+| retreat thresholds | ✗ blocked: the capability manifest validator requires `vars(Survive_instance) == {}` |
+| rest timing | ✗ same block |
+
+Offline only, and the reach is two runners out of seven Life-construction sites. The four
+INLINE runners (`run_supply_pair`, `run_forge_pair`, `run_warrior_village`,
+`run_artisan_mage_village`) build their Lives with no factory and no `LifeSpec`, so they
+have nothing to forward a knob through — and `run_forge_pair` is the miner→tinker pair,
+the positive-margin loop a gold-per-life fitness run would actually measure. No live run
+has used a tuned knob yet. And `foundry/archive.py::Genome`'s four axes (`profession`,
+`sociability`, `deliver_threshold`, `cognition_tier`) still map onto no Life knob, so
+nothing SEARCHES the channel even where it is wired. So §E's criterion is NOT met and the
+Phase 7 item 2 rerun stays deferred; CLAUDE.md's "Two roadmaps, one decision" is the
+authority on that, and the audit's follow-up list (items 2-4) is the work between here and
+meeting it.

@@ -538,17 +538,37 @@ The original analysis, kept as the decision record:
   [`AUTONOMY-ROADMAP.md`](AUTONOMY-ROADMAP.md) for its own work order and acceptance
   ladder, and [`AUDIT-2026-07-29.md`](AUDIT-2026-07-29.md) for the multi-team review of
   it. Landed: the immutable capability registry + closed capability cognition (B3/B4),
-  and four autonomous per-profession **Lives** on one orchestrator
-  (`warrior_life.py` base; mage/woodsman/carpenter subclasses) with a shared runner
-  harness (`life_runner.py`). Two inter-agent supply chains verified live, coordinating
-  only through items on the ground: tinker→mage (gold) and lumberjack→carpenter
-  (boards). **Economics caveat, measured against ServUO's own price tables and binding
+  and five autonomous per-profession **Lives** on one orchestrator
+  (`warrior_life.py` base; mage/woodsman/carpenter/**tinker** subclasses — the tinker
+  arrived with the positive-margin forge pair, after the "four Lives" phrasing that used
+  to stand here) with a shared runner
+  harness (`life_runner.py`), over two single-source modules the Lives share:
+  `obsview.py` (every observation readback — pack/worn/ground/bank, one definition each,
+  after twenty hand-copied variants drifted three separate ways) and `knobs.py` (the one
+  clamped read every LIFE tuning knob goes through, so a malformed value moves rule and
+  gate to the same place — `wander_leash` is the standing exception, tuned through
+  `Staged.leash` and clamped inline in `skills/movement.py` to the class default rather
+  than a floor; audit follow-up 4). THREE inter-agent supply chains verified live,
+  coordinating only through items on the ground: tinker→mage (gold),
+  lumberjack→carpenter (boards), and miner→tinker (iron/tongs) — the third is the only
+  positive-margin one, and it was undercounted here while the same paragraph named it
+  below as the loop that satisfies §E's precondition (b). **Economics caveat, measured
+  against ServUO's own price tables and binding
   on future work:** every carpentry recipe sells for less than its input boards
   (`CARPENTER.md`), so the lumberjack→carpenter pair is a mechanism proof and is
   economically FROZEN — do not scale or showcase it as an economy; the flagship chain
   belongs on a positive-margin loop. Phase 7 item 2's rerun is deferred per
   AUTONOMY-ROADMAP §E until the genome's axes steer a full Life and a positive-margin
-  loop exists (see CLAUDE.md "Two roadmaps, one decision").
+  loop exists (see CLAUDE.md "Two roadmaps, one decision"). Status 2026-08-02: the
+  positive-margin loop EXISTS (miner→tinker tongs), and the tuning CHANNEL now runs end
+  to end for TWO of the seven Life-construction sites —
+  `village.run_carpenter_life(knobs=)` / `run_woodsman_life(knobs=)` → `LifeSpec.knobs` →
+  `LifeRunner.build_life` → a Life, every reader clamped through `knobs.py`. It is still
+  not enough for the rerun: only four thresholds ride the channel, the other five
+  construction sites (including `run_forge_pair`, the flagship positive-margin pair)
+  build their Lives inline with no seam, `Genome`'s own four axes map onto no knob so no
+  SEARCHER is attached to the steerable end, and no live run has used a tuned knob. So
+  the rerun stays deferred. CLAUDE.md is the authority on what runs next.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane

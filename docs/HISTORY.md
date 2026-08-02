@@ -4,6 +4,19 @@ Moved verbatim from CLAUDE.md (audit proposal 4): 37KB of per-phase history was 
 per-session context tax and a second divergence surface. Nothing was edited in the
 move; per-phase detail also lives in docs/PHASE2.md ... PHASE7.md.
 
+Two things have been added since the move, both dated 2026-08-02 and both at the end of
+this file: the between-phase entry (the offline single-source/knob-channel refactor) and
+the corrected forward pointer that closes the file.
+
+The phase narrative above them is otherwise verbatim, with ONE edit, stated here because
+"untouched" was the first version of this sentence and it was false: the Phase 7 entry's
+trailing `**Next:** Phase 7 item 2 ...` clause was first DELETED outright and is now
+struck through in place, annotated, with its replacement at the end of the file. A
+review caught the deletion against `git diff --stat` (50 insertions, 3 deletions) while
+this paragraph claimed none. That clause is not incidental prose — it is the stale
+forward pointer the audit's top risk 4 / proposal 4 is about, i.e. the evidence for a
+lesson still being cited, so a silent deletion was the worse of the two errors.
+
 ## Current phase
 **Phase 3 complete (economy & interaction loop), all four items done.** Phase 2
 (cognition + memory) closed out — see PHASE2.md. The Python brain drives
@@ -477,7 +490,67 @@ with `nodes=None`; both fairness proofs `True`. The decisive live moment: an EVO
 fishing stands with matched water nodes, not the Minoc ridge it would have hit
 pre-fix. Comparative verdict `RANDOM WON` (margin −28) is expected/irrelevant at
 this 6-genome smoke budget — item 2 is the decisive larger-budget rerun. 648
-tests green (up from 637), ruff clean. **Next:** Phase 7 item 2 — the decisive
+tests green (up from 637), ruff clean. ~~**Next:** Phase 7 item 2 — the decisive
 evolution-vs-random redemption rerun at a larger (`--genomes 20`) budget,
-exercising item 1's fix at item 6's own full scale.
+exercising item 1's fix at item 6's own full scale.~~ *(Superseded 2026-08-02 — see
+the corrected forward pointer at the end of this file. Struck through rather than
+deleted, and deleted is what happened first: this sentence IS the stale pointer that
+almost burned a multi-hour single-GM live budget, so it is the primary evidence for
+the audit's top risk 4 / proposal 4 and removing it would have destroyed the exhibit
+while keeping the lesson that cites it.)*
+
+**Between-phase work (2026-08-02) — two single-source modules, a knob channel, and a
+record correction.** Not a phase and not on the numbered roadmap: an offline refactor
+plus the paperwork it owed. Two new modules sit under all five Lives. `anima2/obsview.py`
+is the ONE definition of what an Observation says we have (pack / worn / ground-in-reach /
+bank box): twenty hand-copied readbacks across the five Life modules and four more in
+`life_runner.py` collapse into one function each, and merging them exposed a real defect
+rather than mere duplication — three Lives wrote `i.container in (bp, player)` with no
+`bp is not None` guard, so with our own pack out of view a tool lying on the GROUND read
+as owned while the gate correctly refused. `anima2/knobs.py` is the one clamped read every
+LIFE tuning knob goes through (`wander_leash` is the standing exception — it rides
+`Staged.leash` and clamps itself inline), generalizing the `bank_reserve` lesson (a
+malformed value read raw by the rule and clamped by the gate had already recreated the
+rule-vs-gate drift class THROUGH the tuning knob itself). Audit proposal 5's constructor
+parameters, marked done since 2026-07-30, turned out to be **wireless**: no production
+site could pass one. They
+have an entry point now — `village.run_carpenter_life(knobs=)` / `run_woodsman_life(knobs=)`
+→ `LifeSpec.knobs` → `LifeRunner.build_life` → the Life — but only two of seven
+Life-construction sites have it, no `Genome` axis maps onto a knob, and no live run has
+used a tuned one, so CLAUDE.md's precondition (a) stays PARTIAL and the Phase 7 item 2
+rerun stays deferred. The channel also has a GUARD it shipped without: `LifeSpec.knobs`
+splatted into the Life constructor unchecked, so `knobs={"profession": "mage"}` — the
+first axis name in `Genome`, i.e. the likeliest key the searcher this channel exists for
+would send — built a carpenter that staged, labelled and reported itself as a carpenter
+while deciding as a mage, a permanent want-vs-refuse standoff contradicted by the
+operator's own status line. Each Life declares a `KNOBS` allowlist now and
+`LifeSpec.__post_init__` enforces it, which also moves a typo'd axis from "TypeError
+after the login, the staging, the gold-wipe and the seed grant" to "ValueError before
+the first packet". Review-caught. Ruff's rule selection is pinned in `pyproject.toml` (an unpinned
+`select` means the linter's next release edits the codebase's standards for it). And the
+concordance suite, which had run and earned its keep since the audit, turned out to be
+blind along three whole axes at once — every fixture injected a backpack, every knob was
+pinned at its module default, and both craft lattices pinned `craft_spot` to the player's
+own tile. A 150,000-state differential probe found four disagreement classes hiding there;
+the fourth, `carpenter craft_carpentry`, was **measured and then left out of the written
+record**, which is the failure mode `docs/AUDIT-2026-07-29.md` exists to prevent. It is
+recorded there now, in full, with its verdict: one unguarded terminal branch that wanted a
+craft admission refuses — forever, since nothing else in a craft chain fires with material
+already in the pack — and reachable on a shipped runner today via `run_supply_pair`'s
+tolerated unset `vendor_spot`. Fixed, plus the `craft_spot` axis that would have caught
+it. **The honest half: ALL of this is offline.** 1436 tests green, both ruff gates clean,
+zero live runs — every claim above is an offline measurement or a code reading, and the
+live half of the ledger is unchanged since forge18.
+
+**Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
+evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
+which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
+("Re-run evolution versus random only when
+every searched axis changes a meaningful live trajectory; a larger budget alone is not
+an autonomy milestone") and names two preconditions: (a) the genome's axes can steer a
+full Life — Life thresholds as constructor parameters routed through single sources
+(audit proposal 5); and (b) at least one positive-margin economy loop exists, so
+gold-per-life fitness means something. Read CLAUDE.md before acting on any "next" here:
+a stale forward pointer of exactly this shape almost burned a multi-hour single-GM live
+budget (docs/AUDIT-2026-07-29.md, top risk 4 / proposal 4).
 

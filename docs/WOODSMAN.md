@@ -69,9 +69,18 @@ A lumberjack, of course, **wields its axe**. Every part was individually right:
 | component | verdict on a worn axe |
 |---|---|
 | `ProcessLogs._axe` (the skill that swings it) | I have an axe |
-| `WoodsmanLife._has_axe` (the rule that decides) | so process the logs |
+| the rule that decides — `WoodsmanLife._has_axe` then, `obsview.owns` now | so process the logs |
 | ServUO `BaseAxe.OnDoubleClick` | reach + accessibility, no backpack required |
 | **`capabilities._owned_tool` (the gate)** | **no tool** |
+
+**Pointer update (2026-08-02):** `WoodsmanLife._has_axe` no longer exists. It was one of
+twenty hand-copied Observation readbacks across the five Life modules, and it is
+`anima2/obsview.py::owns(obs, AXE_GRAPHICS)` now — one definition, written to mirror
+`capabilities._owned_tool` clause-for-clause so this table's bottom two rows can never
+disagree again. The worn-tool widening this page paid for moved into `owns`' docstring
+with it, and the merge also fixed a defect `_has_axe` had carried since it was written:
+no `bp is not None` guard, so with our own pack out of the observation an axe lying on the
+GROUND read as owned (`docs/AUDIT-2026-07-29.md`, 2026-08-02).
 
 So no goal was ever admitted, and the capability leaf sat returning `RUNNING` with
 nothing to do — which from outside is indistinguishable from working.
