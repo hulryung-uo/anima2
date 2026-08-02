@@ -96,8 +96,34 @@ wait the status line said `admitted=sell_furniture`: the sale's goal frame was s
 the economy agent's stack, stranded mid-transaction because leaving economy mode is
 exactly what stops that agent being ticked. Nothing was lost — the sale had completed and
 the gold was in the pack — but an operator reading that line would have believed a sale
-was in flight for the entire tail. Full evidence, mechanism and deferral:
-`docs/AUDIT-2026-07-29.md`, the 2026-08-03 entry and follow-up 10.
+was in flight for the entire tail. Full evidence and mechanism:
+`docs/AUDIT-2026-07-29.md`, the 2026-08-03 entry §3.
+
+**That is FIXED, and this doc is where the fixed behaviour has to be read back, because
+the frozen tail above is the thing a future reader would otherwise take for normal.**
+`WarriorLife.tick` now HOLDS the economy mode while a goal frame is live, so the sale's
+own agent keeps being ticked and the frame finishes and retires instead of freezing —
+offline, this exact carpenter now closes it as `('sell_furniture', 'failure')` on the
+FSM's own give-up ladder at 17 economy ticks, and only then falls back to waiting. What
+the tail looks like now, printed by the same `telemetry_line` the live run used, on the
+same fixture:
+
+```
+[economy] want=None admitted=sell_furniture@5/180+hold  ready=[]
+[economy] want=None admitted=sell_furniture@6/180+hold  ready=[]
+   ... the age CLIMBS, eleven more ticks ...
+[economy] want=None admitted=sell_furniture@16/180+hold ready=[]
+[hunt   ] want=None admitted=None                       ready=[]
+```
+
+`want=None` with an admitted goal is no longer the symptom — `+hold` says the orchestrator
+is deliberately finishing an owed transaction. The symptom is now an `@N` that STOPS
+climbing while the samples keep arriving.
+The fix, its three bounds and its test coverage are in the audit's 2026-08-03 §5;
+**it is proven OFFLINE ONLY — no shard has run it**, so the first live carpenter after
+this is also the fix's first live exposure.
+See `docs/WOODSMAN.md`'s telemetry legend for what `@age/budget`, `+hold`, `!frozen` and
+`!overdue` mean on a status line.
 
 (The `--knob bank_reserve=400` in that command line proved the tuning channel live — the
 staging banner printed `(reserve 400)`, not the 129 default — but it changed nothing in

@@ -98,6 +98,18 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
 Do NOT burn a multi-hour single-GM live budget on the rerun before that; a
 stale "Next:" pointer here almost caused exactly that (`docs/AUDIT-2026-07-29.md`).
 
+**What the NEXT live run owes, whatever else it does (2026-08-03).** `WarriorLife.tick`
+gained an **exit-edge hold** — the economy mode is held while a goal frame is live, so a
+transaction the rule stopped wanting still gets finished, bounded by the FSM's give-up
+ladder, the frame's deadline, and (because neither of those is general) an overdue frame
+releasing the hold. It fixes a defect found ON a live run, it changes **which inner agent
+is ticked** — the hot path of all five professions — and **it is proven offline only; the
+shard was shut down and no live run has exercised it.** The next live run of any
+profession is therefore also this fix's first exposure: watch `admitted=` for `!frozen` on
+a live frame while the character is not dead (the regression detector), a `+hold` whose
+`@age` stops climbing (the old defect wearing the new marker), and `FRAME OVERDUE`.
+Checklist and full evidence: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 and follow-up 12.
+
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
 - Live: build the bridge in the sibling repo (`cd ../anima-client && cargo build -p anima-net`),

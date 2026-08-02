@@ -84,6 +84,19 @@ identical across samples, the worker has **stopped**, and nothing read from its 
 after that point means anything — see `_run_worker`'s `DISCONNECTED` / `BUDGET SPENT`
 markers, which exist because that ambiguity once cost three runs and a wrong root cause.
 
+A frozen GOAL inside a running agent is the subtler cousin, and it cost a fourth run
+(2026-08-03): the worker was fine, the character was walking, and `admitted=sell_furniture`
+printed for 272 ticks with nothing executing it — the frame's owner agent had simply
+stopped being ticked. `admitted=` now carries the frame's `@age/budget` in the owning
+agent's own ticks, so a goal nobody is advancing is one whose age does not move while the
+samples keep arriving, and three markers name the state outright: `+hold` (legitimate — the
+orchestrator is finishing an owed transaction the rule stopped wanting), `!frozen` (nobody
+is ticking this frame; if the character is not dead, that is a regression), `!overdue` (past
+its own budget — the Life also prints a throttled `FRAME OVERDUE` line). Full legend:
+`docs/WOODSMAN.md`. The orchestrator-side fix behind those markers is proven **offline
+only** — `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 — so on the next live run this status
+line IS the verification.
+
 ## Implementation
 
 | Piece | Where |

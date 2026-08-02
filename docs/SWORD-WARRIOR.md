@@ -150,6 +150,17 @@ robustness cliff plus one shipped improvement. Full write-up:
   6/6 plate has its blade stripped mid-life, and with NO manual driver it auto-switches to
   economy, re-buys a Katana (gold 120→87), and auto-switches back to hunt with the blade
   re-wielded — a death turned into a self-recovered setback.
+  **The mode rule gained an EXIT edge on 2026-08-03, and it is not the hysteresis
+  mirrored.** `decide_mode` is pure over `(obs, memory)`, so it cannot see the goal stack
+  and answers "hunt" on the very tick a transaction's own world-fact flips — the coin
+  moves, the goods leave the pack — leaving the frame stranded mid-transaction, since only
+  the economy agent's ticks can retire one and exactly ONE inner agent is ticked per
+  orchestrator tick. So `tick` now HOLDS the economy mode while a frame is live, bounded
+  three ways (the FSM's give-up ladder; the frame's own deadline; and, because neither of
+  those is general, an OVERDUE frame releasing the hold outright), with a death episode —
+  ghost window AND corpse run — overriding it so `RecoverDeath` always has the body. Found
+  live, fixed and proven **offline only**: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §3 and
+  §5, and follow-up 12 for what a live run must check.
 - **Village integration (wired).** `village.py::run_warrior_village` + `--warriors N` run
   N swordsmen living the loop via `WarriorLife` in the standing village: each is staged at
   its own pocket with a Weaponsmith/Healer/Banker (pushed well out so they don't distract

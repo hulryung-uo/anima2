@@ -591,13 +591,60 @@ the strand costs unconditionally is that the telemetry LIES — 272 ticks of
 `telemetry_line`'s own docstring says cost three runs and one wrong root cause,
 reintroduced on the other side. Deferred deliberately (audit follow-up 10: every candidate
 repair changes the orchestrator's tick shape or the goal lifecycle, and one sighting is not
-enough to choose). **The economics reproduced the stated warning exactly**: 129g seed → 69
-(20 boards at 3g) → 93 (one throne, +24g), `net=-36g`, and the run ended BELOW the price of
+enough to choose) — *and then fixed the same day; the entry below.* **The economics
+reproduced the stated warning exactly**: 129g seed → 69 (20 boards at 3g) → 93 (one
+throne, +24g), `net=-36g`, and the run ended BELOW the price of
 its own next attempt (93 against `BOARD_BATCH_COST` 114), which prices a self-supplying
 carpenter out of the market in a single cycle — `docs/CARPENTER.md` now carries both live
 measurements and the −33g/−36g reconciliation (the vendor's shelf, not the brain, sets the
 batch). Zero code changed as a result of the run; the record did. Full evidence:
 `docs/AUDIT-2026-07-29.md`, the 2026-08-03 entry and follow-ups 10-11.
+
+**The frame the orchestrator froze — fixed the same day, and the fix needed a bound of its
+own (2026-08-03).** The deferral above lasted hours, not weeks: a verification pass
+confirmed the mechanism is structural to `WarriorLife.tick`, so all five Lives inherit it,
+and measured the price in an A/B whose two arms end in an identical world — a 15-tick delay
+on any later disagreement, ~20 economy ticks walking the return leg of a sale that finished
+280 ticks earlier, and the unconditional one, **telemetry that lies**. The repair is a
+FOURTH option none of follow-up 10's three: an **exit-edge hold**. `decide_mode` is pure
+over `(obs, memory)` and structurally cannot see the goal stack, so it answers "hunt" on
+the very tick the transaction's own world-fact flips; `tick` now HOLDS the economy mode
+while a frame is live, so the frame's own agent keeps being ticked and reaches its own
+retirement. One agent per orchestrator tick is unchanged, `decide_mode` is untouched (all
+five stay pure, so the ~150k-point concordance lattice is untouched), and `want=` stays the
+rule's own answer — fixing the `admitted=` lie by rewriting `want=` would only move the
+ambiguity. **The interesting half is the bound**, because the first implementation claimed
+two and had none that were general: only `SellItemCapability` and `BankGoldCapability` ever
+write the `cap_run_finished_goal_id` marker that closes an unachieved run, so every buy /
+craft / fetch / deliver frame has no give-up ladder at all; and every `*_can_yield` in
+`capabilities.py` carries the same unconditional "idle UI" clause, so ONE unowned gump —
+forge15's own wedge — blocks the deadline backstop and the readiness gates together. Review
+measured the consequence, and it was re-measured for the record against a two-bound build
+of the tree: with an unowned gump and any non-sell/non-bank frame the two-bound hold pinned
+four of the five Lives in economy mode for the whole 3000-tick window, their work agent
+never ticked again — **a total livelock strictly worse than the zombie frame it was written
+to fix**, which at least kept hunting. (A stale vendor BUY window does NOT reach it: the
+buy FSM's own popup stage cancels one, commit `8cdd2f0` — only the gump has no FSM-level
+owner.) So a THIRD bound shipped — an OVERDUE frame (past its own deadline on the economy
+clock the hold keeps advancing) releases the hold, and first gets
+`_clear_stale_ui` pointed at it, capped at
+three closes per frame. Death overrides the hold for the whole EPISODE, not the ghost
+window: keying it on `obs.player.dead` alone was caught taking the body back from
+`RecoverDeath` the tick after resurrection and deferring gear recovery by 177 ticks — the
+naked death-loop `WarriorLife` exists to end. Two of the implementation's own claims are
+recorded as REFUTED rather than as claims ("the hold is self-limiting"; "no offline world
+reaches the overdue state"). 22 new tests (1440 → 1462), no existing assertion touched, both
+ruff gates clean; A/B against the pre-fix tree over 1000 randomized worlds: ticks in which a
+live frame's clock did not move **129,376 → 12,096**, frames retired 9,362 → 10,312, longest
+hold **270 ticks with none over 320**, at a **−4%** work-tick cost. The original repro now
+retires `('sell_furniture','failure')` and the masking A/B flags at 15 in BOTH arms. **The
+honest half, and it is the important one: ALL of this is OFFLINE.** The shard used on
+2026-08-03 has been shut down, so the defect was found live and the fix — which changes
+WHICH INNER AGENT IS TICKED, the hot path of every profession — has never run on one. The
+next live run's checklist is written down: `!frozen` on a live frame that is not dead is the
+regression detector, a `+hold` whose `@age` stops climbing is the old defect wearing the new
+marker, and `FRAME OVERDUE` means both of the first two bounds failed. Detail:
+`docs/AUDIT-2026-07-29.md` 2026-08-03 §5 and follow-ups 12-14.
 
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",

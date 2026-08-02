@@ -101,13 +101,33 @@ candidates differ in kind — a tool the gate cannot see, a cursor another skill
 a market phase never cleared. So the runner prints all three layers separately:
 
 ```
-want=<what the orchestrator wants>  admitted=<the goal actually admitted>  ready=<what the gate allows>
+want=<what the orchestrator wants>  admitted=<the goal actually admitted>@<age>/<budget><markers>  ready=<what the gate allows>
 [axe_in_pack=? worn=? cursor=? mkt=?]
 ```
 
 `want` alone is a trap: it is *intent*, and an unadmitted goal looks identical to a busy
 one. The `axe=` readout is owner-filtered for the same reason — reporting "yes" for the
 Weaponsmith's axe is exactly how that display would have hidden the first bug.
+
+`admitted=` had the same trap on its own side, and it cost a run: a frame is on the stack
+whether or not anybody is ticking it. So it carries the frame's `@age/budget` — both in
+ECON-AGENT ticks, the clock the deadline is counted in and the one that STOPS when the
+frame stops being ticked — plus up to two markers:
+
+| marker | meaning |
+| --- | --- |
+| `+hold` | the rule stopped wanting this capability and the orchestrator is finishing it anyway (`WarriorLife.tick`'s exit-edge hold). Legitimate; it is why `want=None admitted=X` is now a normal pairing. |
+| `!frozen` | a live frame whose agent is NOT the one being ticked — a death episode, or a frame the hold has released. Its `@age` stops moving while the lines keep printing. |
+| `!overdue` | the frame is past its own budget. Printed alongside either of the above, because "age > budget" is a comparison nobody makes by eye. The Life prints `FRAME OVERDUE` too, throttled. |
+
+An `admitted=` with no `@` means no frame is on the stack at all (`admitted=None`).
+
+*Provenance, because it changes how to read these on the next run:* the run that made
+`admitted=` lie was live (2026-08-03); the orchestrator fix that makes `+hold` a legitimate
+state, and these markers themselves, are proven **OFFLINE ONLY** — no shard has run them
+(`docs/AUDIT-2026-07-29.md`, 2026-08-03 §5). So `!frozen` on a live frame while the
+character is not dead, or a `+hold` whose `@age` stops climbing, is the first thing to look
+for rather than a curiosity.
 
 ## Live result
 
