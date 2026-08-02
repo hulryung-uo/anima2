@@ -15,6 +15,11 @@ Repository = "https://github.com/hulryung-uo/anima2"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    # No upper bound on purpose. The rule set is pinned explicitly in [tool.ruff.lint], so
+    # "ruff clean" no longer depends on the version — verified identical on 0.8.0, 0.9.10,
+    # 0.11.13, 0.13.3 and 0.16.1. Capping ruff would only freeze the toolchain to buy a
+    # reproducibility the config already provides. 0.8 is the floor because it is the version
+    # whose default selection [tool.ruff.lint] now spells out.
     "ruff>=0.8",
 ]
 llm = [
@@ -33,3 +38,30 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# Pinned explicitly so "ruff clean" means the same thing on every ruff version.
+# Measured 2026-08-02 on an unchanged tree: `ruff@0.8.0 check .` said "All checks passed!"
+# while `ruff@0.16.1 check .` reported 243 errors — because with no `select` the rule set is
+# whatever the installed ruff happens to default to, and that default MOVED. The drift is
+# bidirectional, which is the part that actually bites: 0.16's default is larger (413 rules,
+# mostly style) yet DROPS 18 rules 0.8's default enforced, including real correctness checks —
+# E402 module-import-not-at-top-of-file, E711/E712 none-/true-false-comparison, E721
+# type-comparison, E731 lambda-assignment, E741-743 ambiguous names, F403/F405/F406 star-import
+# shadowing, F722 forward-annotation-syntax-error. So a plain `ruff check` upgrade would have
+# silently stopped checking things the codebase was relying on while burying that loss under
+# 200+ new style findings.
+#
+# ["E4", "E7", "E9", "F"] is not a guess: it is ruff 0.8.0's actual default, verified by diffing
+# `ruff@0.8.0 check --isolated --show-settings` against the same command with
+# `--select E4,E7,E9,F` (both expand to an identical 59-rule set). That selection string also
+# expands to the SAME 59 rules under 0.16.1, which is what makes the claim reproducible.
+#
+# Deliberately NOT widened here: adopting the modern default is a real decision with a large
+# diff (measured cost in the Track-D report), not a config tweak. Do that on purpose or not
+# at all — do not let it happen by upgrading ruff.
+#
+# Note `line-length = 100` above does NOT enforce a 100-char limit as lint: E501 is in E5,
+# outside this selection, and was outside 0.8's default too. It governs `ruff format` and the
+# rules that wrap to it. The 100-char house style is upheld by review, not by `ruff check`.
+select = ["E4", "E7", "E9", "F"]
