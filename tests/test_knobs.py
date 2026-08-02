@@ -437,3 +437,69 @@ def test_the_shipped_specs_read_their_allowlist_off_the_class_they_build():
     expected = {"carpenter": CarpenterLife.KNOBS, "lumberjack": WoodsmanLife.KNOBS}
     for spec in _capture_specs():
         assert spec.knob_names == expected[spec.profession], spec.profession
+
+
+# --- the last rung: the command line -------------------------------------------------
+
+def test_knob_pairs_parse_into_the_runners_dict():
+    """`--knob KEY=VALUE`, repeatable. The runners grew a `knobs` argument and the spec
+    grew a field, but until this parser existed the only way to set one was to import
+    the module — a channel reachable by no human and no shell script."""
+    from anima2.village import _parse_knobs
+
+    assert _parse_knobs([]) == {}
+    assert _parse_knobs(["bank_reserve=400"]) == {"bank_reserve": 400}
+    assert _parse_knobs(["bank_reserve=400", "econ_grace=3"]) == {
+        "bank_reserve": 400, "econ_grace": 3,
+    }
+    # Negative and zero parse fine here; clamping is `knobs.py`'s job, not the CLI's,
+    # and duplicating the floor in the parser would be the second source all over again.
+    assert _parse_knobs(["econ_grace=-1"]) == {"econ_grace": -1}
+
+
+def test_a_malformed_knob_pair_dies_at_the_command_line_not_on_the_shard():
+    """`knobs.py` clamps a bad value SILENTLY by design — a live run must not crash on a
+    tuning typo. That is exactly why the one boundary that can be loud must be: this
+    failure costs a shell prompt, the clamped one costs a run you then misread."""
+    import pytest
+
+    from anima2.village import _parse_knobs
+
+    for bad in ["bank_reserve", "=5", ""]:
+        with pytest.raises(SystemExit, match="KEY=VALUE"):
+            _parse_knobs([bad])
+    with pytest.raises(SystemExit, match="integer"):
+        _parse_knobs(["bank_reserve=lots"])
+
+
+def test_the_cli_refuses_a_knob_no_runner_would_carry():
+    """Only --carpenter and --woodsman have the channel. A knob passed with any other
+    roster must not be silently dropped: the operator would read the run as tuned when
+    it ran on defaults, which is the wireless-channel defect wearing a command line.
+
+    The guard has to run BEFORE any runner does, so this asserts on argument parsing
+    alone — no shard, no bridge, no roster."""
+    import pytest
+
+    with pytest.raises(SystemExit, match="carpenter"):
+        _run_cli(["--pipeline", "--knob", "bank_reserve=400"])
+
+
+def test_the_cli_hands_a_parsed_knob_to_the_runner_that_carries_it():
+    """The other half of the same guard: with --carpenter the value must ARRIVE. A
+    refusal test alone would pass just as well against a CLI that dropped every knob."""
+    from unittest.mock import patch
+
+    with patch("anima2.village.run_carpenter_life") as run:
+        _run_cli(["--carpenter", "--knob", "bank_reserve=400", "--knob", "econ_grace=3"])
+    assert run.call_args.kwargs["knobs"] == {"bank_reserve": 400, "econ_grace": 3}
+
+
+def _run_cli(argv: list[str]) -> None:
+    import sys
+    from unittest.mock import patch
+
+    from anima2 import village
+
+    with patch.object(sys, "argv", ["village", *argv]):
+        village.main()

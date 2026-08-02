@@ -2745,6 +2745,32 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
     print("\nthe pipeline village has closed for the day.")
 
 
+def _parse_knobs(pairs: list[str]) -> dict[str, int]:
+    """`--knob KEY=VALUE` pairs into the runners' `knobs` dict.
+
+    The last rung of the tuning channel: `LifeSpec.knobs` reaches a Life and
+    `run_carpenter_life`/`run_woodsman_life` expose the argument, but until this
+    parser existed no human or script could set one without importing the module.
+
+    Values are ints because every knob today is one, and a bad value dies HERE —
+    before the login, the GM staging and the provenance gold-wipe. `knobs.py`
+    clamps a malformed value silently by design (a live run must not crash on a
+    tuning typo), which is exactly why the boundary that CAN be loud should be.
+    Unknown KEYS are not checked here: `LifeSpec.__post_init__` owns that, against
+    the allowlist of the class it builds, so the two can never disagree.
+    """
+    out: dict[str, int] = {}
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key:
+            raise SystemExit(f"--knob wants KEY=VALUE, got {pair!r}")
+        try:
+            out[key] = int(raw)
+        except ValueError:
+            raise SystemExit(f"--knob {key} wants an integer, got {raw!r}") from None
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pipeline", action="store_true",
@@ -2791,6 +2817,11 @@ def main() -> None:
     ap.add_argument("--woodsman", action="store_true",
                     help="run ONE lumberjack living the full loop (chop -> process -> "
                          "sell -> bank, and replace a broken axe) via WoodsmanLife")
+    ap.add_argument("--knob", action="append", metavar="KEY=VALUE", default=[],
+                    help="tune one Life threshold, repeatable (e.g. --knob bank_reserve=400). "
+                         "Only --carpenter and --woodsman carry the channel. Every key must "
+                         "be a knob the Life routes through anima2/knobs.py; an unknown one "
+                         "fails at spec construction, before the shard connection")
     ap.add_argument("--monitor", action="store_true",
                     help="serve a read-only web view of each agent (loopback only); "
                          "the URL per agent is printed at startup")
@@ -2855,6 +2886,13 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
+    knobs = _parse_knobs(args.knob)
+    # A knob the run silently ignores is the wireless-channel defect wearing a CLI:
+    # the operator believes a threshold was tuned and reads the run as if it were.
+    if knobs and not (args.carpenter or args.woodsman):
+        raise SystemExit("--knob needs --carpenter or --woodsman; no other runner "
+                         "carries the tuning channel, and ignoring it silently would "
+                         "misreport what the run actually ran")
     if args.forge_pair:
         run_forge_pair(host=args.host, port=args.port, ticks=args.ticks,
                        monitor=args.monitor)
@@ -2867,13 +2905,13 @@ def main() -> None:
 
     if args.carpenter:
         run_carpenter_life(host=args.host, port=args.port, ticks=args.ticks,
-                           monitor=args.monitor)
+                           monitor=args.monitor, knobs=knobs)
         return
 
     if args.woodsman:
         run_woodsman_life(host=args.host, port=args.port, ticks=args.ticks,
                           monitor=args.monitor,
-                          persist_insights=args.persist_insights)
+                          persist_insights=args.persist_insights, knobs=knobs)
         return
 
     if args.pipeline:
