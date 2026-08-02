@@ -69,6 +69,17 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
   `LifeSpec.knobs` → `LifeRunner.build_life` → the Life's own memory/attributes, every
   reader clamped in `anima2/knobs.py`. Before 2026-08-02 the whole channel was WIRELESS:
   proposal 5's constructor parameters existed but no production site could pass one.
+  **The channel is LIVE-PROVEN end to end as of 2026-08-03.** `python -m anima2.village
+  --carpenter --knob bank_reserve=400 --ticks 300` against a real ServUO shard printed
+  `staged: Sten@(2609, 474) and 129g seed  (reserve 400)` — 400 is the TUNED value read
+  back off the economy agent's own memory through `skills/market.py::_bank_reserve`, not
+  the module default of 129 (`carpenter_life.BANK_RESERVE`) — so command line →
+  `_parse_knobs` → runner argument → `LifeSpec.knobs` → `LifeRunner` → the Life's economy
+  memory → every clamped reader has now carried a value on a shard. That retires
+  "offline-proven only" for the knob channel, and **nothing else**: the tuned value was
+  behaviourally INERT in that run (the carpenter ended on 93 gold, below both 129 and
+  400, so no banking decision could differ), so the CHANNEL is proven and STEERING is
+  not. Run recorded in `docs/AUDIT-2026-07-29.md` (2026-08-03 entry).
   **What is still missing is the half §E's criterion is actually about — a SEARCHER on
   the other end.** `foundry/archive.py::Genome`'s four axes (`profession`, `sociability`,
   `deliver_threshold`, `cognition_tier`) map onto no `LifeSpec.knobs` entry at all, so no
@@ -78,9 +89,11 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
   Lives with no factory and have no seam to forward through; only four thresholds ride
   the channel at all (`bank_reserve`, `econ_grace`, `disagreement_ticks`, the tinker's
   `bank_trip_surplus`); §E's retreat thresholds and rest timing cannot become knobs while
-  the capability manifest validator forbids per-instance survival state; and **no live run
-  has ever used a tuned knob** — the whole channel is offline-proven only.
-  Detail and follow-ups: `docs/AUDIT-2026-07-29.md` (2026-08-02 entry, follow-ups 2-4).
+  the capability manifest validator forbids per-instance survival state; and the one live
+  run to use a tuned knob used ONE, on the cheapest of the two wired runners, where it
+  changed nothing it could have changed.
+  Detail and follow-ups: `docs/AUDIT-2026-07-29.md` (2026-08-02 entry, follow-ups 2-4;
+  2026-08-03 entry for the live proof).
 
 Do NOT burn a multi-hour single-GM live budget on the rerun before that; a
 stale "Next:" pointer here almost caused exactly that (`docs/AUDIT-2026-07-29.md`).
@@ -90,7 +103,11 @@ stale "Next:" pointer here almost caused exactly that (`docs/AUDIT-2026-07-29.md
 - Live: build the bridge in the sibling repo (`cd ../anima-client && cargo build -p anima-net`),
   then `python -m anima2.live <host> <port> <user> <pass> [--goto X Y] [--llm]`.
 - The bridge bin + JSON shapes live in `../anima-client/crates/anima-net` (`src/bin/agent.rs`,
-  `src/json.rs`) — keep them in lockstep with `contract.py`.
+  `src/json.rs`) — keep them in lockstep with `contract.py`. The lockstep is ENFORCED by one
+  number, `ipc_body.SUPPORTED_SCHEMA_VERSION`, checked against the bridge's `ready` line: a
+  mismatch aborts the run at the handshake with `unsupported bridge schema N; expected M`.
+  Sibling-repo work on the body therefore lands here as a bump plus a serializer diff —
+  2026-08-03 spent a live attempt learning that (`docs/AUDIT-2026-07-29.md`, 2026-08-03).
 
 ## Non-negotiable principles (DESIGN.md §2)
 - **Brain ⊥ Body.** anima2 reads Observations and emits Actions — it **never**

@@ -61,6 +61,48 @@ lives share says do not stand at a shop you cannot pay for.
 requirement for this profession, and that is something the solo run proved in numbers
 rather than something the design asserted.
 
+### Measured a second time (2026-08-03), and what the repeat adds
+
+`python -m anima2.village --carpenter --knob bank_reserve=400 --ticks 300 --monitor`,
+local ServUO, 32 telemetry samples. It reproduces the block above figure for figure —
+129g seed, `129 → 69` (20 boards), `69 → 93` (one throne), boards=1, then a flat tail
+(30 samples here against the first run's 93, because the budget was 300 ticks and not
+1200; 277 steps, alive, hp 80 → 48). A price-table derivation that survives two
+independent live runs unchanged is worth more than either run alone, so the warning above
+is now measured rather than argued, twice. Three things the repeat adds:
+
+**The realised margin is −36g, not −33g, and the difference is the vendor's shelf.** The
+table's −33g assumes the 19 boards a throne consumes. The runner does not buy 19: it buys
+a batch, and `BuyMaterialCapability` orders `min(self.buy_amount, entry.amount)`
+(`skills/market.py:852`). `BuyBoards.buy_amount` is **38**, so the 20 boards both runs
+came home with is the SHARD's shop entry, not the brain's choice — one board is stranded
+at 3g and the realised per-throne margin is −36g. When re-running this, expect the
+vendor's stock to set that number.
+
+**It ended below the price of its own next attempt, and that is a one-cycle property.**
+`decide_mode` will not walk to the vendor without `BOARD_BATCH_COST` = 38 × 3g = **114g**
+in the pack — correctly, since standing at a shop you cannot pay for is the failure that
+rule exists to prevent. The 129g seed funds exactly one attempt; a throne returns 24g;
+93 < 114. So a carpenter buying its own material does not merely fail to profit, it
+prices itself out of the market in a single cycle, with a board and a saw and nowhere to
+go. That is the sharpest statement of why this chain is a mechanism proof and not an
+economy.
+
+**The waiting was correct; the report of it was not.** The first run's record reads "it is
+not stuck — it is *waiting*, correctly", and that still holds — the rule's `return "hunt",
+None` on "no material and no means" is the right answer at 93 gold. What the second run
+saw, because it was watched with `want=`/`admitted=`, is that for all 272 ticks of that
+wait the status line said `admitted=sell_furniture`: the sale's goal frame was still on
+the economy agent's stack, stranded mid-transaction because leaving economy mode is
+exactly what stops that agent being ticked. Nothing was lost — the sale had completed and
+the gold was in the pack — but an operator reading that line would have believed a sale
+was in flight for the entire tail. Full evidence, mechanism and deferral:
+`docs/AUDIT-2026-07-29.md`, the 2026-08-03 entry and follow-up 10.
+
+(The `--knob bank_reserve=400` in that command line proved the tuning channel live — the
+staging banner printed `(reserve 400)`, not the 129 default — but it changed nothing in
+this run: at 93 gold the bank branch is out of reach at either value.)
+
 ## Lessons wired in from the start
 
 Everything the previous three lives paid for was applied before the first run rather than

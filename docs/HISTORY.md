@@ -4,9 +4,10 @@ Moved verbatim from CLAUDE.md (audit proposal 4): 37KB of per-phase history was 
 per-session context tax and a second divergence surface. Nothing was edited in the
 move; per-phase detail also lives in docs/PHASE2.md ... PHASE7.md.
 
-Two things have been added since the move, both dated 2026-08-02 and both at the end of
-this file: the between-phase entry (the offline single-source/knob-channel refactor) and
-the corrected forward pointer that closes the file.
+Three things have been added since the move, all at the end of this file: the
+between-phase entry (the offline single-source/knob-channel refactor, 2026-08-02), the
+live-run entry that followed it (2026-08-03), and the corrected forward pointer that
+closes the file (2026-08-02).
 
 The phase narrative above them is otherwise verbatim, with ONE edit, stated here because
 "untouched" was the first version of this sentence and it was false: the Phase 7 entry's
@@ -541,6 +542,62 @@ tolerated unset `vendor_spot`. Fixed, plus the `craft_spot` axis that would have
 it. **The honest half: ALL of this is offline.** 1436 tests green, both ruff gates clean,
 zero live runs — every claim above is an offline measurement or a code reading, and the
 live half of the ledger is unchanged since forge18.
+
+**One live run (2026-08-03) — the knob channel proved, a bridge a version behind, and a
+goal frame nobody was ticking.** `python -m anima2.village --carpenter --knob
+bank_reserve=400 --ticks 300 --monitor` against a local ServUO shard: **ONE run of 300
+ticks, 32 telemetry samples — not an endurance test and not a comparison.** It is the
+first live exposure of anything in the 2026-08-02 entry above, all of which closed with
+"ALL of this is offline". **The headline is a success**: the staging banner printed
+`staged: Sten@(2609, 474) and 129g seed  (reserve 400)` — 400 is the TUNED value, read
+back by `LifeRunner.staged_line` through `market._bank_reserve` off the built Life's own
+economy memory, not the module default of 129 (which is also the seed printed one clause
+earlier, so a dropped knob would have been invisible). Command line → `_parse_knobs` →
+`run_carpenter_life(knobs=)` → `LifeSpec.knobs` → `LifeRunner.build_life` → the Life's
+memory → every reader clamped in `knobs.py` is now a channel that has carried a value on a
+shard, which is the one thing CLAUDE.md's precondition (a) was missing. **It retires
+nothing else, and the same run says why**: the tuned value was behaviourally INERT (the
+carpenter finished on 93 gold; the bank branch is out of reach at 129 and at 400 alike), no
+`Genome` axis maps onto a knob, and five of the seven Life-construction sites still have no
+seam — so the channel is proven and STEERING is not, and the Phase 7 item 2 rerun stays
+deferred. **The first attempt never reached the shard**: `unsupported bridge schema 17;
+expected 16` — `anima-client` had moved to 17 in `867556f` while `ipc_body.py` still
+declared 16, and nothing but a live attempt checks that integer. The bump was verified by
+DIFFING THE SERIALIZER rather than trusting the changelog (no JSON key removed or renamed;
+the only deleted line touching anything this brain emits is the `Say` parse arm, which
+gained an OPTIONAL `mode` that defaults to plain speech), and v17's `terrain` — local
+walkability, standing Z, closed-door serials, `None` unless the driver surveyed it — is
+offered by the body and read by nobody here, which matters because "the brain cannot tell a
+wall from open ground" is a root cause this project already paid for live (forge12's
+relocation pool, half of it burned on the mountain's wrong flank). That is now a named
+follow-up, not a vague idea. **And the run walked straight into the one shape the audit had
+written down as a blind spot and never seen**: 30 consecutive samples, `t=28` to the budget
+at `t=300`, reading `want=None admitted=sell_furniture ready=[]` with the throne already
+sold — a live `GoalFrame` on the economy agent's stack for 272 ticks, `grep -c DISAGREEMENT`
+= 0. CONFIRMED and root-caused, with a correction to the shape's own name: it is not a
+finished goal that never came off but one stranded MID-transaction (`mkt_phase='sell'`,
+`sell_paid=24.0`, neither terminal marker ever set), because `WarriorLife.tick` ticks one
+inner agent per tick and `decide_mode` left economy mode on the very tick the vendor took
+the throne — so the frame's owner agent stopped being ticked, and BOTH retirement paths
+(`CapabilityGoalComplete` and `expire_due`) live inside `Agent.tick`. Reproduced offline
+over MockBody the same day: 400 orchestrator ticks, 5 econ ticks, frame still ACTIVE, goal
+history empty. **The claim that it disables the disagreement detector is REFUTED**, and
+recorded as such: in this run `mode` was `hunt` and `target_cap` `None`, so the detector's
+first two conjuncts already failed and the zero count is just the rule correctly answering
+"wait rather than stall"; an offline A/B shows the goal-stack guard costs ~15 ticks of
+delay (alarm at +30 with the frame, +15 without) and the repair fired in both arms. What
+the strand costs unconditionally is that the telemetry LIES — 272 ticks of
+`admitted=sell_furniture` with nothing executing it, the want-vs-admitted ambiguity
+`telemetry_line`'s own docstring says cost three runs and one wrong root cause,
+reintroduced on the other side. Deferred deliberately (audit follow-up 10: every candidate
+repair changes the orchestrator's tick shape or the goal lifecycle, and one sighting is not
+enough to choose). **The economics reproduced the stated warning exactly**: 129g seed → 69
+(20 boards at 3g) → 93 (one throne, +24g), `net=-36g`, and the run ended BELOW the price of
+its own next attempt (93 against `BOARD_BATCH_COST` 114), which prices a self-supplying
+carpenter out of the market in a single cycle — `docs/CARPENTER.md` now carries both live
+measurements and the −33g/−36g reconciliation (the vendor's shelf, not the brain, sets the
+batch). Zero code changed as a result of the run; the record did. Full evidence:
+`docs/AUDIT-2026-07-29.md`, the 2026-08-03 entry and follow-ups 10-11.
 
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
