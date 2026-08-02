@@ -8,6 +8,8 @@ moving player so a test can see `act(Walk)` take effect via `observe`.
 import json
 import sys
 
+from anima2.ipc_body import SUPPORTED_SCHEMA_VERSION
+
 DELTAS = [(0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1)]
 
 
@@ -22,7 +24,12 @@ def main():
     emit(
         {
             "event": "ready",
-            "schema_version": 16,
+            # Read off the brain's own constant rather than pinned here: a
+            # literal made six tests fail on the 16->17 bump for a reason that
+            # had nothing to do with what they assert. The version handshake
+            # has its own tests (test_ready_rejects/accepts_*_schema_version),
+            # which pass an explicit number precisely because that IS their subject.
+            "schema_version": SUPPORTED_SCHEMA_VERSION,
             "player": {
                 "serial": 1,
                 "name": "Fake",

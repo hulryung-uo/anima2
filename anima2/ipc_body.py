@@ -43,7 +43,22 @@ from .contract import Action, Observation
 # shop_buy/shop_sell/popup/pending_target/gumps/corpse/trades/buffs/waypoints)
 # keep their exact schema-8 shapes — plus the enriched `shop_buy` entry
 # (serial/graphic/amount/hue) B8 relies on. Bump in lockstep with the bridge.
-SUPPORTED_SCHEMA_VERSION = 16
+#
+# 16→17 verified by diffing the serializer itself (anima-client 867556f,
+# `crates/anima-contract-json/src/lib.rs`) rather than trusting its changelog:
+# no JSON key was removed or renamed, and of the seven deleted lines six are the
+# version constant, an import and tests. The seventh is `Say`, which gained an
+# OPTIONAL `mode` whose absence still means plain speech — so this brain's
+# existing emission stays valid unchanged. v17's additions are `terrain` (null
+# unless the driver surveyed it) and the `StatLock` action; both are ignored
+# here, which is why the bump is a number and not a parser change.
+#
+# `terrain` is worth more than a version bump, though: "the brain cannot tell a
+# wall from open ground" is a root cause this project already paid for live (the
+# terrain-blind relocation in the forge campaign, docs/AUDIT-2026-07-29.md), and
+# the body now offers the signal. Surfacing it in `contract.py` is the follow-up
+# this comment exists to keep from being forgotten.
+SUPPORTED_SCHEMA_VERSION = 17
 
 
 def default_bridge_path() -> Path:
