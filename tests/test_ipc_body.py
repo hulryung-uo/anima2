@@ -82,9 +82,23 @@ def test_ready_rejects_missing_schema_version():
         IpcBody(proc)
 
 
+# `exec sleep 60`, not `sleep 60`, in both hanging-bridge fixtures below. Without the
+# `exec` the shell FORKS the sleeper, and the 50ms timeout races that fork: when the fork
+# has already happened, killing the direct child leaves `sleep 60` alive holding the
+# inherited stdout pipe, so the close/reader path blocks for the remainder of the minute.
+# Measured before the fix — six runs of this file alternating 0.4s / 60.4s, `--durations`
+# attributing the whole 60s to whichever of the two tests won the race, and
+# `ps -eo pid,ppid` showing `sleep 60` reparented to PPID 1 mid-run. `exec` makes the
+# direct child BE the sleeper, so there is no grandchild to orphan; it also strengthens
+# the reap assertion below, which now proves the sleeping process itself was killed
+# rather than only its shell wrapper. Deliberately a fixture fix and not a production
+# one: making `IpcBody.spawn` kill the process GROUP (`start_new_session=True` +
+# `os.killpg`) would change signal delivery for every live run, and the real bridge is a
+# Rust binary that does not fork a helper. That remains the open question if a live
+# bridge ever grows a child.
 def test_spawn_ready_timeout_kills_and_reaps_child(tmp_path, monkeypatch):
     bridge = tmp_path / "silent-bridge"
-    bridge.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    bridge.write_text("#!/bin/sh\nexec sleep 60\n", encoding="utf-8")
     bridge.chmod(0o755)
     real_popen = subprocess.Popen
     children = []
@@ -104,7 +118,9 @@ def test_spawn_ready_timeout_kills_and_reaps_child(tmp_path, monkeypatch):
 
 def test_partial_ready_line_cannot_block_past_timeout(tmp_path):
     bridge = tmp_path / "partial-line-bridge"
-    bridge.write_text("#!/bin/sh\nprintf '{'\nsleep 60\n", encoding="utf-8")
+    # `exec` for the reason spelled out above the previous test — the partial line is
+    # written first, then the shell REPLACES itself with the sleeper.
+    bridge.write_text("#!/bin/sh\nprintf '{'\nexec sleep 60\n", encoding="utf-8")
     bridge.chmod(0o755)
 
     with pytest.raises(IpcTransportError, match="timed out"):
