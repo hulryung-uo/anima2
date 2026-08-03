@@ -663,7 +663,8 @@ bound the review had to add because the two-bound build livelocked the wedged wo
 audit's §5 measured **four of the five Lives pinned in economy mode with `hunt_after = 0`
 for the whole 3000-tick window**; a "24 of 24 worlds" figure stood in this sentence and in
 `57422e4`'s pushed commit message, and it is unsourced — see the CORRECTION note in the
-audit's §5) — has ZERO live ticks, and neither did the death override. And **bound 1, the
+audit's §5) — has ZERO live ticks *(true of these three runs; a fourth run the same day
+closed it — next paragraph)*, and neither did the death override. And **bound 1, the
 FSM give-up ladder, is unexercised as far as these logs can tell**: every `sell_tongs` and
 `bank_gold` frame closed on a SUCCESSFUL sale or deposit, which `CapabilityGoalComplete`
 closes by its achievement branch, and the status line cannot name the branch — a ladderless
@@ -687,11 +688,46 @@ ticks, but Grimm's reward froze at `out+176.9` and he never smelted or delivered
 any of the 126 remaining samples, so five of the six deposits and everything above the
 first 23g were the tinker working through ONE 69-ingot delivery. The chain's supply side
 stopped at 43% of the run; `run_forge_pair`'s status line prints no hp for either agent, so
-the log cannot even say whether he died. **The next live run's checklist still stands, and
-bound 3 is still open:** `!frozen` on a live frame that is not dead is the regression
-detector, a `+hold` whose `@age` stops climbing is the old defect wearing the new marker,
+the log cannot even say whether he died. **The next live run's checklist still stands:**
+`!frozen` on a live frame that is not dead is the regression detector, a `+hold` whose
+`@age` stops climbing is the old defect wearing the new marker,
 and `FRAME OVERDUE` means both of the first two bounds failed. Detail:
 `docs/AUDIT-2026-07-29.md` 2026-08-03 §6, follow-ups 12/15/16/17.
+
+**Bound 3 fired on a shard the same day, in a gate built to force it — and bound 1 still has
+not (2026-08-03, `anima2/live_frame_overdue_gate.py`).** The paragraph above says reaching
+bound 3 on purpose needs a forced-state gate, and adds that an ordinary run might stumble
+into it. **The second half is wrong and the gate is what measured it wrong:**
+`CraftItemCapability.max_goal_steps = 240` sits BELOW the 300-tick craft deadline, so an
+ordinary craft aborts and closes its own gump *before* the frame can go overdue — waiting for
+those 14 `ui=gump` samples to coincide with a deadline is not a plan. The lever that works is
+a starve: `Survive` is `skills[0]` of every profession's capability planner, so a wounded
+character's economy agent is ticked every tick while its capability FSM never is — nothing
+answers the gump, and `expire_due` still runs because it sits upstream of skill selection.
+The gate stages a tinker with no vendor and no banker, lets `craft_tongs` open its OWN gump,
+wounds via `[Set RawStr 2000` + `[Set Hits 50` (raising the ceiling to ~1050, not lowering
+the floor — the run logged **hp=80**, which on a default 80-point bar would have been 100%
+and would have broken the starve silently), teleports off the craft spot so the rule says
+`hunt`, and rides the frame to its deadline recording EVERY tick. Verdict, first attempt,
+exit 0, ~4 minutes: `want=None hold=True` for **299 consecutive ticks**; then at economy tick
+**301** against `deadline_tick=300` — the `>` comparator, one tick past where `expire_due`'s
+`>=` would have won if the frame could yield — `frame_overdue` True and
+`_repair_overdue_frame` closing `an unowned gump id=2066278152`, the craft FSM's own, with
+`gumps` 1 → 0 on the next observation; then at econ **302** the hold RELEASED — `mode=hunt`,
+frame still live and still overdue, which is §5's documented worst case *"a stale frame, but
+alive"*, reached live. The repair's one-tick extension is the numeric signature that
+distinguishes it from the cheap surface-free release (which drops the hold on the overdue
+tick itself). Staging self-check: `cap_craft_steps` frozen at 2 for the whole 300-tick
+window, so the surface stayed open by construction, not luck; `rule_gate_disagreement` None
+throughout, so the close belongs to `_repair_overdue_frame` and not to `_detect_disagreement`'s
+copy. 7 offline tests (1462 → 1469) reproduce the whole path over `MockBody` and kill three
+mutants — including M1, literally the pre-review two-bound `holding` clause that livelocked,
+and M3, the `>` → `>=` comparator flip. **What is still unexercised, and the gate does not
+touch any of it: bound 1 (the FSM give-up ladder — it needs a transaction that FAILS, and
+this gate stops the FSM stepping at all), the death override, the `OVERDUE_REPAIRS` cap (one
+close spent of three), any extension beyond 1 tick, and `_clear_stale_ui`'s vendor BUY/SELL
+branches at an overdue frame.** No economy claim: no gold moved, by construction. Detail:
+`docs/AUDIT-2026-07-29.md` 2026-08-03 §7.
 
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",

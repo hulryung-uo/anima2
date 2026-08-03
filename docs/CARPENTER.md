@@ -140,8 +140,13 @@ this (audit §6.1):**
   this carpenter closes the frame on the FSM's give-up ladder at 17 economy ticks, is
   therefore still **offline-only**: live it closed too fast to sample, and a successful sale
   closes by the ACHIEVEMENT branch anyway, which the status line cannot tell from the ladder.
-- **Still offline-only in general:** the third bound (an overdue frame releasing the hold)
-  has zero live ticks on any profession, and so does the death override. Audit §6.3.
+- **Still offline-only in general, as of these three runs:** the third bound (an overdue
+  frame releasing the hold) has zero live ticks on any profession, and so does the death
+  override. Audit §6.3. *(Updated the same day: the third bound is now LIVE-PROVEN, on a
+  TINKER rather than a carpenter — `anima2/live_frame_overdue_gate.py`, a `craft_tongs`
+  frame overdue at economy tick 301 against `deadline_tick=300`, the repair closing the
+  craft FSM's own gump, the hold releasing one tick later. Audit §7. The death override and
+  bound 1 are still unexercised on every profession, this one included.)*
 
 See `docs/WOODSMAN.md`'s telemetry legend for what `@age/budget`, `+hold`, `!frozen` and
 `!overdue` mean on a status line.

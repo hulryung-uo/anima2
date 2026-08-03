@@ -134,12 +134,27 @@ split is per-marker:**
 | --- | --- |
 | `@age/budget` | **LIVE-PROVEN.** On all 306 samples across the three runs, and the ages advance 1:1 with the owning agent's ticks and RESET across frames. |
 | `+hold` | **LIVE-PROVEN.** 31 samples of it in one 1800-tick forge-pair run — the mechanism directly observed, its frame's clock moving the whole way and the frame retiring inside its budget. |
-| `!overdue` / `FRAME OVERDUE` | **STILL OFFLINE-ONLY. Zero live ticks.** No frame went overdue on any of the three runs, so the third bound and `_repair_overdue_frame` are unexercised live. |
-| `!frozen` | **STILL OFFLINE-ONLY, and its live zero proves nothing.** It is only PRINTABLE when a death episode is open or a frame is overdue-and-unrepaired; neither happened, so 0-of-306 is entailed by the row above, not independent evidence. |
+| `!overdue` / `FRAME OVERDUE` | **OFFLINE-ONLY on these three runs — zero live ticks.** No frame went overdue on any of them. *(Superseded the same day by a fourth run: see the row below the table.)* |
+| `!frozen` | **OFFLINE-ONLY on these three runs, and its live zero proved nothing.** It is only PRINTABLE when a death episode is open or a frame is overdue-and-unrepaired; neither happened, so 0-of-306 is entailed by the row above, not independent evidence. |
 
-So `!frozen` on a live frame while the character is not dead, or a `+hold` whose `@age`
-stops climbing, is still the first thing to look for rather than a curiosity — nothing has
-yet shown either of them behaving on a shard.
+**Updated the same day by a fourth run — the forced-state gate
+`anima2/live_frame_overdue_gate.py` (audit §7):**
+
+| marker | status after the bound-3 gate |
+| --- | --- |
+| `!overdue` / `FRAME OVERDUE` | **LIVE-PROVEN.** A `craft_tongs` frame went overdue at economy tick 301 against `deadline_tick=300`, `_repair_overdue_frame` closed the craft FSM's own gump, and the hold released one tick later. |
+| `!frozen` | **LIVE-PROVEN in its LEGITIMATE form only** — as `!frozen!overdue` on the frame the hold had just released. Still NOT seen during a death episode; nobody has died mid-transaction on a shard yet. |
+
+Reading these on a MONITORED run is not the same as reading them here. **The `+hold`+`!overdue`
+pairing lasts exactly ONE tick** — the repair-and-extend tick — and `LifeRunner` samples every
+4.0 s (~9 ticks), so it is missed ~8 times in 9; the gate above caught it only because it
+recorded every tick. Use `FRAME OVERDUE` (always printed on the first overdue tick) and the
+`closing an unowned …` line immediately before it instead. Audit §7.6.
+
+So `!frozen` on a live frame while the character is not dead **and without `!overdue` beside
+it**, or a `+hold` whose `@age` stops climbing, is still the first thing to look for rather
+than a curiosity — that combination is the hold being defeated, and nothing has yet shown it
+on a shard.
 
 ## Live result
 

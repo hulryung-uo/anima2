@@ -101,11 +101,29 @@ status line WAS the verification.
 the `@age/budget` clock on all 306 samples, and `+hold` on 31 of them in one 1800-tick
 forge-pair run, with the frame's age advancing 1:1 and the frame retiring inside its budget;
 the A/B that started this went from 30 lying lines out of 32 to **0 out of 33** on the same
-command. STILL OFFLINE-ONLY: `!overdue` and the throttled `FRAME OVERDUE` line have **zero
-live ticks** — no frame went overdue — and `!frozen`'s clean sheet is entailed by that
-rather than earned, since the telemetry can only print it when a death episode is open or a
-frame is overdue-and-unrepaired. So the two markers an operator most needs to trust,
-`!frozen` and `FRAME OVERDUE`, have still never been seen on a shard.
+command. STILL OFFLINE-ONLY at that point: `!overdue` and the throttled `FRAME OVERDUE` line
+had **zero live ticks** — no frame went overdue — and `!frozen`'s clean sheet was entailed by
+that rather than earned, since the telemetry can only print it when a death episode is open
+or a frame is overdue-and-unrepaired.
+
+**A fourth run the same day put the overdue state on a shard for the first time** — the
+forced-state gate `anima2/live_frame_overdue_gate.py` (audit §7). A `craft_tongs` frame went
+overdue at economy tick **301** against `deadline_tick=300`, `_repair_overdue_frame` closed
+the craft FSM's own gump, and the hold released one tick later into `mode=hunt` with the
+frame still live. So the overdue state itself is live-proven; `!frozen` on a live frame with
+the character not dead is still the regression signal, and it is now a state a shard has
+actually produced (as `!frozen!overdue` together, which is its legitimate form).
+
+**Operational consequence for this doc, and it is the whole reason the gate recorded every
+tick instead of sampling: do NOT read bound 3 off the `+hold`+`!overdue` pairing.** That
+pairing exists for exactly ONE tick — the repair-and-extend tick — and `LifeRunner` samples
+every 4.0 s (~9 ticks), so a sampling monitor misses it roughly 8 times in 9. The
+sample-independent signals are the worker's own unthrottled prints: `FRAME OVERDUE` appears
+on the FIRST overdue tick always (`_run_worker` prints on `_overdue % _QUIET_TICKS == 0`
+starting at `_overdue == 0`), and `_repair_overdue_frame` is identified by a
+`closing an unowned … ` line **immediately before** it with **no** `RULE-vs-GATE
+DISAGREEMENT` line — the detector's copy of that repair always prints one alongside. Audit
+§7.6 has the full reading key, including how to tell a bound-2 near-miss from a miss.
 
 *A gap this monitoring doc should own, found by the same runs (audit §6.5, follow-up 17):*
 `run_forge_pair`'s status line prints **no hp and no death flag for either agent**.

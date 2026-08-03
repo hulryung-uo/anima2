@@ -107,6 +107,8 @@ changes **which inner agent is ticked**, the hot path of all five professions. T
 runs on 2026-08-03 retired "OFFLINE ONLY" for the DEFECT and for exactly **one** of the
 three bounds. *(An earlier draft of this section said two of three; the corrected reading,
 §6.3, is that bound 1 was never distinguishable from ordinary success on these logs.)*
+**A fourth run the same day — a forced-state gate, `anima2/live_frame_overdue_gate.py` —
+added bound 3. So the standing count is bounds 2 and 3 live-proven, bound 1 not.**
 
 - **LIVE-PROVEN.** The defect is gone: the same command, knob and tick count that produced
   30 lying status lines out of 32 (`admitted=sell_furniture` with `furniture=0`, nothing
@@ -119,30 +121,46 @@ three bounds. *(An earlier draft of this section said two of three; the correcte
   `expire_due` is the only thing that could have closed either); and the rule-vs-gate
   detector and its stale-UI repair both still fired, twice, after frames retired — so the
   hold does not mask them.
-- **NOT PROVEN, for two different reasons.** **Bound 1 (the FSM give-up ladder) is
-  unexercised as far as these logs can tell:** every `sell_tongs` and `bank_gold` frame
+- **BOUND 3 IS NOW LIVE-PROVEN TOO, by a purpose-built gate — `anima2/live_frame_overdue_gate.py`,
+  first attempt, exit 0, ~4 min** (audit §7). On the shard: a `craft_tongs` frame went
+  **overdue at economy tick 301 against `deadline_tick=300`** (the `>` comparator, one tick
+  past where `expire_due`'s `>=` would have won had the frame been able to yield);
+  `_repair_overdue_frame` closed the craft FSM's OWN gump on that tick
+  (`closing an unowned gump id=2066278152`, `gumps` 1 → 0 next observation); the repair
+  **extended the hold exactly one economy tick** and then the hold **released** — `mode=hunt`,
+  frame still live and still overdue, the documented worst case *"a stale frame, but alive"*.
+  The hold had been the orchestrator's for **299 consecutive ticks** (`want=None hold=True`)
+  first. Reaching it needs forced state, not patience: `CraftItemCapability.max_goal_steps=240`
+  is below the 300-tick deadline, so an ordinary craft closes its own gump before the frame
+  can go overdue — the gate wounds the character so `Survive` (skills[0] of every capability
+  planner) starves the FSM while `expire_due` keeps running. Measured self-check:
+  `cap_craft_steps` frozen at 2 for the whole window. 7 offline tests reproduce it and kill
+  three mutants, including M1 — literally the pre-review two-bound `holding` clause, the one
+  measured in `docs/AUDIT-2026-07-29.md` §5's first refutation as *"four of the five Lives
+  were pinned in economy mode with `hunt_after = 0` for the whole 3000-tick window"*. That
+  is why this bound matters: it is what stops the fix being WORSE than the defect.
+- **STILL NOT PROVEN. Bound 1 (the FSM give-up ladder) is unexercised as far as any log can
+  tell** — and the bound-3 gate does not touch it: every `sell_tongs` and `bank_gold` frame
   closed on a SUCCESSFUL sale or deposit, which `CapabilityGoalComplete` also closes by its
   ACHIEVEMENT branch, and the status line cannot tell the branches apart — a ladderless
   `buy_iron` frame closed just as fast (last seen at age 4), so a low max age is no
-  give-up-ladder signature. **Bound 3 has ZERO live ticks:** **no frame ever went overdue**,
-  so the overdue release plus `_repair_overdue_frame` — the bound added because the FIRST
-  version of this fix livelocked the wedged world, measured in `docs/AUDIT-2026-07-29.md`
-  §5's first refutation as *"four of the five Lives were pinned in economy mode with
-  `hunt_after = 0` for the whole 3000-tick window"* — never ran. No death occurred
-  mid-transaction either, so the death override is unexercised live too, and **`!frozen`'s
-  clean sheet (0 of 306 samples) is ENTAILED by those two facts, not independent of them**:
-  `life_runner.py` prints `!frozen` only when a frame is live AND the mode is not economy,
-  and `tick` forces economy whenever a frame is live unless a death episode is open or the
-  frame is overdue-and-unrepaired. A forced-state gate is how to reach bound 3 on purpose
-  (`docs/AUDIT-2026-07-29.md` §6.3 says what to build) — but an ordinary run can reach it by
-  coincidence, because `_craft_can_yield` refuses with ANY surface open and these runs had
-  14 `ui=gump` samples (all `craft_tongs`), just never one sitting at a deadline.
+  give-up-ladder signature. Proving it needs a transaction that FAILS. **No death occurred
+  mid-transaction on any run, so the death override is unexercised live too**, and
+  **`!frozen`'s clean sheet on the three ordinary runs (0 of 306 samples) is ENTAILED by
+  those absences, not independent of them**: `life_runner.py` prints `!frozen` only when a
+  frame is live AND the mode is not economy, and `tick` forces economy whenever a frame is
+  live unless a death episode is open or the frame is overdue-and-unrepaired. Also
+  unreached: the `OVERDUE_REPAIRS` cap (one close spent of three), any extension above 1
+  tick, and `_clear_stale_ui`'s vendor BUY/SELL branches *at an overdue frame*.
 - **Watch for, on any live run:** `!frozen` on a live frame while the character is not dead
   (the regression detector), a `+hold` whose `@age` stops climbing (the old defect wearing
-  the new marker), and `FRAME OVERDUE` (bounds 1 and 2 both failed).
+  the new marker), and `FRAME OVERDUE` (bounds 1 and 2 both failed). Do NOT use the
+  `+hold`+`!overdue` pairing as a primary signal on a monitored run — it lasts exactly one
+  tick and `life_runner` samples every ~9; read `FRAME OVERDUE` and the `closing an unowned`
+  line immediately before it instead (audit §7.6).
 
-Full evidence: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 (the fix) and §6 (the live runs),
-follow-ups 12, 15, 16, 17. **Two separate, non-hold defects those runs found are still
+Full evidence: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 (the fix), §6 (the three ordinary
+live runs) and §7 (the bound-3 gate), follow-ups 12, 15, 16, 17. **Two separate, non-hold defects those runs found are still
 open.** (1) A stale vendor BUY window that would not clear ate the last 556 ticks of the
 1800-tick run (follow-up 16) — the `+2528g/h` final-sample rate is an average over a run
 whose last third earned nothing. (2) **The miner stopped producing at t=765 and nothing

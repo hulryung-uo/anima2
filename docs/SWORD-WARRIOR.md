@@ -175,6 +175,17 @@ robustness cliff plus one shipped improvement. Full write-up:
   during a death episode or on an unrepaired overdue frame), not independent evidence. A
   live warrior death mid-transaction is still the single most valuable run this fix is
   owed — §5's checklist item 5, still open.
+  **Half of that has since closed, and it is NOT the warrior's half (audit §7).** A
+  forced-state gate on a tinker — `anima2/live_frame_overdue_gate.py` — reached the third
+  bound live: a `craft_tongs` frame overdue at economy tick 301 against `deadline_tick=300`,
+  `_repair_overdue_frame` closing the craft FSM's own gump, the hold releasing one tick later
+  into `mode=hunt` with the frame still live. **The death-episode override is untouched by
+  it and still has zero live ticks** — the gate keeps its character wounded but very much
+  alive, precisely so `Survive` starves the capability FSM. So `!frozen` has now been seen on
+  a shard only in its overdue form (`!frozen!overdue`), never during a death episode. A live
+  warrior death mid-transaction remains the run this fix is owed. It is not the only gap
+  left — bound 1, the `OVERDUE_REPAIRS` cap and any extension beyond one tick are all still
+  unexercised (audit §7.4) — but it is the only one that is this profession's.
 - **Village integration (wired).** `village.py::run_warrior_village` + `--warriors N` run
   N swordsmen living the loop via `WarriorLife` in the standing village: each is staged at
   its own pocket with a Weaponsmith/Healer/Banker (pushed well out so they don't distract
