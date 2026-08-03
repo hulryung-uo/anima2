@@ -98,17 +98,60 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
 Do NOT burn a multi-hour single-GM live budget on the rerun before that; a
 stale "Next:" pointer here almost caused exactly that (`docs/AUDIT-2026-07-29.md`).
 
-**What the NEXT live run owes, whatever else it does (2026-08-03).** `WarriorLife.tick`
-gained an **exit-edge hold** — the economy mode is held while a goal frame is live, so a
-transaction the rule stopped wanting still gets finished, bounded by the FSM's give-up
-ladder, the frame's deadline, and (because neither of those is general) an overdue frame
-releasing the hold. It fixes a defect found ON a live run, it changes **which inner agent
-is ticked** — the hot path of all five professions — and **it is proven offline only; the
-shard was shut down and no live run has exercised it.** The next live run of any
-profession is therefore also this fix's first exposure: watch `admitted=` for `!frozen` on
-a live frame while the character is not dead (the regression detector), a `+hold` whose
-`@age` stops climbing (the old defect wearing the new marker), and `FRAME OVERDUE`.
-Checklist and full evidence: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 and follow-up 12.
+**The exit-edge hold: live-proven in part, and the parts that are not are named (2026-08-03).**
+`WarriorLife.tick` gained an **exit-edge hold** — the economy mode is held while a goal
+frame is live, so a transaction the rule stopped wanting still gets finished, bounded three
+ways: the FSM's give-up ladder, the frame's deadline, and (because neither of those is
+general) an overdue frame releasing the hold. It fixes a defect found ON a live run and it
+changes **which inner agent is ticked**, the hot path of all five professions. Three live
+runs on 2026-08-03 retired "OFFLINE ONLY" for the DEFECT and for exactly **one** of the
+three bounds. *(An earlier draft of this section said two of three; the corrected reading,
+§6.3, is that bound 1 was never distinguishable from ordinary success on these logs.)*
+
+- **LIVE-PROVEN.** The defect is gone: the same command, knob and tick count that produced
+  30 lying status lines out of 32 (`admitted=sell_furniture` with `furniture=0`, nothing
+  executing it) produced **0 out of 33**, with net gold, banked and end state identical.
+  The hold itself was directly observed **31 times** in an 1800-tick forge-pair run, its
+  frame's `@age` advancing 1:1 and the frame retiring inside its budget; frame ages reset
+  across frames instead of climbing forever; **bound 2, the deadline, closed two frames**
+  (`craft_tongs` at 292/300 holding 4 tongs of a batch of 5, `buy_iron` at 177/180 holding
+  1 iron — neither achieved, and neither family writes a run-finished marker, so
+  `expire_due` is the only thing that could have closed either); and the rule-vs-gate
+  detector and its stale-UI repair both still fired, twice, after frames retired — so the
+  hold does not mask them.
+- **NOT PROVEN, for two different reasons.** **Bound 1 (the FSM give-up ladder) is
+  unexercised as far as these logs can tell:** every `sell_tongs` and `bank_gold` frame
+  closed on a SUCCESSFUL sale or deposit, which `CapabilityGoalComplete` also closes by its
+  ACHIEVEMENT branch, and the status line cannot tell the branches apart — a ladderless
+  `buy_iron` frame closed just as fast (last seen at age 4), so a low max age is no
+  give-up-ladder signature. **Bound 3 has ZERO live ticks:** **no frame ever went overdue**,
+  so the overdue release plus `_repair_overdue_frame` — the bound added because the FIRST
+  version of this fix livelocked the wedged world, measured in `docs/AUDIT-2026-07-29.md`
+  §5's first refutation as *"four of the five Lives were pinned in economy mode with
+  `hunt_after = 0` for the whole 3000-tick window"* — never ran. No death occurred
+  mid-transaction either, so the death override is unexercised live too, and **`!frozen`'s
+  clean sheet (0 of 306 samples) is ENTAILED by those two facts, not independent of them**:
+  `life_runner.py` prints `!frozen` only when a frame is live AND the mode is not economy,
+  and `tick` forces economy whenever a frame is live unless a death episode is open or the
+  frame is overdue-and-unrepaired. A forced-state gate is how to reach bound 3 on purpose
+  (`docs/AUDIT-2026-07-29.md` §6.3 says what to build) — but an ordinary run can reach it by
+  coincidence, because `_craft_can_yield` refuses with ANY surface open and these runs had
+  14 `ui=gump` samples (all `craft_tongs`), just never one sitting at a deadline.
+- **Watch for, on any live run:** `!frozen` on a live frame while the character is not dead
+  (the regression detector), a `+hold` whose `@age` stops climbing (the old defect wearing
+  the new marker), and `FRAME OVERDUE` (bounds 1 and 2 both failed).
+
+Full evidence: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 (the fix) and §6 (the live runs),
+follow-ups 12, 15, 16, 17. **Two separate, non-hold defects those runs found are still
+open.** (1) A stale vendor BUY window that would not clear ate the last 556 ticks of the
+1800-tick run (follow-up 16) — the `+2528g/h` final-sample rate is an average over a run
+whose last third earned nothing. (2) **The miner stopped producing at t=765 and nothing
+flagged it** (follow-up 17): the flagship miner→tinker chain did bank 503g (+585g net) over
+1800 ticks, but Grimm's cumulative reward froze at `out+176.9` and never moved again, and he
+never smelted or delivered on any of the 126 remaining samples — five of the six deposits,
+and everything above the first 23g, were the tinker working through ONE 69-ingot delivery
+that landed at t≈756. The chain's supply side stopped at 43% of the run, which the headline
+numbers do not show.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`

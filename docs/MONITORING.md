@@ -93,9 +93,27 @@ samples keep arriving, and three markers name the state outright: `+hold` (legit
 orchestrator is finishing an owed transaction the rule stopped wanting), `!frozen` (nobody
 is ticking this frame; if the character is not dead, that is a regression), `!overdue` (past
 its own budget — the Life also prints a throttled `FRAME OVERDUE` line). Full legend:
-`docs/WOODSMAN.md`. The orchestrator-side fix behind those markers is proven **offline
-only** — `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 — so on the next live run this status
-line IS the verification.
+`docs/WOODSMAN.md`. When that was written the orchestrator-side fix behind those markers was
+proven **offline only** — `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 — so the next live run's
+status line WAS the verification.
+
+**Three live runs the same day ran it, and the verdict is split (audit §6).** LIVE-PROVEN:
+the `@age/budget` clock on all 306 samples, and `+hold` on 31 of them in one 1800-tick
+forge-pair run, with the frame's age advancing 1:1 and the frame retiring inside its budget;
+the A/B that started this went from 30 lying lines out of 32 to **0 out of 33** on the same
+command. STILL OFFLINE-ONLY: `!overdue` and the throttled `FRAME OVERDUE` line have **zero
+live ticks** — no frame went overdue — and `!frozen`'s clean sheet is entailed by that
+rather than earned, since the telemetry can only print it when a death episode is open or a
+frame is overdue-and-unrepaired. So the two markers an operator most needs to trust,
+`!frozen` and `FRAME OVERDUE`, have still never been seen on a shard.
+
+*A gap this monitoring doc should own, found by the same runs (audit §6.5, follow-up 17):*
+`run_forge_pair`'s status line prints **no hp and no death flag for either agent**.
+`life_runner.hp_readout` exists and returns `DEAD`, but the pair line never calls it, so
+when the 1800-tick run's miner stopped producing at t=765 — reward and steps frozen, no
+smelt and no deliver on the 126 samples that followed — nothing on the tape said so, and a
+death, a lost tool and a dead vein remain indistinguishable. This is the second sighting of
+the 2026-07-30 health check's "liveness line for NON-Life agents" item.
 
 ## Implementation
 

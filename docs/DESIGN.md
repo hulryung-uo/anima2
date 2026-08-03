@@ -566,9 +566,11 @@ The original analysis, kept as the decision record:
   `LifeRunner.build_life` → a Life, every reader clamped through `knobs.py`. It is still
   not enough for the rerun: only four thresholds ride the channel, the other five
   construction sites (including `run_forge_pair`, the flagship positive-margin pair)
-  build their Lives inline with no seam, `Genome`'s own four axes map onto no knob so no
-  SEARCHER is attached to the steerable end, and no live run has used a tuned knob. So
-  the rerun stays deferred. CLAUDE.md is the authority on what runs next.
+  build their Lives inline with no seam, and `Genome`'s own four axes map onto no knob so
+  no SEARCHER is attached to the steerable end. One tuned knob HAS travelled the channel
+  live (`--carpenter --knob bank_reserve=400`, 2026-08-03) — but on the cheaper wired
+  runner, and the value was behaviourally inert in that run, so the channel is proven and
+  steering is not. So the rerun stays deferred. CLAUDE.md is the authority on what runs next.
 
 > **Re-baselining note:** the original Phase 3→5 ordering (skill library, *then*
 > Control plane, *then* evolution/society) got overtaken by events. The Control plane

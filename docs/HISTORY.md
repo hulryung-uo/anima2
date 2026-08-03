@@ -517,9 +517,10 @@ parameters, marked done since 2026-07-30, turned out to be **wireless**: no prod
 site could pass one. They
 have an entry point now — `village.run_carpenter_life(knobs=)` / `run_woodsman_life(knobs=)`
 → `LifeSpec.knobs` → `LifeRunner.build_life` → the Life — but only two of seven
-Life-construction sites have it, no `Genome` axis maps onto a knob, and no live run has
-used a tuned one, so CLAUDE.md's precondition (a) stays PARTIAL and the Phase 7 item 2
-rerun stays deferred. The channel also has a GUARD it shipped without: `LifeSpec.knobs`
+Life-construction sites have it, no `Genome` axis maps onto a knob, and — when this was
+written — no live run had used a tuned one (one has since, on the carpenter; see the
+2026-08-03 entry below), so CLAUDE.md's precondition (a) stays PARTIAL and the Phase 7
+item 2 rerun stays deferred. The channel also has a GUARD it shipped without: `LifeSpec.knobs`
 splatted into the Life constructor unchecked, so `knobs={"profession": "mage"}` — the
 first axis name in `Genome`, i.e. the likeliest key the searcher this channel exists for
 would send — built a carpenter that staged, labelled and reported itself as a carpenter
@@ -638,13 +639,59 @@ ruff gates clean; A/B against the pre-fix tree over 1000 randomized worlds: tick
 live frame's clock did not move **129,376 → 12,096**, frames retired 9,362 → 10,312, longest
 hold **270 ticks with none over 320**, at a **−4%** work-tick cost. The original repro now
 retires `('sell_furniture','failure')` and the masking A/B flags at 15 in BOTH arms. **The
-honest half, and it is the important one: ALL of this is OFFLINE.** The shard used on
-2026-08-03 has been shut down, so the defect was found live and the fix — which changes
-WHICH INNER AGENT IS TICKED, the hot path of every profession — has never run on one. The
-next live run's checklist is written down: `!frozen` on a live frame that is not dead is the
-regression detector, a `+hold` whose `@age` stops climbing is the old defect wearing the new
-marker, and `FRAME OVERDUE` means both of the first two bounds failed. Detail:
-`docs/AUDIT-2026-07-29.md` 2026-08-03 §5 and follow-ups 12-14.
+honest half, when this was written: ALL of it was OFFLINE** — the defect was found live and
+the fix changes WHICH INNER AGENT IS TICKED, the hot path of every profession, and the shard
+was down. Detail: `docs/AUDIT-2026-07-29.md` 2026-08-03 §5 and follow-ups 12-14.
+
+**The shard came back the same day, and the record splits in two (2026-08-03, three runs).**
+The A/B is the cleanest evidence in the audit trail: the same command, the same knob, the
+same 300 ticks, before and after — **30 lying status lines out of 32 became 0 out of 33**
+(`admitted=sell_furniture` while `furniture=0` and nothing was executing it), with the
+carpenter's net gold, banked and end state identical, so the fix cost that Life nothing
+measurable. An 1800-tick forge-pair run then showed the hold ITSELF for the first time:
+**`+hold` on 31 samples**, its frame's `@age` advancing 1:1 with the orchestrator's ticks
+and the frame retiring inside its 300-tick budget; frame ages that RESET across frames
+rather than climbing forever; **bound 2, the frame's own deadline, closing two unachieved
+frames** (`craft_tongs` 292/300 with 4 tongs of 5, `buy_iron` 177/180 with 1 iron — neither
+family writes a run-finished marker and neither frame was achieved, so `expire_due` is the
+only thing that could have closed either); and the rule-vs-gate detector plus its stale-UI
+repair both firing, twice, right after frames retired — the reviewer's specific worry (a
+longer-lived frame muzzling the detector) not visible. **What the runs did NOT do is the
+half worth remembering: TWO of the three bounds are still unproven live.** No frame ever
+went overdue, so the third bound — the overdue release and `_repair_overdue_frame`, the
+bound the review had to add because the two-bound build livelocked the wedged world (the
+audit's §5 measured **four of the five Lives pinned in economy mode with `hunt_after = 0`
+for the whole 3000-tick window**; a "24 of 24 worlds" figure stood in this sentence and in
+`57422e4`'s pushed commit message, and it is unsourced — see the CORRECTION note in the
+audit's §5) — has ZERO live ticks, and neither did the death override. And **bound 1, the
+FSM give-up ladder, is unexercised as far as these logs can tell**: every `sell_tongs` and
+`bank_gold` frame closed on a SUCCESSFUL sale or deposit, which `CapabilityGoalComplete`
+closes by its achievement branch, and the status line cannot name the branch — a ladderless
+`buy_iron` frame closed just as fast, at age 4, so a low max age is no signature.
+`!frozen` on none of 306 samples is likewise entailed rather than earned: the telemetry can
+only print it when a death episode is open or a frame is overdue-and-unrepaired, and
+neither happened. Reaching bound 3 on purpose needs a forced-state gate (a surface arriving
+mid-transaction), though an ordinary run can also stumble into it — `_craft_can_yield`
+refuses on ANY open gump, including the craft FSM's own, and these runs had 14 `ui=gump`
+samples that simply never coincided with a deadline. Three things the runs found that are
+NOT the hold: a terminal-but-unachieved
+`craft_tongs` frame — 4 tongs of a batch of 5, iron exhausted — sat admitted 266 ticks past
+`cap_craft_stage=finished` purely because craft has no run-finished marker (follow-up 15);
+a vendor BUY window left behind by a finished `buy_iron` trip would not clear, eating
+the last **556 ticks** of the 1800-tick run through three whole `buy_iron` budgets — which
+makes the `+2528g/h` an average over a run whose last third earned nothing, and puts
+forge16's wedge shape back on the open list at one goal lifetime per recurrence
+(follow-up 16); and **the miner stopped producing at t=765 with nothing flagging it**
+(follow-up 17) — the flagship miner→tinker chain did bank **503g (+585g net)** over 1800
+ticks, but Grimm's reward froze at `out+176.9` and he never smelted or delivered again on
+any of the 126 remaining samples, so five of the six deposits and everything above the
+first 23g were the tinker working through ONE 69-ingot delivery. The chain's supply side
+stopped at 43% of the run; `run_forge_pair`'s status line prints no hp for either agent, so
+the log cannot even say whether he died. **The next live run's checklist still stands, and
+bound 3 is still open:** `!frozen` on a live frame that is not dead is the regression
+detector, a `+hold` whose `@age` stops climbing is the old defect wearing the new marker,
+and `FRAME OVERDUE` means both of the first two bounds failed. Detail:
+`docs/AUDIT-2026-07-29.md` 2026-08-03 §6, follow-ups 12/15/16/17.
 
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",

@@ -159,8 +159,22 @@ robustness cliff plus one shipped improvement. Full write-up:
   three ways (the FSM's give-up ladder; the frame's own deadline; and, because neither of
   those is general, an OVERDUE frame releasing the hold outright), with a death episode —
   ghost window AND corpse run — overriding it so `RecoverDeath` always has the body. Found
-  live, fixed and proven **offline only**: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §3 and
-  §5, and follow-up 12 for what a live run must check.
+  live, fixed and — when this was written — proven **offline only**:
+  `docs/AUDIT-2026-07-29.md`, 2026-08-03 §3 and §5, and follow-up 12 for what a live run
+  must check.
+  **Three live runs later the same day (audit §6) split that, and the warrior's own share
+  of the split is the uncomfortable half.** LIVE-PROVEN, on a carpenter and on the
+  miner→tinker pair: the defect is gone (30 lying status lines out of 32 → 0 of 33 on the
+  same command) and the hold itself was directly observed 31 times, its frame's clock
+  advancing and the frame retiring inside its budget. **NOT proven, and both gaps are the
+  warrior's:** *nobody died in any of the three runs*, so the death-episode override — the
+  clause that exists for exactly this profession, and the one whose earlier version was
+  caught deferring gear recovery by 177 ticks — has **zero live ticks**; and no frame ever
+  went overdue, so the third bound has zero live ticks too. `!frozen` never appeared on 306
+  samples, but that is entailed by those two absences (the telemetry can only print it
+  during a death episode or on an unrepaired overdue frame), not independent evidence. A
+  live warrior death mid-transaction is still the single most valuable run this fix is
+  owed — §5's checklist item 5, still open.
 - **Village integration (wired).** `village.py::run_warrior_village` + `--warriors N` run
   N swordsmen living the loop via `WarriorLife` in the standing village: each is staged at
   its own pocket with a Weaponsmith/Healer/Banker (pushed well out so they don't distract

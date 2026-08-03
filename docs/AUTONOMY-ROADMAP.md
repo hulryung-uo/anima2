@@ -756,12 +756,15 @@ below the table. §E's own named bottlenecks, honestly scored against it:
 | retreat thresholds | ✗ blocked: the capability manifest validator requires `vars(Survive_instance) == {}` |
 | rest timing | ✗ same block |
 
-Offline only, and the reach is two runners out of seven Life-construction sites. The four
+The reach is two runners out of seven Life-construction sites. The four
 INLINE runners (`run_supply_pair`, `run_forge_pair`, `run_warrior_village`,
 `run_artisan_mage_village`) build their Lives with no factory and no `LifeSpec`, so they
 have nothing to forward a knob through — and `run_forge_pair` is the miner→tinker pair,
-the positive-margin loop a gold-per-life fitness run would actually measure. No live run
-has used a tuned knob yet. And `foundry/archive.py::Genome`'s four axes (`profession`,
+the positive-margin loop a gold-per-life fitness run would actually measure. A tuned knob
+HAS now travelled the channel live once (`--carpenter --knob bank_reserve=400`, 2026-08-03;
+`docs/AUDIT-2026-07-29.md` §1 and §6.1) — but on the cheaper of the two wired runners, and
+the value was behaviourally inert in that run, so the CHANNEL is live-proven and STEERING is
+not. And `foundry/archive.py::Genome`'s four axes (`profession`,
 `sociability`, `deliver_threshold`, `cognition_tier`) still map onto no Life knob, so
 nothing SEARCHES the channel even where it is wired. So §E's criterion is NOT met and the
 Phase 7 item 2 rerun stays deferred; CLAUDE.md's "Two roadmaps, one decision" is the

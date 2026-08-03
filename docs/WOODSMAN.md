@@ -123,11 +123,23 @@ frame stops being ticked — plus up to two markers:
 An `admitted=` with no `@` means no frame is on the stack at all (`admitted=None`).
 
 *Provenance, because it changes how to read these on the next run:* the run that made
-`admitted=` lie was live (2026-08-03); the orchestrator fix that makes `+hold` a legitimate
-state, and these markers themselves, are proven **OFFLINE ONLY** — no shard has run them
-(`docs/AUDIT-2026-07-29.md`, 2026-08-03 §5). So `!frozen` on a live frame while the
-character is not dead, or a `+hold` whose `@age` stops climbing, is the first thing to look
-for rather than a curiosity.
+`admitted=` lie was live (2026-08-03); when this legend was written the orchestrator fix
+that makes `+hold` a legitimate state, and these markers themselves, were proven **OFFLINE
+ONLY** — no shard had run them (`docs/AUDIT-2026-07-29.md`, 2026-08-03 §5).
+
+**Three live runs the same day split that in two (`docs/AUDIT-2026-07-29.md` §6), and the
+split is per-marker:**
+
+| marker | status after 2026-08-03 |
+| --- | --- |
+| `@age/budget` | **LIVE-PROVEN.** On all 306 samples across the three runs, and the ages advance 1:1 with the owning agent's ticks and RESET across frames. |
+| `+hold` | **LIVE-PROVEN.** 31 samples of it in one 1800-tick forge-pair run — the mechanism directly observed, its frame's clock moving the whole way and the frame retiring inside its budget. |
+| `!overdue` / `FRAME OVERDUE` | **STILL OFFLINE-ONLY. Zero live ticks.** No frame went overdue on any of the three runs, so the third bound and `_repair_overdue_frame` are unexercised live. |
+| `!frozen` | **STILL OFFLINE-ONLY, and its live zero proves nothing.** It is only PRINTABLE when a death episode is open or a frame is overdue-and-unrepaired; neither happened, so 0-of-306 is entailed by the row above, not independent evidence. |
+
+So `!frozen` on a live frame while the character is not dead, or a `+hold` whose `@age`
+stops climbing, is still the first thing to look for rather than a curiosity — nothing has
+yet shown either of them behaving on a shard.
 
 ## Live result
 

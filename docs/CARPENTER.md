@@ -119,9 +119,30 @@ same fixture:
 `want=None` with an admitted goal is no longer the symptom — `+hold` says the orchestrator
 is deliberately finishing an owed transaction. The symptom is now an `@N` that STOPS
 climbing while the samples keep arriving.
-The fix, its three bounds and its test coverage are in the audit's 2026-08-03 §5;
-**it is proven OFFLINE ONLY — no shard has run it**, so the first live carpenter after
-this is also the fix's first live exposure.
+The fix, its three bounds and its test coverage are in the audit's 2026-08-03 §5.
+**When that was written it was proven OFFLINE ONLY — no shard had run it** — and the
+sentence that stood here said so, adding that the first live carpenter after it would also
+be the fix's first live exposure.
+
+**That carpenter ran the same day, on the exact command line above, and the split is now
+this (audit §6.1):**
+
+- **LIVE-PROVEN for this profession.** 33 status samples, `--knob bank_reserve=400
+  --ticks 300`: the 30-lying-lines-out-of-32 tail became **0 out of 33**, with net gold (−36g),
+  gold (93), banked (0) and end state identical to the pre-fix arm and the step counts two
+  apart. `admitted=None` for the last 31 samples where the pre-fix run said
+  `admitted=sell_furniture`. The `@age/budget` clock is live and readable
+  (`admitted=buy_boards@3/180`, `admitted=craft_carpentry@8/300`).
+- **NOT seen in this run: `+hold` itself.** The sale's frame was created and retired
+  between the `t=19` and `t=28` samples — inside one sampling interval — so this arm proves
+  the LIE is gone and shows nothing about the hold WORKING. That took the 1800-tick forge
+  pair, where `+hold` appears on 31 samples (audit §6.2). The offline claim above, that
+  this carpenter closes the frame on the FSM's give-up ladder at 17 economy ticks, is
+  therefore still **offline-only**: live it closed too fast to sample, and a successful sale
+  closes by the ACHIEVEMENT branch anyway, which the status line cannot tell from the ladder.
+- **Still offline-only in general:** the third bound (an overdue frame releasing the hold)
+  has zero live ticks on any profession, and so does the death override. Audit §6.3.
+
 See `docs/WOODSMAN.md`'s telemetry legend for what `@age/budget`, `+hold`, `!frozen` and
 `!overdue` mean on a status line.
 
