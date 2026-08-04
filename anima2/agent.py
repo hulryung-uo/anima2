@@ -192,6 +192,28 @@ class Agent:
         self._intention_epoch = object()
         self._goal_safety_active = False
         self._last_observation: Observation | None = None
+        #: Name of the skill whose `step` ran on the most recent tick that got that
+        #: far — pure telemetry, read by nothing in the fast loop, written once per
+        #: tick right before `skill.step(ctx)`.
+        #:
+        #: It exists because a work-liveness alarm cannot be built without it. "This
+        #: agent has recorded no skill outcome for 240 ticks" is a DEATH for a miner
+        #: swinging at a rock and the ordinary healthy state for a townsfolk, whose
+        #: profession is defined `work_skill=None  # no job — just lives in town`: a
+        #: `Wander` fallback returns RUNNING with reward 0 forever and records
+        #: nothing, by design. Measured (review, 2026-08-03): the default village
+        #: roster's one townsfolk printed the alarm at 240/480/720/960 ticks and ended
+        #: `!stalled · STALLED 995` while behaving exactly as specified, and an idle
+        #: hunter (`Hunt.can_run` false with no hostile in range, so the planner falls
+        #: to the same `Wander`) printed it twice in 500 ticks. Nothing OUTSIDE the
+        #: agent can tell those apart from a dead miner — reward, steps, position and
+        #: speech all look identical — so the agent has to say which skill it ran.
+        #:
+        #: Ticks that return before selection leave the previous value in place: a
+        #: reflex pre-empt, a route stop, a rejected capability skill, a failed planner
+        #: isolation. That is deliberate — the field answers "what work is this agent
+        #: doing", and a one-tick bandage does not change the answer.
+        self.last_skill_name: str | None = None
         # Reject the exact producer-owned request object that already expired,
         # while permitting a fresh equal-valued capability decision to retry.
         # Weak references keep stale async objects recognizable without making
@@ -872,6 +894,9 @@ class Agent:
                     int(self.memory.get("capability_skill_rejections", 0)) + 1
                 )
                 return None
+        # Telemetry only — see `last_skill_name`'s definition. Written AFTER every
+        # rejection guard above, so the field never names a skill that was refused.
+        self.last_skill_name = skill.name
         result = skill.step(ctx)
 
         # Record terminal/rewarded outcomes to episodic memory (the learning signal

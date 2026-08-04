@@ -539,7 +539,11 @@ def test_telemetry_marks_a_live_frame_that_nobody_is_ticking():
     assert _reach_the_sale(body, life)
     life.tick()
     held = telemetry_line(life, "carpenter", body.observe())
-    assert "admitted=sell_furniture@" in held and held.endswith("ready=[]")
+    # `ready=[] ` with the following field's name attached, so this still pins an EMPTY
+    # gate list and cannot be satisfied by `ready=[]...` being a prefix of a longer one.
+    # (It used to be `endswith("ready=[]")`; `retired=` now rides after it — see
+    # `life_runner.retirement_reason` for why the line grew a retirement tally.)
+    assert "admitted=sell_furniture@" in held and "ready=[] retired=" in held
     assert "+hold" in held and "!frozen" not in held, held
 
     body.player.dead = True
@@ -665,3 +669,188 @@ def test_telemetry_says_nothing_extra_when_no_frame_is_live():
     line = telemetry_line(life, "carpenter", body.observe())
     assert "admitted=None" in line and "@" not in line
     assert "!frozen" not in line and "+hold" not in line
+
+
+# --- bound 1, made observable: WHY a frame retired, not just that it did -------------
+#
+# The three decorations above all describe the frame that is HERE. A frame that has
+# already gone is simply ABSENT, which is why bound 1 (the FSM's give-up ladder) could
+# not be told from an ordinary successful sale on any 2026-08-03 log — and why the
+# standing count is "bounds 2 and 3 live-proven, bound 1 not". The reason field is a
+# projection of `frame.outcome`, which `GoalStack._archive` has always stamped.
+# `tests/test_capabilities.py` holds the achievement-vs-give-up arms on a real Agent;
+# these are the end-to-end ones, through a real Life and a real FSM.
+
+
+def test_a_real_give_up_ladder_is_reported_as_bound_1():
+    """The live t=19 carpenter's sale, which `test_the_sale_that_froze_live_retires_instead`
+    already proves closes on the ladder rather than by achievement. The status line said
+    only that the frame was gone; now it says which branch closed it."""
+    from anima2.life_runner import frame_retirements, retirement_tally
+
+    body, life = _sale_life()
+    assert _reach_the_sale(body, life)
+    for _ in range(80):
+        life.tick()
+        if life.econ_agent.goal_stack.current is None:
+            break
+    assert _history(life) == [("sell_furniture", "failure")]
+    rows = frame_retirements(life)
+    assert len(rows) == 1
+    fid, cap, age, budget, why = rows[0]
+    assert (cap, budget, why) == ("sell_furniture", 180, "giveup")
+    assert fid == 1 and 0 < age < budget, rows
+    assert retirement_tally(life) == "retired=1:1g"
+    assert "retired=1:1g" in telemetry_line(life, "carpenter", body.observe())
+
+
+def test_a_deadline_retirement_is_reported_as_bound_2_not_bound_1():
+    """The control that makes the give-up label mean something: the same reporter over
+    `_wedged_buy_life`, where a BUY frame has no give-up ladder at all and only
+    `expire_due` can close it."""
+    from anima2.life_runner import frame_retirements, retirement_tally
+
+    body, life, frame = _wedged_buy_life()
+    budget = frame.deadline_tick - frame.created_tick
+    for _ in range(budget * 3):
+        life.tick()
+        if life.econ_agent.goal_stack.current is None:
+            break
+    rows = frame_retirements(life)
+    assert len(rows) == 1 and rows[0][1] == "buy_boards"
+    assert rows[0][4] == "expired", rows
+    assert rows[0][2] >= budget, f"bound 2 closes AT the deadline, not before: {rows}"
+    assert retirement_tally(life) == "retired=1:1x"
+
+
+def test_the_reason_does_not_depend_on_when_it_is_read():
+    """The correction that reshaped this feature, kept as a test.
+
+    An earlier version consulted `cap_run_finished_goal_id` to confirm the ladder. That
+    key is a SINGLE memory slot every later transaction overwrites, so it confirms only
+    the newest frame to have walked one. Measured on this exact harness: 117 of 117
+    FAILURE closes are give-ups when classified at retirement time, and 116 of the 117
+    flipped to "no ladder ran" when the same history was re-read at the end — the error
+    direction that ERASES bound-1 evidence. The per-tick alarm drains as retirements
+    happen; the ~4s status line re-derives from scratch. They must agree — and where
+    they CANNOT, past the bounded history's cap, the tally must say so instead of
+    printing a saturated count as a total."""
+    from anima2.life_runner import frame_retirements, retirement_tally
+
+    body = _body(_item(0x900, SAW), _item(0x901, BOARD, BOARDS_PER_ITEM * 4),
+                 _item(GOLD, GOLD_GRAPHIC, 5000))
+    life = CarpenterLife(body=body, persona=Persona(name="Sten"),
+                         routes={"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),),
+                                 "craft_spot": (5, 5)})
+    for memory in (life.memory, life.econ_agent.memory):
+        memory["craft_spot"] = (5, 5)
+    life.set_leash((5, 5), 3)
+
+    cursor, as_they_happen = 0, []
+    for _ in range(2000):
+        life.tick()
+        for row in frame_retirements(life, after_id=cursor):
+            cursor = row[0]
+            as_they_happen.append(row)
+    assert len(as_they_happen) > 100, f"the run must actually retire frames: {len(as_they_happen)}"
+    assert all(r[4] == "giveup" for r in as_they_happen), (
+        f"{ {r[4] for r in as_they_happen} }")
+    assert list(frame_retirements(life)) == as_they_happen, (
+        "re-reading the same history later must give the same answer")
+    assert retirement_tally(life) == f"retired={len(as_they_happen)}:{len(as_they_happen)}g"
+
+    # AND PAST THE HISTORY CAP, because that is where agreement STOPS being free. This
+    # harness retires 117 frames by 2000 ticks and fills the 128-frame history at econ
+    # tick 2182 — a review measured 176 retirements at 3000 ticks and 234 at 4000, so
+    # "128 is far more than any run has produced" was simply false. From the cap on, the
+    # edge reader keeps every frame and the level reader can only see the newest 128:
+    # the two no longer agree on the total, and the tally has to SAY so rather than
+    # printing a saturated 128 as if it were one.
+    for _ in range(2000):
+        life.tick()
+        for row in frame_retirements(life, after_id=cursor):
+            cursor = row[0]
+            as_they_happen.append(row)
+    history = life.econ_agent.goal_stack.history
+    assert len(history) == life.econ_agent.goal_stack.history_limit, (
+        f"the cap must actually bind for this to test anything: {len(history)}")
+    still_visible = list(frame_retirements(life))
+    assert len(as_they_happen) > len(still_visible), (
+        f"history must have overflowed: {len(as_they_happen)} vs {len(still_visible)}")
+    # What survives is a SUFFIX of what the edge reader banked — same frames, same
+    # reasons, in the same order; only the oldest are gone.
+    assert as_they_happen[-len(still_visible):] == still_visible
+    tally = retirement_tally(life)
+    assert tally.startswith(f"retired>={len(still_visible)}:"), tally
+    assert str(len(as_they_happen)) not in tally, (
+        f"a saturated tally must not be readable as a lifetime total: {tally}")
+
+
+def test_the_runner_reports_every_retirement_exactly_once(capsys):
+    """Printed from `_run_worker`, which runs EVERY tick — the runners' own loops sample
+    every ~4s and cannot see an edge. Deliberately unthrottled, unlike FRAME OVERDUE
+    beside it: a retirement is one event per transaction, not a state that persists.
+    The cursor is the last reported frame ID, so a retirement that lands between two
+    samples is still reported, and none is reported twice."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    body, life = _sale_life()
+    assert _reach_the_sale(body, life)
+    _run_worker(life, 120, 0, {}, threading.Lock(), "carpenter")
+    out = capsys.readouterr().out
+    assert out.count("FRAME RETIRED") == 1, out
+    assert "FRAME RETIRED sell_furniture#1" in out, out
+    assert "-> giveup (bound 1: the FSM's give-up ladder)" in out, out
+
+
+def test_a_throttled_life_can_still_reach_the_runner_with_its_retirements():
+    """`_ThrottledAgent` has no `__getattr__`, and the throttled carpenter and throttled
+    mage are the two Lives that run their economy agent nearly every tick — so they are
+    the two that retire the most frames and the two the report would ship DEAD for. Same
+    hole as `rule_gate_disagreement`/`frame_overdue`, one commit earlier."""
+    from anima2.life_runner import frame_retirements
+    from anima2.village import _ThrottledAgent
+
+    body, life = _sale_life()
+    assert _reach_the_sale(body, life)
+    for _ in range(80):
+        life.tick()
+        if life.econ_agent.goal_stack.current is None:
+            break
+    throttled = _ThrottledAgent(life, every=3)
+    throttled.yield_pause_s = 0
+    assert throttled.econ_agent is life.econ_agent
+    assert frame_retirements(throttled) == frame_retirements(life) != ()
+    # A plain Agent underneath has no economy agent. `frame_retirements` then falls back
+    # to the object it was handed — which is this proxy, and the proxy deliberately
+    # exposes no `goal_stack`, so the read fails closed to "nothing to report" rather
+    # than raising. That is the right answer HERE for a second reason: a hunt agent's
+    # planner is not capability-driven, so it owns no capability frames to report. The
+    # fallback exists for the UNWRAPPED plain capability Agent `run_village
+    # --capability-goals` builds (`tests/test_capabilities.py::
+    # test_a_plain_capability_agent_reports_its_own_retirements`); no production site
+    # wraps one of those in a `_ThrottledAgent`.
+    assert _ThrottledAgent(life.hunt_agent, every=3).econ_agent is None
+    assert frame_retirements(_ThrottledAgent(life.hunt_agent, every=3)) == ()
+    assert not hasattr(_ThrottledAgent(life.hunt_agent, every=3), "goal_stack")
+    # The unwrapped hunt agent DOES expose one, and it is empty of capability frames —
+    # so the fallback is safe on it too, by content and not only by the proxy's shape.
+    assert frame_retirements(life.hunt_agent) == ()
+
+
+def test_the_tally_rides_the_status_line_because_the_alarm_scrolls_away():
+    """The alarm is an edge and scrolls between status blocks; the tally is the level
+    signal an operator joining late, or grepping the log afterwards, still sees."""
+    from anima2.life_runner import retirement_tally
+
+    body, life = _sale_life()
+    assert retirement_tally(life) == "retired=0"
+    assert "retired=0" in telemetry_line(life, "carpenter", body.observe())
+    assert _reach_the_sale(body, life)
+    for _ in range(80):
+        life.tick()
+        if life.econ_agent.goal_stack.current is None:
+            break
+    assert "retired=1:1g" in telemetry_line(life, "carpenter", body.observe())

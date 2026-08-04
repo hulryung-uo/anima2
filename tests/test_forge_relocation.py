@@ -166,6 +166,258 @@ def test_a_progressing_agent_never_trips_the_liveness_line(capsys):
     assert "NO PROGRESS" not in out
 
 
+# --- the WORK-liveness line (the guard the silent miner needed the SECOND time) ------
+#
+# `NO PROGRESS` above is BODY-liveness and it is defeated by an agent that keeps
+# WALKING. Grimm died exactly that way on 2026-08-03: cumulative reward frozen at
+# `out+176.9` from t=765 to the end of an 1800-tick run, no smelt and no deliver on
+# any of the 126 remaining samples, while he went on relocating between mine faces —
+# so `NO PROGRESS` fired ten times at exactly "40 ticks", three of them in the HEALTHY
+# first half, and never escalated. Nothing in the status line flagged it. See
+# `village._run_worker`'s `_STALL_TICKS` block for the measurement behind the number.
+
+STALL_TICKS = 240  # `_QUIET_TICKS * 6`, measured — see `_run_worker`
+
+
+class _CountingEpisodes:
+    """An episode ledger whose `total_recorded` the test drives directly."""
+
+    def __init__(self):
+        self.total_recorded = 0
+
+    def total_reward(self):
+        return 0.0
+
+    def recent(self, n):
+        return []
+
+
+class _EconStandIn:
+    """The `econ_agent` half of a Life, as `village._work_recorded` reads it."""
+
+    def __init__(self):
+        self.episodes = _CountingEpisodes()
+
+
+class _WalkerWithLedger:
+    """Walks EVERY tick (so body-liveness can never fire) and records an episode only
+    while `producing_until` has not passed — the shape of a miner that keeps
+    relocating after its last skill ever finished.
+
+    `econ_produce_every` gives it the SECOND ledger a Life has. That is not decoration:
+    `Life.episodes` is the HUNT agent's alone, and a carpenter measured 0 there against
+    176 in the economy agent over 3000 offline ticks, so a Life whose hunt ledger is
+    frozen while it banks gold every few ticks is the NORMAL case and must stay silent.
+    `skill` is `Agent.last_skill_name`, the alarm's arming condition."""
+
+    def __init__(self, name, *, produce_every=9, producing_until=10**9, mode=None,
+                 econ_produce_every=None, skill="mine"):
+        from anima2.contract import Walk
+
+        self._walk = Walk
+        self.persona = Persona(name=name)
+        self.episodes = _CountingEpisodes()
+        self.memory: dict = {}
+        self.produce_every = produce_every
+        self.producing_until = producing_until
+        self.econ_produce_every = econ_produce_every
+        self.last_skill_name = skill
+        self.n = 0
+        if mode is not None:
+            self.mode = mode
+        if econ_produce_every is not None:
+            self.econ_agent = _EconStandIn()
+
+        class _Body:
+            connected = True
+            x = 50
+
+            def observe(self):
+                o = _obs(cursor=False, no_metal=False)
+                o.player.pos = Position(self.x, 50, 0)
+                return o
+
+        self.body = _Body()
+
+    def tick(self):
+        self.n += 1
+        self.body.x += 1  # position moves every tick — body-liveness stays reset
+        if self.n <= self.producing_until and self.n % self.produce_every == 0:
+            self.episodes.total_recorded += 1
+        if (self.econ_produce_every is not None
+                and self.n <= self.producing_until
+                and self.n % self.econ_produce_every == 0):
+            self.econ_agent.episodes.total_recorded += 1
+        return self._walk(dir=2)
+
+
+def test_a_walking_agent_that_stops_producing_no_longer_dies_silently(capsys):
+    """Grimm's exact shape. The old alarm cannot see this: reward, steps and position
+    all keep moving (he relocates), only the WORK stops."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    agent = _WalkerWithLedger("Grimm", producing_until=100)
+    _run_worker(agent, 100 + STALL_TICKS * 2 + 5, 0, {}, threading.Lock(), "miner")
+    out = capsys.readouterr().out
+    assert "NO OUTPUT" in out, "an agent that stopped producing must say so"
+    # ...and the count ESCALATES, unlike the ten identical "40 ticks" lines the
+    # body-liveness alarm printed across the healthy AND the dead half alike.
+    assert f"NO OUTPUT for {STALL_TICKS} ticks" in out
+    assert f"NO OUTPUT for {STALL_TICKS * 2} ticks" in out
+    # The old alarm is untouched and still silent here — it is a different failure.
+    assert "NO PROGRESS" not in out
+
+
+def test_a_healthy_long_single_skill_stretch_never_trips_the_work_liveness_line(capsys):
+    """THE anti-requirement, and the whole risk of the feature.
+
+    159 ticks is Grimm's longest measured HEALTHY reward-silence stretch across both
+    2026-08-03 forge logs (600-tick run, t=414→573): `ph=mine`, steps frozen at 67,
+    two full relocations with all-stuck windows, then live rock and recovery. For its
+    whole length it is indistinguishable from the death above, which is why the
+    threshold cannot be tightened below it. A miner that finishes a skill only every
+    159 ticks for 1000 ticks is healthy and must stay silent."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    agent = _WalkerWithLedger("Grimm", produce_every=159)
+    status: dict = {}
+    _run_worker(agent, 1000, 0, status, threading.Lock(), "miner")
+    out = capsys.readouterr().out
+    assert agent.episodes.total_recorded >= 6, "the stretch must actually be productive"
+    assert "NO OUTPUT" not in out, f"a healthy 159-tick mining stretch tripped it: {out}"
+    assert "!stalled" not in status[0], status[0]
+    assert "STALLED" not in status[0], status[0]
+
+
+def test_a_life_is_judged_by_BOTH_its_ledgers_not_the_hunt_one_alone(capsys):
+    """A Life's `episodes` is its HUNT agent's ledger, and the tinker Pim spent 180 of
+    208 samples in economy mode — judged on that ledger alone he would have fired 7
+    times in the 1800-tick run and 2 in the 600-tick run while being the most productive
+    agent present (`out+0.3` frozen for 1789 ticks while banking 503g over six
+    deposits). The first draft of this alarm answered that by excluding every Life
+    (`mode is None`), which left `run_supply_pair` and `run_warrior_village` with ZERO
+    work-liveness coverage. The sum of both ledgers is the answer instead: silent for
+    Pim, and still loud for a Life that has genuinely stopped."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    # Pim: hunt ledger dead flat for the whole window, economy ledger working. The
+    # huge `produce_every` is how the hunt ledger is starved while the econ one is fed.
+    pim = _WalkerWithLedger("Pim", produce_every=10**9, mode="economy",
+                            econ_produce_every=9, skill="capability_bound")
+    status: dict = {}
+    _run_worker(pim, STALL_TICKS * 3, 0, status, threading.Lock(), "tinker")
+    out = capsys.readouterr().out
+    assert pim.episodes.total_recorded == 0, "the hunt ledger really is frozen"
+    assert pim.econ_agent.episodes.total_recorded > 0, "the economy ledger really moved"
+    assert "NO OUTPUT" not in out, out
+    assert "!stalled" not in status[0] and "STALLED" not in status[0], status[0]
+
+    # ...and the coverage the `mode` gate used to throw away: a Life whose work has
+    # stopped on BOTH sides is Grimm's failure on `run_supply_pair`, and it now speaks.
+    dead = _WalkerWithLedger("Bjorn", producing_until=100, mode="economy",
+                             econ_produce_every=9, skill="capability_bound")
+    status = {}
+    _run_worker(dead, 100 + STALL_TICKS + 5, 0, status, threading.Lock(), "woodsman")
+    out = capsys.readouterr().out
+    assert f"NO OUTPUT for {STALL_TICKS} ticks" in out, out
+    assert "!stalled" in status[0], status[0]
+
+
+def test_the_status_line_carries_the_episode_count_for_every_agent():
+    """The alarm scrolls between status blocks; `status[idx]` is reprinted every ~4s and
+    is what an operator actually reads. It is also the only way the NEXT run measures the
+    real `total_recorded` distribution — no log today records it."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    healthy = _WalkerWithLedger("Bjorn", produce_every=5)
+    status: dict = {}
+    _run_worker(healthy, 50, 0, status, threading.Lock(), "lumberjack")
+    assert f"eps={healthy.episodes.total_recorded}" in status[0], status[0]
+    assert healthy.episodes.total_recorded == 10
+
+    # A Life carries it too, and it carries the SUM: a hunt-only reading would print
+    # `eps=0` on a carpenter that had retired 176 capability frames.
+    life = _WalkerWithLedger("Pim", produce_every=5, mode="economy",
+                             econ_produce_every=10)
+    _run_worker(life, 50, 0, status, threading.Lock(), "tinker")
+    assert life.episodes.total_recorded == 10
+    assert life.econ_agent.episodes.total_recorded == 5
+    assert "eps=15" in status[0], status[0]
+
+
+def test_an_agent_wandering_by_design_is_never_called_stalled(capsys):
+    """The alarm's arming condition, and without it the line is 100% WRONG on the
+    DEFAULT roster. `townsfolk` is defined `work_skill=None  # no job — just lives in
+    town (wander + greet)` and ships at `--townsfolk 1`; `Greet` records once per new
+    serial and `Wander` records nothing, ever. Measured through this same `_run_worker`
+    (2026-08-03): 1000 ticks, five neighbours, five greets in the first five ticks, then
+    `NO OUTPUT` at 240/480/720/960 and a terminal `[BUDGET SPENT · STALLED 995]` for an
+    agent behaving exactly as specified. An idle hunter (`Hunt.can_run` false with no
+    hostile in range, so the planner falls to the same `Wander`) is the same shape."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    for idle in ("wander", "capability_wait"):
+        agent = _WalkerWithLedger("Sera", producing_until=5, produce_every=1, skill=idle)
+        status: dict = {}
+        _run_worker(agent, STALL_TICKS * 4 + 5, 0, status, threading.Lock(), "townsfolk")
+        out = capsys.readouterr().out
+        assert agent.episodes.total_recorded == 5, "the greets really did stop"
+        assert "NO OUTPUT" not in out, f"{idle}: {out}"
+        assert "!stalled" not in status[0] and "STALLED" not in status[0], status[0]
+
+
+def test_the_real_townsfolk_planner_is_silent_and_the_real_miner_planner_is_not():
+    """The arming condition against the PRODUCTION skill names, not the stand-in's.
+
+    A stand-in that hard-codes "wander" proves the gate, not that anything selects it.
+    `Wander.name` and `CapabilityWait.name` are what `_doing_work` matches, and a
+    profession planner's last skill is the always-runnable fallback."""
+    from anima2.profession import PROFESSIONS, CapabilityWait
+    from anima2.skills.movement import Wander
+    from anima2.village import _IDLE_SKILLS, _doing_work
+
+    assert Wander.name in _IDLE_SKILLS
+    assert CapabilityWait.name in _IDLE_SKILLS
+    assert isinstance(PROFESSIONS["townsfolk"].planner().skills[-1], Wander)
+    assert PROFESSIONS["miner"].work_skill().name not in _IDLE_SKILLS
+
+    class _Stub:
+        last_skill_name = Wander.name
+
+    assert not _doing_work(_Stub())
+    _Stub.last_skill_name = PROFESSIONS["miner"].work_skill().name
+    assert _doing_work(_Stub())
+    # An object that cannot answer keeps the alarm it would have had — the gate removes
+    # KNOWN-idle false alarms, it does not demand proof of work before speaking.
+    assert _doing_work(object())
+
+
+def test_a_stalled_worker_says_so_on_its_line_and_in_its_terminal_suffix():
+    """Grimm's actual last line was
+    `Grimm  miner  @(2593,499) t=1800 out+176.9 steps=139 says=0  [BUDGET SPENT]` —
+    the most misleading possible summary of an agent that had produced nothing for its
+    last 1035 ticks, and the first line any post-hoc reader looks at."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    agent = _WalkerWithLedger("Grimm", producing_until=10)
+    status: dict = {}
+    _run_worker(agent, 10 + STALL_TICKS + 5, 0, status, threading.Lock(), "miner")
+    assert "!stalled" in status[0], status[0]
+    assert "[BUDGET SPENT · STALLED" in status[0], status[0]
+
+
 # --- reflection fallback visibility (follow-up #3) -----------------------------------
 #
 # The fallback used to be silent, and it cost a false claim: a persisted insight was

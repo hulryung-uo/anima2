@@ -60,7 +60,9 @@ from .skills.market import (
     BUY_CLILOC,
     GOLD_GRAPHIC,
     IRON_INGOT_GRAPHIC,
+    OFFER_REOPEN_ATTEMPTS,
     BuyIngots,
+    is_vendor_cancel,
 )
 from .skills.smelt import INGOT_GRAPHICS
 
@@ -325,14 +327,29 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             if isinstance(record.action, BuyItems)
             and record.action.vendor == vendor_serial
         ]
+        # An EMPTY item list is not a purchase — it is ServUO's EndVendorBuy, the
+        # cancel `BlacksmithMarket` sends to close a window it owns. Two of those are
+        # now normal on a correct trip: one per partial-subset RE-ROLL (`_buy_step`'s
+        # `buy_offer_reopens` branch), and one on the EXIT edge when the trip walks home
+        # with the window still up — including after a SUCCESSFUL buy, because
+        # `_buy_step` signals "trip over" with `return None` on the confirm-success path
+        # too. Counting them as buys made a correct run fail this gate: measured
+        # 2026-08-03 (review) against a shard simulator driving the real FSM, a run that
+        # bought exactly 15 iron at the quoted price scored
+        # `transaction_actions_once=False, only_iron_bought=False` purely because a
+        # trailing cancel made `len(buys) == 2`. They stay inside `transaction_indices`
+        # below — they ARE the capability's actions and `no_extra_capability_actions`
+        # must keep seeing them — but every "what was bought" question reads only these.
+        orders = [(i, record) for i, record in buys
+                  if not is_vendor_cancel(record.action)]
         bought = sum(
             amount
-            for _index, record in buys
+            for _index, record in orders
             for _item_serial, amount in record.action.items
         )
         quoted_cost = sum(
             entry.price * amount
-            for _index, record in buys
+            for _index, record in orders
             for item_serial, amount in record.action.items
             for entry in (record.observation.shop_buy.entries if record.observation.shop_buy else [])
             if entry.serial == item_serial and entry.graphic == IRON_INGOT_GRAPHIC
@@ -340,10 +357,10 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         exact_order = bool(
             requests
             and selects
-            and buys
-            and requests[0] < selects[0] < buys[0][0]
+            and orders
+            and requests[0] < selects[0] < orders[0][0]
         )
-        buy_record = buys[0][1] if len(buys) == 1 else None
+        buy_record = orders[0][1] if len(orders) == 1 else None
         buy_shop = buy_record.observation.shop_buy if buy_record is not None else None
         iron_entry = (
             next(
@@ -444,8 +461,17 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
                 target_goal_id is not None and len(target_frames) == 1 and canonical_frame
             ),
             "exact_popup_select_buy_order": exact_order,
+            # ONE order, and one popup cycle per window opening. It used to read
+            # `len(requests) == len(selects) == len(buys) == 1`, which forbade the
+            # re-roll `OFFER_REOPEN_ATTEMPTS` exists for: a vendor window is a partial
+            # subset of the stock, so a trip that does not see iron in the first
+            # opening closes it and asks again — one extra request+select+cancel per
+            # attempt, bounded by `OFFER_REOPEN_ATTEMPTS`. The invariant that actually
+            # matters is unchanged and still exact: exactly one thing was BOUGHT.
             "transaction_actions_once": bool(
-                len(requests) == len(selects) == len(buys) == 1
+                len(orders) == 1
+                and len(requests) == len(selects) >= 1
+                and len(requests) <= 1 + OFFER_REOPEN_ATTEMPTS
             ),
             "only_iron_bought": only_iron_bought,
             "registry_owned_transaction": registry_owned,
@@ -480,6 +506,11 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             f"serial={serial} vendor={vendor_serial} iron=0->"
             f"{_pack_iron(final_obs)} gold={_STARTING_GOLD}->"
             f"{_pack_amount(final_obs, GOLD_GRAPHIC)} quote={quoted_cost} bought={bought} "
+            # `cancels` is the empty-list EndVendorBuy count — re-rolls plus the exit
+            # edge. It is not a flag (a correct trip may send 0 or several), but it is
+            # the only way a reading of this gate can tell a first-opening hit from a
+            # trip that had to re-roll the subset, so it rides the detail line.
+            f"opens={len(requests)} cancels={len(buys) - len(orders)} "
             f"goal_id={target_goal_id} ticks={agent.ticks} cognition={len(client.calls)}"
         )
         return flags, detail

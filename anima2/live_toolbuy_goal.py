@@ -59,9 +59,11 @@ from .skills.harvest import BACKPACK_LAYER
 from .skills.market import (
     BUY_CLILOC,
     GOLD_GRAPHIC,
+    OFFER_REOPEN_ATTEMPTS,
     SMITH_TONGS_GRAPHIC,
     TOOL_BUY_AMOUNT,
     BuyTool,
+    is_vendor_cancel,
 )
 from .skills.smelt import INGOT_GRAPHICS
 
@@ -343,14 +345,20 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             if isinstance(record.action, BuyItems)
             and record.action.vendor == vendor_serial
         ]
+        # Empty item list = ServUO's EndVendorBuy, the cancel the trip sends to close a
+        # window it owns (a partial-subset re-roll, or the exit edge on the walk home) —
+        # not a purchase. Identical shape and identical measurement to
+        # `live_buy_goal.py`; see the comment there for the run this made fail.
+        orders = [(i, record) for i, record in buys
+                  if not is_vendor_cancel(record.action)]
         bought = sum(
             amount
-            for _index, record in buys
+            for _index, record in orders
             for _item_serial, amount in record.action.items
         )
         quoted_cost = sum(
             entry.price * amount
-            for _index, record in buys
+            for _index, record in orders
             for item_serial, amount in record.action.items
             for entry in (record.observation.shop_buy.entries if record.observation.shop_buy else [])
             if entry.serial == item_serial and entry.graphic == SMITH_TONGS_GRAPHIC
@@ -358,10 +366,10 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
         exact_order = bool(
             requests
             and selects
-            and buys
-            and requests[0] < selects[0] < buys[0][0]
+            and orders
+            and requests[0] < selects[0] < orders[0][0]
         )
-        buy_record = buys[0][1] if len(buys) == 1 else None
+        buy_record = orders[0][1] if len(orders) == 1 else None
         buy_shop = buy_record.observation.shop_buy if buy_record is not None else None
         tongs_entry = (
             next(
@@ -460,8 +468,14 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
                 target_goal_id is not None and len(target_frames) == 1 and canonical_frame
             ),
             "exact_popup_select_buy_order": exact_order,
+            # One ORDER, and one popup cycle per window opening — see
+            # `live_buy_goal.py`'s matching flag for why the old
+            # `len(buys) == 1` clause forbade the re-roll that
+            # `OFFER_REOPEN_ATTEMPTS` exists for.
             "transaction_actions_once": bool(
-                len(requests) == len(selects) == len(buys) == 1
+                len(orders) == 1
+                and len(requests) == len(selects) >= 1
+                and len(requests) <= 1 + OFFER_REOPEN_ATTEMPTS
             ),
             "only_tongs_bought": only_tongs_bought,
             "registry_owned_transaction": registry_owned,
@@ -496,6 +510,10 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, bool], str]:
             f"serial={serial} vendor={vendor_serial} tools=0->"
             f"{_pack_tools(final_obs)} gold={_STARTING_GOLD}->"
             f"{_pack_amount(final_obs, GOLD_GRAPHIC)} quote={quoted_cost} bought={bought} "
+            # Window openings and EndVendorBuy cancels — not flags (a correct trip may
+            # send several of each), but the only way this gate's output distinguishes a
+            # first-opening hit from a subset re-roll. See `live_buy_goal.py`.
+            f"opens={len(requests)} cancels={len(buys) - len(orders)} "
             f"goal_id={target_goal_id} ticks={agent.ticks} cognition={len(client.calls)}"
         )
         return flags, detail

@@ -171,6 +171,28 @@ FIND_MOBILE_TIMEOUT = 10
 # miss into a dead transaction; reopening re-rolls the subset. The real fix belongs in
 # the BODY (anima-core's buy-window pairing) — this is the honest brain-side mitigation.
 OFFER_REOPEN_ATTEMPTS = 4
+
+
+def is_vendor_cancel(action) -> bool:
+    """Is this `BuyItems` a CLOSE rather than a purchase?
+
+    An empty item list is ServUO's EndVendorBuy — the only way the brain can close a
+    vendor BUY window it opened — so the SAME action type carries both "buy these" and
+    "never mind". Two correct behaviours emit it: the partial-subset re-roll above (a
+    window is a snapshot, so it must be closed before a fresh subset can be rolled) and
+    the trip's exit edge (`_close_own_vendor_window`), which fires on every give-up path
+    INCLUDING the confirm-success one.
+
+    It exists as a named predicate because two live acceptance gates counted these as
+    purchases and therefore FAILED a correct buy — measured against a shard simulator
+    driving the real FSM: 15 iron bought at the quoted price, exact gold delta, and
+    `transaction_actions_once=False` because a trailing cancel made `len(buys) == 2`
+    (`live_buy_goal.py`, `live_toolbuy_goal.py`). Anything counting orders must go
+    through here.
+    """
+    return isinstance(action, BuyItems) and not action.items
+
+
 ASK_RETRY = 10
 # Total ticks the `popup` stage will stay in play — across every re-request
 # cycle `_popup_click`'s own `ASK_RETRY` wait/re-ask loop makes — before
@@ -843,7 +865,34 @@ class BlacksmithMarket(Blacksmith):
                     ctx.memory["buy_stage"] = "popup"
                     ctx.memory.pop("buy_popup_wait", None)
                     ctx.memory.pop("buy_ask_wait", None)
-                    return SkillResult(Status.RUNNING, None, reward)
+                    # CLOSE the window, which is what makes this a re-roll at all.
+                    # Emitting no action here re-rolled NOTHING: the popup stage sees
+                    # the still-open window, recognises it as ours (8cdd2f0's entry-edge
+                    # branch) and flips straight back to `window`, re-reading the
+                    # IDENTICAL entry list — a window is a snapshot, so the subset
+                    # cannot change while it stays open. Four attempts burnt in four
+                    # ticks, which is exactly what the 2026-08-03 forge log shows on the
+                    # one sample that caught it: `buy_stage=popup` beside `ui=shopbuy`.
+                    # An empty item list is ServUO's EndVendorBuy, so the next opening is
+                    # a freshly rolled subset.
+                    #
+                    # THE CLOSE'S OWN OBSERVATION LAG COSTS ONE ATTEMPT PER CYCLE, not
+                    # one per trip: the popup pre-check above re-adopts any still-visible
+                    # window belonging to `buy_vendor` back to stage `window`, and this
+                    # branch then increments the counter again. Measured on this FSM
+                    # against a simulated shard (review, 2026-08-03), counting FRESH
+                    # window openings out of OFFER_REOPEN_ATTEMPTS=4:
+                    #   lag 0 ticks -> 4    lag 1 -> 2    lag 2 -> 1    lag 3 -> 1
+                    # At pump_ms=400 zero lag is the unrealistic case, so a live trip
+                    # re-rolls the subset once or twice, not four times. Still bounded,
+                    # and still strictly better than the 0 fresh openings this replaced
+                    # (emitting no action here re-rolled NOTHING); the give-up below now
+                    # leaves no window behind either way. Follow-up if one or two
+                    # re-rolls ever proves too few: mark the tick this cancel was sent
+                    # and make the pre-check refuse to re-adopt a window THIS trip just
+                    # cancelled, so the lag costs no attempt at all.
+                    return SkillResult(Status.RUNNING,
+                                       BuyItems(vendor=buy.vendor, items=[]), reward)
                 self._stash_reward(ctx, reward)
                 return None
             # Buy the fixed batch, clamped to what the vendor actually stocks
@@ -1036,7 +1085,12 @@ class BlacksmithMarket(Blacksmith):
                     ctx.memory["toolbuy_stage"] = "popup"
                     ctx.memory.pop("toolbuy_popup_wait", None)
                     ctx.memory.pop("toolbuy_ask_wait", None)
-                    return SkillResult(Status.RUNNING, None, reward)
+                    # CLOSE the window to re-roll it — see the material buy's matching
+                    # block for the live measurement. This FSM is the same one with a
+                    # different memory namespace, so it had the same defect and gets the
+                    # same fix rather than waiting to be caught on its own run.
+                    return SkillResult(Status.RUNNING,
+                                       BuyItems(vendor=buy.vendor, items=[]), reward)
                 self._stash_reward(ctx, reward)
                 return None
             amount = min(TOOL_BUY_AMOUNT, entry.amount)
@@ -1224,6 +1278,51 @@ class BlacksmithMarket(Blacksmith):
         # here — either way, the caller resumes the MAKE loop from wherever
         # the smith ended up (mirrors `Blacksmith._fetch_return_step`).
         return None if step is self._ARRIVED else step
+
+    # --- the exit edge: a trip closes the window it opened ------------------------
+
+    @staticmethod
+    def _close_own_vendor_window(ctx: SkillContext, vendor_serial) -> BuyItems | None:
+        """The cancel a give-up path owes: close the BUY window THIS trip opened.
+
+        SAFETY ARGUMENT, stated outright because "a repair closed a surface a live goal
+        owned" is the exact failure this area exists to avoid:
+
+        * It is NOT a repair. It is the OWNER cleaning up after itself — emitted from
+          inside the trip's own FSM, on the one tick that FSM has itself decided the
+          trip is over (`_buy_step`/`_toolbuy_step` returned `None`, meaning every stage
+          has already given up and the phase is being switched to the walk home). No
+          other goal's transaction can be in flight behind it, and this trip's own is
+          provably finished, so there is no live goal whose surface this could be.
+        * It closes ONE surface and only if it is OURS: `obs.shop_buy` whose `vendor`
+          equals the serial this trip recorded when it found its vendor (read BEFORE
+          `_CLEANUP_KEYS` pops it). A window belonging to anyone else is left alone —
+          that is the ENTRY edge, handled at the popup stage. It never scans for
+          surfaces, and never reads `shop_sell`, `gumps` or `pending_target`.
+        * It is not `WarriorLife._clear_stale_ui` moved earlier. That repair fires from
+          the LIFE, needs an empty goal stack or a fully overdue frame, and its
+          preconditions are untouched by this — they are the safety property. This one
+          needs neither, precisely because it is inside the transaction that owns the
+          window.
+
+        Why it exists — forge16-18, live. There are seven `return None` give-ups in
+        `_buy_step` and not one of them closed the window the trip had opened, so the
+        trip walked home leaving a `ui=shopbuy` that refuses every one of the sixteen
+        capability gates (they all share the idle-UI clause). The 1800-tick forge run of
+        2026-08-03 ended with the tinker behind that window for its last 556 ticks:
+        `ui=shopbuy` on the last 75 of 208 samples, three whole `buy_iron` frames each
+        burning its full 180-tick budget, position and steps frozen, and the runner
+        printing `NO PROGRESS for 560 ticks`. Commit 8cdd2f0 had already fixed the ENTRY
+        edge — a window already up when a trip ARRIVES — and measurement of that run
+        showed it working as designed; it simply never touched the EXIT edge.
+
+        Returns the cancel action (an empty item list is ServUO's EndVendorBuy), or
+        `None` when there is nothing of ours to close.
+        """
+        window = ctx.obs.shop_buy
+        if window is None or vendor_serial is None or window.vendor != vendor_serial:
+            return None
+        return BuyItems(vendor=window.vendor, items=[])
 
     # --- reward carry (mirrors MineSmeltDeliver._bank/_payout) -------------------
 
@@ -1961,6 +2060,16 @@ class BuyMaterialCapability(BlacksmithMarket):
         "buy_popup_total",
         "buy_ask_wait",
         "buy_confirm_wait",
+        # Scoped to ONE trip, and it must not outlive one — forge18, live. This counter
+        # is the only thing deciding how fast the partial-subset re-roll gives up, and
+        # it was written (`_buy_step`) and read (`_buy_step`) and NOWHERE ELSE in the
+        # repo: not here, not in `_begin_goal`'s pop list, not in the gate's
+        # `_BUY_TRANSACTION_KEYS`. So it lived in the economy agent's memory for the life
+        # of the process, and one unlucky trip that exhausted it left every LATER trip
+        # giving up on its first `window` tick, forever. Measured offline on the FSM
+        # alone: trip 1 gave up at tick 7 with the counter at OFFER_REOPEN_ATTEMPTS,
+        # trips 2 and 3 (fresh goal ids, same memory) gave up on tick 1.
+        "buy_offer_reopens",
     )
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
@@ -2042,9 +2151,16 @@ class BuyMaterialCapability(BlacksmithMarket):
                 return self._payout(ctx, result)
             ctx.memory["buy_giveup_ingots"] = self._pack_iron(ctx)
             ctx.memory["buy_giveup_tick"] = tick
+            vendor = ctx.memory.get("buy_vendor")  # read BEFORE cleanup pops it
             for key in self._CLEANUP_KEYS:
                 ctx.memory.pop(key, None)
             phase = ctx.memory["mkt_phase"] = "buy_return"
+            # The EXIT edge: close the window this trip opened before walking home.
+            # See `_close_own_vendor_window` for the safety argument and for the 556
+            # live ticks that were lost to its absence.
+            cancel = self._close_own_vendor_window(ctx, vendor)
+            if cancel is not None:
+                return self._payout(ctx, SkillResult(Status.RUNNING, cancel, 0.0))
 
         if phase == "buy_return":
             result = self._market_return_step(ctx, "buy_return", route)
@@ -2119,6 +2235,9 @@ class BuyToolCapability(BlacksmithMarket):
         "toolbuy_popup_total",
         "toolbuy_ask_wait",
         "toolbuy_confirm_wait",
+        # Same per-trip scope, same defect, same fix as `buy_offer_reopens` — see
+        # `BuyMaterialCapability._CLEANUP_KEYS` for the measurement.
+        "toolbuy_offer_reopens",
     )
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
@@ -2200,9 +2319,14 @@ class BuyToolCapability(BlacksmithMarket):
                 return self._payout(ctx, result)
             ctx.memory["toolbuy_giveup_tools"] = self._pack_tools(ctx)
             ctx.memory["toolbuy_giveup_tick"] = tick
+            vendor = ctx.memory.get("toolbuy_vendor")  # read BEFORE cleanup pops it
             for key in self._CLEANUP_KEYS:
                 ctx.memory.pop(key, None)
             phase = ctx.memory["mkt_phase"] = "toolbuy_return"
+            # The EXIT edge, same as the material buy — see `_close_own_vendor_window`.
+            cancel = self._close_own_vendor_window(ctx, vendor)
+            if cancel is not None:
+                return self._payout(ctx, SkillResult(Status.RUNNING, cancel, 0.0))
 
         if phase == "toolbuy_return":
             result = self._market_return_step(ctx, "toolbuy_return", route)

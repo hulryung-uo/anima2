@@ -164,6 +164,177 @@ def enforce_gold_provenance(gm: GmControl, body, serial: int) -> None:
 
 # --- telemetry -----------------------------------------------------------------------
 
+#: One letter per retirement reason, for the tally on the ~4s status line. Ordered:
+#: the tally prints in THIS order, not alphabetically, so `4a/1g/1x` always reads
+#: achieved-first regardless of which buckets a run happens to fill.
+RETIREMENT_CODES = (
+    ("achieved", "a"),
+    ("giveup", "g"),
+    ("expired", "x"),
+    ("replaced", "r"),
+    ("cancelled", "c"),
+)
+
+
+def retirement_reason(frame) -> str:
+    """WHY one capability frame left the stack — the distinction no live log could make.
+
+    This is the 2026-08-03 finding (C) in one function. `CapabilityGoalComplete` closes
+    a frame through exactly two branches (`profession.py`): the ACHIEVEMENT branch,
+    which returns SUCCESS, and — reached only after it — the give-up-ladder branch keyed
+    on `cap_run_finished_goal_id`, which returns FAILURE. That second one is BOUND 1 of
+    the exit-edge hold, and it is the bound no live run has ever evidenced: every
+    low-age frame in the logs closed beside a successful sale or deposit, a ladderless
+    `buy_iron` frame closed just as fast at age 4, and the status line shows only that
+    the frame is gone. "Low max age" is not a give-up signature.
+
+    NOTHING NEW IS WRITTEN to make this readable, and the function takes the frame
+    ALONE. The distinction already exists in `frame.outcome`, stamped by
+    `GoalStack._archive` on every retirement since the goal stack was written:
+    `agent.py` maps SUCCESS → `GoalOutcome.SUCCESS` and FAILURE → `GoalOutcome.FAILURE`,
+    and `expire_due` stamps EXPIRED (bound 2). Being a projection of durable, per-frame
+    state is what lets a retirement that happens between two ~4s samples still be
+    reported — and what makes the answer independent of WHEN it is read.
+
+    THE MARKER IS NOT USABLE HERE, and that is a measured correction to the design this
+    was built from. `cap_run_finished_goal_id` is a SINGLE memory slot that every later
+    transaction overwrites, so testing `memory[...] == frame.id` only ever confirms the
+    newest frame to have walked a ladder. Measured on a 2000-tick `CarpenterLife`
+    (`retirement_reason` classified at retirement time versus the same history re-read
+    at the end): 117 of 117 FAILURE closes are give-ups, and 116 of the 117 flip to a
+    false "no ladder ran" when read afterwards. The claim that a stale value "can only
+    equal an OLDER frame's id" is true and is exactly the problem — the error direction
+    it produces is the one that ERASES bound-1 evidence.
+
+    FAILURE is therefore reported as `giveup` outright, which is sound:
+
+    * Attribution. On a `kind == "capability"` frame only `CapabilityGoalComplete` can
+      consume the goal (`agent.py` finishes with FAILURE in exactly one place, from a
+      `consumes_goal` terminal skill, and its capability allowlist admits no other
+      `consumes_goal` type — `GoTo` additionally requires `goal.kind == "goto"`, and
+      `CapabilityBoundSkill` does not inherit its inner skill's `consumes_goal`).
+    * The residual. `step` also returns FAILURE from its `not can_run` fail-closed
+      guard, which would not be a ladder. That guard is unreachable through the planner:
+      `Agent._isolated_planner_context` deep-copies memory and observation, so the
+      `can_run` that selected the skill and the `can_run` inside `step` read identical
+      content in the same tick. It has never been constructed by any test or gate, and
+      even if it were, the frame still closed UNACHIEVED rather than expiring — the same
+      side of the only split this report exists to make.
+
+    One ordering fact worth keeping: `SellItemCapability` and `BankGoldCapability` set
+    the run-finished marker UNCONDITIONALLY at the end of the return leg, so a run that
+    achieved AND walked home satisfies both of `can_run`'s branches. `can_run` answers
+    on the achievement branch, and `GoalOutcome.SUCCESS` records that — so such a frame
+    reads `achieved`, not `giveup`, with no tie-break needed here.
+    """
+    outcome = getattr(getattr(frame, "outcome", None), "value", None)
+    if outcome == "success":
+        return "achieved"
+    if outcome == "failure":
+        return "giveup"
+    return outcome or "?"  # expired (bound 2) / replaced / cancelled
+
+
+def frame_retirements(life, *, after_id: int = 0) -> tuple[tuple, ...]:
+    """`(id, capability, age, budget, reason)` for every CAPABILITY frame retired since
+    `after_id`, oldest first — a pure projection of the goal stack that OWNS the frames.
+
+    That stack is `life.econ_agent`'s on a Life, and the object's OWN on anything else
+    that has one. The fallback is not defensive tidiness, it is the whole
+    `run_village --capability-goals` fleet: `_build_villager_agent` hands `_run_worker` a
+    PLAIN `Agent` carrying a real `CapabilityPolicy`, and that agent's capability frames
+    retire on `agent.goal_stack` — it has no `econ_agent` and never will. Measured
+    2026-08-03 (review): a blacksmith `bank_gold` frame closed through the FSM give-up
+    ladder (`goal_stack.current is None`, `history[-1].outcome is FAILURE`) and this
+    function returned `()`, so bound-1 observability — the entire point of the report —
+    was dead for exactly the fleet it was added for. The reason review caught it and the
+    tests did not is that `tests/test_capabilities.py::_retire_life` wraps that agent in
+    a `type("_Life", (), {"econ_agent": agent})()` shim: an attribute no production code
+    gives it. New tests drive the unwrapped agent.
+
+    The cursor is a frame ID, never a count: history is bounded (`history_limit=128`),
+    so a count silently under-reports after an overflow, while ids are monotonic and
+    `> after_id` is total. Ages are in ECON-AGENT ticks, the same clock `deadline_tick`
+    and `telemetry_line`'s `@age` are counted in.
+
+    Attribution is exact rather than assumed: on a `kind == "capability"` frame only
+    `CapabilityGoalComplete` can consume the goal — see `retirement_reason`, which also
+    carries the reason this reads NOTHING but the frame. Reading durable per-frame state
+    is what lets a retirement that lands between two ~4s samples still be reported, and
+    what keeps an EDGE reader (the alarm, which drains by id every tick) and a LEVEL
+    reader (`retirement_tally`, re-derived from scratch) agreeing on every frame they
+    can both still see; an earlier draft consulted agent memory and its two readers
+    disagreed on 116 of 117 frames. What durability does NOT survive is history
+    overflowing: past 128 frames the oldest are deleted, the edge reader has already
+    banked them and the level reader can no longer see them, which is why
+    `retirement_tally` says `>=` once the cap binds rather than pretending to a total.
+    """
+    econ = getattr(life, "econ_agent", None) or life
+    try:
+        out = []
+        for frame in getattr(econ.goal_stack, "history", ()):
+            if frame.id <= after_id or getattr(frame.goal, "kind", None) != "capability":
+                continue
+            age = (None if frame.finished_tick is None
+                   else frame.finished_tick - frame.created_tick)
+            budget = (None if frame.deadline_tick is None
+                      else frame.deadline_tick - frame.created_tick)
+            out.append((frame.id, frame.goal.params.get("capability"), age, budget,
+                        retirement_reason(frame)))
+        return tuple(out)
+    except Exception:  # noqa: BLE001 — telemetry must never break the run
+        return ()
+
+
+def _history_saturated(life) -> bool:
+    """Has the goal stack this tally reads started DELETING its oldest frames?
+
+    `GoalStack._archive` trims from the FRONT once `len(history) > history_limit`, so
+    from that moment the tally is a rolling window over the newest 128 frames and its
+    count is a floor, not a total. Measured (review, 2026-08-03) on the very harness
+    `tests/test_life_frame_hold.py::test_the_reason_does_not_depend_on_when_it_is_read`
+    uses — a `CarpenterLife` with a saw, four board-items and 5000g: 58 retirements at
+    1000 ticks, 117 at 2000, 176 at 3000, 234 at 4000, with history pinned at 128 from
+    econ tick 2182 on. So the docstring this replaced — "128 capability frames is far
+    more than any run has produced" — was false at 3000 ticks, a window
+    `warrior_life.py` and CLAUDE.md both describe as ordinary, where the unmarked tally
+    reported 128 of 176 actual retirements: a silent 27% under-report of a field printed
+    as a count.
+    """
+    try:
+        stack = (getattr(life, "econ_agent", None) or life).goal_stack
+        return len(stack.history) >= stack.history_limit
+    except Exception:  # noqa: BLE001 — telemetry must never break the run
+        return False
+
+
+def retirement_tally(life) -> str:
+    """`retired=6:4a/1g/1x` — the LEVEL signal beside the per-tick edge alarm.
+
+    The alarm in `village._run_worker` scrolls away between status blocks; this is what
+    an operator joining late, or grepping the log afterwards, still sees.
+
+    The count is retirements STILL IN bounded history, never a lifetime total, and it
+    SAYS SO: once the 128-frame cap binds the field reads `retired>=128:...`. Without
+    that marker the two readers of the same history disagree the moment it overflows —
+    the per-tick edge alarm had already reported 176 retirements on the run where this
+    line still said 128 — and a reader has no way to tell a run that retired 128 frames
+    from one that retired 234. `>=` is the honest thing a bounded projection can say;
+    the edge alarm remains the exact per-frame record.
+    """
+    rets = frame_retirements(life)
+    if not rets:
+        return "retired=0"
+    counts: dict[str, int] = {}
+    for _, _, _, _, reason in rets:
+        counts[reason] = counts.get(reason, 0) + 1
+    parts = [f"{counts.pop(name)}{code}" for name, code in RETIREMENT_CODES
+             if name in counts]
+    parts += [f"{n}{name}" for name, n in sorted(counts.items())]  # any unforeseen bucket
+    at_least = ">=" if _history_saturated(life) else "="
+    return f"retired{at_least}{len(rets)}:{'/'.join(parts)}"
+
+
 def telemetry_line(life, profession: str, obs: Observation | None) -> str:
     """`want=<intent> admitted=<goal actually on the stack> ready=<gate verdicts>`.
 
@@ -194,6 +365,11 @@ def telemetry_line(life, profession: str, obs: Observation | None) -> str:
                    two, because "the age exceeds the budget" is a comparison between two
                    numbers on the line and review-caught nobody makes it. `!frozen!overdue`
                    is the stale frame the hold released and no longer holds for.
+
+    `retired=` closes the last gap those three leave: they all describe the frame that
+    is HERE, and a frame that has already gone is simply absent — which is why bound 1
+    of the exit-edge hold (the FSM's give-up ladder) could not be told from an ordinary
+    successful sale on ANY 2026-08-03 log. See `retirement_reason`.
     """
     try:
         ready = ready_capability_ids(
@@ -217,7 +393,8 @@ def telemetry_line(life, profession: str, obs: Observation | None) -> str:
                 admitted += "!overdue"
     except Exception:  # noqa: BLE001 — telemetry must never break the run
         ready, admitted = ("?",), "?"
-    return f"want={life.target_cap} admitted={admitted} ready={list(ready)}"
+    return (f"want={life.target_cap} admitted={admitted} ready={list(ready)} "
+            f"{retirement_tally(life)}")
 
 
 def hp_readout(obs: Observation | None) -> str:

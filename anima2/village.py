@@ -638,10 +638,108 @@ def _chronicle_events_this_tick(
     return events
 
 
+#: What each retirement reason MEANS, spelled out in the alarm rather than left to a
+#: reader who would have to know which of `CapabilityGoalComplete`'s two branches, or
+#: `expire_due`, closed the frame. Naming the bound is the point of the report: bounds 2
+#: and 3 of the exit-edge hold are live-proven and bound 1 has never been distinguished
+#: from an ordinary successful sale on any log (`docs/AUDIT-2026-07-29.md`, 2026-08-03).
+#: `achieved` needs no gloss — it is the ordinary outcome, and annotating it would bury
+#: the two that are not. See `life_runner.retirement_reason` for the bucket definitions.
+_RETIREMENT_NOTES = {
+    "giveup": " (bound 1: the FSM's give-up ladder)",
+    "expired": " (bound 2: the frame's own deadline)",
+}
+
+
+#: Skills whose healthy steady state is to record NOTHING, so a run of them is not
+#: evidence of anything being wrong. `wander` is the always-runnable fallback every
+#: profession planner ends with — it returns RUNNING with reward 0 forever, and for a
+#: `townsfolk` (`work_skill=None  # no job — just lives in town`) or a hunter with no
+#: hostile in range it is the WHOLE job. `capability_wait` is its economy-mode twin:
+#: no capability is admitted, so there is nothing to execute.
+#:
+#: Excluding them costs little detection, because an agent that is idle AND WEDGED is
+#: not moving, and not moving is what the NO PROGRESS alarm beside this one watches.
+#: Measured, on the wedged half of the 1800-tick forge run: the tinker sat behind a
+#: stale `ui=shopbuy` with position and steps frozen and the runner printed
+#: `NO PROGRESS for 560 ticks` beside the rule-vs-gate disagreement alarm. (Which SKILL
+#: it was running through that stretch the log does not record — the point here is only
+#: that the other alarm speaks when an idle agent is stuck rather than merely idle.)
+_IDLE_SKILLS = frozenset({"wander", "capability_wait", "curriculum_wait"})
+
+
+def _work_recorded(agent) -> int:
+    """Every skill outcome this agent's ledgers have recorded — the work-liveness signal.
+
+    For a plain `Agent` that is `agent.episodes.total_recorded`. For a **Life** it is the
+    HUNT ledger PLUS the ECONOMY one, and the sum is the whole point: `Life.episodes` is
+    `hunt_agent.episodes` alone (`warrior_life.py`), and a carpenter measured over 3000
+    offline ticks recorded 0 there against 176 in the economy agent — so the hunt ledger
+    is not a weak signal for a Life, it is a constant. That is why the alarm's first
+    draft had to exclude every Life by testing `mode is None`, and why it then covered 2
+    of the ~9 agents the four inline runners drive: `run_supply_pair` (WoodsmanLife +
+    throttled CarpenterLife) and `run_warrior_village` (all WarriorLife) got ZERO
+    work-liveness coverage, which is the same blindness the alarm exists to remove.
+    Summed, the longest silence that same healthy 3000-tick carpenter shows is 22 ticks,
+    an order of magnitude under the 240-tick threshold.
+
+    Monotone, because both terms are. `_ThrottledAgent` proxies `econ_agent`, so a
+    throttled Life sums the same two ledgers as an unthrottled one.
+
+    `getattr` and the `try` are the same rule every readout in this loop follows:
+    telemetry must never be the thing that raises, because stand-ins in tests and live
+    gates are duck-typed and an alarm that crashes the worker it watches is worse than
+    no alarm. Stated precisely, since a guard that cannot fire is worth knowing about:
+    the FIRST read is already proven safe for `_run_worker`'s own caller, which does an
+    unguarded `agent.episodes.total_recorded` before the loop starts — that guard is for
+    other callers. The SECOND is the live one: `econ_agent` is whatever a Life or a
+    proxy hands back, and it is read for the first time here.
+    """
+    try:
+        total = int(getattr(agent.episodes, "total_recorded", 0) or 0)
+    except Exception:  # noqa: BLE001 — telemetry must never break the run
+        return 0
+    try:
+        econ = getattr(agent, "econ_agent", None)
+        if econ is not None:
+            total += int(getattr(econ.episodes, "total_recorded", 0) or 0)
+    except Exception:  # noqa: BLE001 — same rule
+        pass
+    return total
+
+
+def _doing_work(agent) -> bool:
+    """Is this agent currently running a skill that is SUPPOSED to finish or pay?
+
+    The arming condition for the work-liveness alarm, and the thing that keeps it from
+    being 100% wrong on a healthy wanderer — see `_IDLE_SKILLS`. Reads
+    `Agent.last_skill_name`, which a Life forwards from whichever inner agent it ticked,
+    so hunt-mode idling and economy-mode idling are both recognised.
+
+    Unknown (`None`) counts as working: a stand-in that does not expose the field keeps
+    the alarm it would have had, rather than silently losing it. That direction is
+    deliberate — this gate exists to remove FALSE alarms on skills known to be idle, not
+    to require proof of work before speaking.
+    """
+    return getattr(agent, "last_skill_name", None) not in _IDLE_SKILLS
+
+
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
                 job: str, *, chronicle: ChronicleLedger | None = None,
                 counterpart: str | None = None,
                 session_events: list[ChronicleEvent] | None = None) -> None:
+    # Local for CONSISTENCY with the ten other in-function `life_runner` imports in
+    # this file — not for a cycle.
+    # An earlier draft of this comment claimed one; measured and refuted: importing
+    # `anima2.life_runner` (or `anima2.warrior_life`) does not pull `anima2.village`
+    # into `sys.modules`, `life_runner.py` contains no `village` import at any level
+    # (`LifeRunner.run` takes its `worker` injected precisely so one never appears), and
+    # a module-top `from .life_runner import frame_retirements` imports clean. The
+    # module-BOTTOM re-exports at the end of this file (`MONITOR_PORT_BASE`,
+    # `monitor_ports`) are module-level too, so "every other one is local" was wrong in
+    # both halves. One import per worker, not per tick.
+    from .life_runner import frame_retirements
+
     steps = says = 0
     ticks_done = 0
     last_say = ""
@@ -682,6 +780,88 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     #: as `_quiet`, for the same reason (see the report below).
     _overdue = 0
     _last_pulse = None
+    # WORK-liveness, the second alarm this loop needs and the reason `NO PROGRESS`
+    # beside it was not enough. That one is BODY-liveness — it watches reward, steps,
+    # speech AND position, so an agent that keeps WALKING resets it forever. The forge
+    # miner died exactly that way, twice: on 2026-08-03 Grimm's cumulative reward froze
+    # at `out+176.9` at t=765 and never moved again — no smelt and no deliver on any of
+    # the 126 remaining samples — while he went on relocating between mine faces, so
+    # `NO PROGRESS` fired ten times at exactly "40 ticks" and never escalated, three of
+    # them in the HEALTHY first half. Identical text in both halves is zero information.
+    # `docs/AUDIT-2026-07-29.md` lines 153-156 already named this line as worth adopting
+    # after forge2; it was not adopted, and it happened again.
+    #
+    # The signal is `_work_recorded` — the agent's own count of skill outcomes that were
+    # terminal OR rewarded (`agent.py`'s record filter), summed over every ledger it
+    # owns. Grimm's death is precisely a skill returning `RUNNING, reward=0` forever,
+    # which records nothing. It is monotone (unlike `total_reward()`, which sums a
+    # bounded 500-entry deque), orthogonal to walking, and it counts REPEATS, not
+    # variety — a miner swinging productively in one skill for 3000 ticks bumps it
+    # thousands of times, so this is not a procedure-diversity heuristic.
+    #
+    # It is armed by `_doing_work`, and without that gate it is 100% WRONG on a healthy
+    # agent. "Recorded nothing for 240 ticks" is Grimm's death and it is also the
+    # SPECIFIED behaviour of a `townsfolk` — `work_skill=None  # no job — just lives in
+    # town (wander + greet)`, in the DEFAULT roster at `--townsfolk 1`. Measured through
+    # this very function (review, 2026-08-03): 1000 ticks, five neighbours, five greets
+    # in the first five ticks and then `wander` forever — `NO PROGRESS` fires 0 times
+    # (walking resets it), this alarm fires at 240/480/720/960 and the run ends
+    # `!stalled  [BUDGET SPENT · STALLED 995]`. An idle hunter is the same shape for a
+    # different reason (`Hunt.can_run` false with no hostile → the same `wander`
+    # fallback): 500 ticks, eps=0, two fires. So the counter only advances on ticks
+    # where the agent ran a skill that is supposed to finish or pay. Grimm's dead 1035
+    # ticks read `ph=mine` on every sample with the mining window still advancing
+    # (`win=5/6`, `9/10`, `14/15`) — his work skill was selected and running, not
+    # wandering — so the catch survives the gate. Verified on a real `Agent` whose work
+    # skill stops finishing while it keeps walking: fires at 240 and 480, names the
+    # skill, ends `!stalled · STALLED 486`.
+    #
+    # 240 ticks, measured, not chosen. Sample cadence in both 2026-08-03 forge logs is
+    # 9 ticks median / 10 max, so 240 ticks ≈ 25 samples ≈ 100s wall. Grimm's longest
+    # HEALTHY reward-silence stretch across both runs is 159 ticks (600-tick log,
+    # t=414→573: `ph=mine`, steps frozen, two full relocations with all-stuck windows
+    # (15,22)→(19,19)→(14,14), then live rock and recovery) — indistinguishable from
+    # death for its whole length, which is why nothing shorter can work. At T=240:
+    # 0 false fires in the healthy first 765 ticks of the 1800 log and 0 across the
+    # whole 600 log, and Grimm's death is called at t≈1005 — 44% of the run still to go,
+    # and before the last two of its six deposits (t=1039 and t=1122; the FREEZE at
+    # t=765 is what preceded five of the six — an earlier draft of this comment
+    # attributed the freeze's timing to the alarm's). T=160 also scores 0/0 but clears
+    # the measured 159 by ONE tick, which is not a margin. Reward-silence is an UPPER
+    # bound on episode-silence (every reward change implies a record, not conversely),
+    # so those false-positive counts are conservative — and t≈1005 is a PREDICTION off
+    # the reward proxy, not a measurement: those logs print no `eps=` field, which is
+    # why the status line below now carries one.
+    #
+    # The proxy's own limit, stated because the comment above is not a proof of
+    # detection: it is orthogonal to WALKING, not to every zero-reward terminal skill.
+    # `RecoverDeath` (`skills/recovery.py`) and `Survive`'s bandage-confirm both return
+    # terminal statuses with no reward, so an agent whose work is dead but which cycles
+    # death/resurrection once per 240 ticks keeps this counter moving. That failure
+    # shape has not been observed; it is what this alarm would still miss.
+    #
+    # EVERY agent, Life or not — the `mode is None` gate this replaced was the alarm's
+    # own blind spot. It was there for a real reason: a Life's `episodes` is its HUNT
+    # ledger, the tinker Pim spent 180 of 208 samples in economy mode, and under a
+    # hunt-only proxy he fires 7 times in the 1800 run and 2 in the 600 run while being
+    # the most productive agent present. But excluding Lives left `run_supply_pair` and
+    # `run_warrior_village` with no work-liveness coverage at all — a WoodsmanLife that
+    # dies the way Grimm died, on the runner that feeds the board chain, still silent.
+    # `_work_recorded` sums the hunt AND economy ledgers instead, which is monotone,
+    # orthogonal to mode switching, and measured at a 22-tick worst-case silence on a
+    # healthy 3000-tick carpenter. (`_ThrottledAgent` proxies `econ_agent` as of this
+    # change, so `econ_agent` and `mode` would now agree as Life discriminators — the
+    # older claim here that an `econ_agent` test misclassifies the throttled carpenter
+    # and mage described the pre-change class and is kept only as the history of why the
+    # blast-radius review insisted on a discriminator that a proxy could not fake.)
+    _STALL_TICKS = _QUIET_TICKS * 6
+    _stalled = 0
+    _stall_since = 0
+    _recorded = _work_recorded(agent)
+    #: Cursor for the frame-retirement report: the last frame ID already reported, NOT
+    #: a count. Goal-stack history is bounded at 128, so a count silently under-reports
+    #: after an overflow; ids are monotonic, so `> _last_retired` is total.
+    _last_retired = 0
     for _ in range(ticks):
         if not agent.body.connected:
             stopped = "DISCONNECTED"
@@ -784,6 +964,18 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             _overdue += 1
         else:
             _overdue = 0
+        # The third self-report, and the one that gives BOUND 1 of the exit-edge hold
+        # its first observable signature. A retirement is an EDGE — one per transaction
+        # — unlike `frame_overdue`, whose LEVEL signal measured 3,881 identical lines,
+        # so this one is deliberately NOT throttled. It is printed from HERE, every
+        # tick, beside the other two: the runners' own status loops sample every ~4s
+        # and cannot see an edge. It survives that sampling gap anyway, because it is
+        # read off durable goal-stack HISTORY rather than a live field.
+        for _fid, _cap, _age, _budget, _why in frame_retirements(agent,
+                                                                 after_id=_last_retired):
+            _last_retired = _fid
+            print(f"  ** {agent.persona.name}: FRAME RETIRED {_cap}#{_fid} "
+                  f"age={_age}/{_budget} -> {_why}{_RETIREMENT_NOTES.get(_why, '')} **")
         if isinstance(action, Say):
             says += 1
             last_say = action.text
@@ -794,9 +986,41 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
         if _quiet and _quiet % _QUIET_TICKS == 0:
             print(f"  ** {agent.persona.name}: NO PROGRESS for {_quiet} ticks "
                   f"(reward/steps/speech/position all frozen) **")
+        # The work-liveness detector described where `_STALL_TICKS` is defined.
+        # Deliberately NOT the string "NO PROGRESS": the two alarms are different
+        # failures (that one is body-liveness, this one work-liveness), both stay, and
+        # `tests/test_forge_relocation.py` asserts the absence of that exact string for
+        # a walking agent. The count in the text ESCALATES (240 → 480 → 720 → 960),
+        # unmistakably unlike the ten identical "40"s the other alarm produced.
+        _recorded_now = _work_recorded(agent)
+        if _recorded_now != _recorded or not _doing_work(agent):
+            # Either it produced, or it is idling in a skill that produces nothing by
+            # design. Both reset — an idle stretch is not evidence, so it must not
+            # ACCUMULATE toward one either.
+            _stalled = 0
+            _stall_since = ticks_done
+        else:
+            _stalled += 1
+            if _stalled % _STALL_TICKS == 0:
+                print(f"  ** {agent.persona.name}: NO OUTPUT for {_stalled} ticks "
+                      f"(eps={_recorded_now} unchanged since t={_stall_since}, "
+                      f"skill={getattr(agent, 'last_skill_name', None)}) — "
+                      f"no skill has finished or paid since **")
+        _recorded = _recorded_now
         with lock:
+            # `eps=` rides here for EVERY agent, Life or not, and for a Life it is the
+            # SUM of both ledgers (`_work_recorded`) — a hunt-only reading would print
+            # `eps=0` next to `retired=176` for a carpenter, one status block saying
+            # the agent has recorded nothing while it retired 176 capability frames.
+            # The alarm above scrolls away between status blocks; this line is reprinted
+            # every ~4s and is what an operator actually reads. It is also the only way
+            # the next run measures the real `total_recorded` distribution — today's
+            # logs cannot supply it.
             line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) t={ticks_done} "
-                    f"out+{agent.episodes.total_reward():.1f} steps={steps} says={says}")
+                    f"out+{agent.episodes.total_reward():.1f} eps={_recorded_now} "
+                    f"steps={steps} says={says}")
+            if _stalled >= _STALL_TICKS:
+                line += " !stalled"
             if last_say:
                 line += f'  "{last_say[:60]}"'
             status[idx] = line
@@ -805,8 +1029,17 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # Say so, permanently. Everything printed from here on is a frozen snapshot, and a
     # reader that cannot tell that will mistake this agent's last state for its current
     # one — which is exactly how a stale observation got read as a live one.
+    #
+    # A stall is folded into the SAME suffix, because the terminal line is the first
+    # thing any post-hoc reader looks at and Grimm's was
+    # `Grimm  miner  @(2593,499) t=1800 out+176.9 steps=139 says=0  [BUDGET SPENT]` —
+    # the most misleading possible summary of an agent that had produced nothing for
+    # its last 1035 ticks.
     with lock:
-        status[idx] = f"{status.get(idx, agent.persona.name)}  [{stopped or 'ENDED'}]"
+        tail = stopped or "ENDED"
+        if _stalled >= _STALL_TICKS:
+            tail += f" · STALLED {_stalled}"
+        status[idx] = f"{status.get(idx, agent.persona.name)}  [{tail}]"
 
 
 class _CountingClient:
@@ -2458,6 +2691,29 @@ class _ThrottledAgent:
     @property
     def frame_overdue(self) -> bool:
         return bool(getattr(self.inner, "frame_overdue", False))
+
+    @property
+    def econ_agent(self):
+        """The Life's ECONOMY agent — whose goal stack owns every capability frame, and
+        therefore the retirement history `_run_worker`'s FRAME RETIRED report projects.
+
+        The third passenger through the same hole as the two self-reports above, and
+        added for the same reason: without it the report ships DEAD for precisely the
+        throttled carpenter and the throttled mage, the two Lives that run their economy
+        agent nearly every tick and so retire the most frames. `None` for a plain Agent
+        underneath, which `frame_retirements` then resolves by falling back to the
+        object itself (this proxy exposes no `goal_stack`, so that read fails closed to
+        "nothing to report" — the unthrottled plain Agent is the shape that fallback is
+        actually for)."""
+        return getattr(self.inner, "econ_agent", None)
+
+    @property
+    def last_skill_name(self):
+        """Which skill the wrapped agent last ran — the work-liveness alarm's arming
+        condition (`_doing_work`). Fourth passenger through the same hole; without it a
+        throttled Life reads `None`, which `_doing_work` treats as "working", and the
+        alarm would judge a legitimately idle carpenter."""
+        return getattr(self.inner, "last_skill_name", None)
 
 
 def _pipeline_progress(tin_tap, mage) -> str:

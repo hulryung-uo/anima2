@@ -1535,16 +1535,22 @@ def test_buy_capability_never_buys_a_non_iron_item_and_bails():
     # A window WITHOUT our offer is usually an unlucky partial subset rather than a vendor
     # that lacks the material (see market.OFFER_REOPEN_ATTEMPTS), so re-roll it a bounded
     # number of times — never buying anything else meanwhile...
+    # The assertion is on the ORDER, not on the action type: a `BuyItems` with an EMPTY
+    # item list is ServUO's EndVendorBuy — a close, not a purchase — and the re-roll now
+    # emits exactly that, because a window left OPEN re-reads the identical entry list
+    # and the "re-roll" re-rolls nothing (forge18 live). The intent this test was written
+    # for, "never mis-buys the shield", is `res.action.items` being empty every time.
     from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
     for _ in range(OFFER_REOPEN_ATTEMPTS):
         mem["buy_stage"] = "window"                  # the reopened window, still unlucky
         res = skill.step(_ctx(items, **ctx_args))
-        assert not isinstance(res.action, BuyItems)  # never mis-buys the shield
+        assert not (isinstance(res.action, BuyItems) and res.action.items)  # no shield
+        assert res.action == BuyItems(vendor=VENDOR_SERIAL, items=[])  # close = re-roll
         assert mem["buy_stage"] == "popup"           # reopen, not abandon
     # ...and only then give the trip up.
     mem["buy_stage"] = "window"
     res = skill.step(_ctx(items, **ctx_args))
-    assert not isinstance(res.action, BuyItems)
+    assert not (isinstance(res.action, BuyItems) and res.action.items)
     assert mem["mkt_phase"] == "buy_return"
     assert "cap_buy_sent_goal_id" not in mem
 
@@ -1837,16 +1843,19 @@ def test_toolbuy_capability_never_buys_a_non_tongs_item_and_bails():
     # A window WITHOUT our offer is usually an unlucky partial subset, not a vendor that
     # lacks the item (see market.OFFER_REOPEN_ATTEMPTS) — so re-roll it a bounded number
     # of times, never buying anything else meanwhile...
+    # As in the material buy: the order is what must stay empty. A `BuyItems` carrying
+    # NO items is EndVendorBuy — the close that makes a re-roll re-roll anything at all.
     from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
     for _ in range(OFFER_REOPEN_ATTEMPTS):
         mem["toolbuy_stage"] = "window"               # the reopened window, still unlucky
         res = skill.step(_ctx(items, **ctx_args))
-        assert not isinstance(res.action, BuyItems)   # never mis-buys the shield
+        assert not (isinstance(res.action, BuyItems) and res.action.items)  # no shield
+        assert res.action == BuyItems(vendor=VENDOR_SERIAL, items=[])  # close = re-roll
         assert mem["toolbuy_stage"] == "popup"        # reopen, not abandon
     # ...and only then give the trip up.
     mem["toolbuy_stage"] = "window"
     res = skill.step(_ctx(items, **ctx_args))
-    assert not isinstance(res.action, BuyItems)
+    assert not (isinstance(res.action, BuyItems) and res.action.items)
     assert mem["mkt_phase"] == "toolbuy_return"
     assert "cap_toolbuy_sent_goal_id" not in mem
 
@@ -2020,3 +2029,250 @@ def test_no_open_window_still_takes_the_ordinary_popup_path():
     res = BuyIngots().step(_ctx([_backpack(), _gold(0x900, amount=100)], memory=mem,
                                 pos=Position(*VENDOR, 0), goal_id=17))
     assert not isinstance(res.action, BuyItems)  # popup request/wait, unchanged
+
+
+# --- forge16-18: the stale BUY window that ate the last 556 ticks of a live run ------
+#
+# `ui=shopbuy` on the last 75 of 208 samples of the 1800-tick forge run of 2026-08-03;
+# three complete `buy_iron` frames, each burning its full 180-tick budget and expiring;
+# position and steps frozen; the runner printing `NO PROGRESS for 560 ticks`. Two
+# defects, both in this file and both about the same window:
+#
+#   1. NOTHING closed it on any give-up path. Seven `return None` give-ups in
+#      `_buy_step` and not one cancelled the window the trip had opened, so the trip
+#      walked home leaving a surface that refuses all sixteen capability gates.
+#   2. `buy_offer_reopens` — the counter that decides how fast the partial-subset
+#      re-roll gives up — SURVIVED the trip. One unlucky trip poisoned every later one
+#      for the life of the process.
+#
+# `8cdd2f0` had already fixed the ENTRY edge (a window already up when a trip ARRIVES)
+# and measurement of that run showed it working exactly as designed; it never touched
+# the EXIT edge.
+
+def _shieldy_window(vendor=VENDOR_SERIAL):
+    """A vendor window whose partial subset shows a shield and nothing we came for —
+    the documented ~15-of-45-entry pairing bug (`market.OFFER_REOPEN_ATTEMPTS`)."""
+    return ShopBuy(
+        vendor=vendor,
+        container=VENDOR_CONTAINER,
+        entries=[ShopBuyEntry(price=50, name="shield", serial=SHIELD_SERIAL,
+                              graphic=SHIELD_GRAPHIC, amount=1)],
+    )
+
+
+def _buy_trip_mem(goal_id, *, vendor=VENDOR_SERIAL):
+    return {
+        "vendor_spot": VENDOR, "bs_stand": (0, 0), "mkt_phase": "buy",
+        "buy_stage": "window", "buy_vendor": vendor,
+        "cap_buy_goal_id": goal_id, "cap_buy_route": (VENDOR,),
+        "cap_buy_start_ingots": 0, "cap_buy_start_gold": 100,
+    }
+
+
+def _rerolls_this_trip(skill, items, mem, buy, goal_id, stage_key="buy_stage"):
+    """Run the `window` stage until the trip gives up; count the re-rolls it managed.
+
+    Resetting the stage to `window` each iteration is what the surrounding tests already
+    do: it stands for "the close landed, the popup cycle ran, a fresh — still unlucky —
+    window arrived", which is the only thing a re-roll can mean.
+    """
+    from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
+
+    rerolls = 0
+    for _ in range(OFFER_REOPEN_ATTEMPTS + 2):
+        mem[stage_key] = "window"
+        res = skill.step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                              shop_buy=buy, goal_id=goal_id))
+        if mem.get(stage_key) != "popup":
+            return rerolls, res  # the trip gave up
+        rerolls += 1
+    raise AssertionError("the re-roll budget is not bounded")
+
+
+def test_an_unlucky_buy_trip_no_longer_poisons_every_later_trip():
+    """`buy_offer_reopens` was written and read in `_buy_step` and NOWHERE else in the
+    repo — not in `_CLEANUP_KEYS`, not in `_begin_goal`'s pop list, not in the gate's
+    transaction keys. It therefore lived in the economy agent's memory for the life of
+    the process. Measured offline on the FSM alone before the fix: trip 1 gave up after
+    its full budget, trips 2 and 3 (fresh goal ids, same memory) gave up on tick 1."""
+    from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
+
+    items = [_backpack(), _gold(0x900, amount=100)]
+    buy = _shieldy_window()
+    skill = BuyIngots()
+    mem = _buy_trip_mem(17)
+    budgets = []
+    for goal_id in (17, 18, 19):
+        mem.update(_buy_trip_mem(goal_id))
+        rerolls, _res = _rerolls_this_trip(skill, items, mem, buy, goal_id)
+        budgets.append(rerolls)
+        assert mem["mkt_phase"] == "buy_return"
+        assert "buy_offer_reopens" not in mem, (
+            f"a counter scoped to ONE trip outlived it: {mem.get('buy_offer_reopens')}")
+    assert budgets == [OFFER_REOPEN_ATTEMPTS] * 3, (
+        f"every trip must get its own re-roll budget, not just the first: {budgets}")
+
+
+def test_a_given_up_buy_trip_closes_the_window_it_opened():
+    """The EXIT edge. Before this the trip walked home leaving `ui=shopbuy` up, and only
+    the Life's own stale-UI repair could clear it — which deliberately waits while a goal
+    owns the surface, so the frame had to expire first. Three frames x 180 ticks."""
+    items = [_backpack(), _gold(0x900, amount=100)]
+    buy = _shieldy_window()
+    skill = BuyIngots()
+    mem = _buy_trip_mem(17)
+    _rerolls, res = _rerolls_this_trip(skill, items, mem, buy, 17)
+    assert mem["mkt_phase"] == "buy_return"
+    assert res.action == BuyItems(vendor=VENDOR_SERIAL, items=[]), (
+        f"the trip must cancel its own window before walking home: {res.action}")
+
+
+def test_a_given_up_buy_trip_never_closes_a_window_it_does_not_own():
+    """The hard constraint: a repair must never close a surface a live goal owns. This
+    one closes ONLY `obs.shop_buy` whose `vendor` equals the serial THIS trip recorded,
+    so another vendor's window — which could belong to anybody — is left alone."""
+    items = [_backpack(), _gold(0x900, amount=100)]
+    stranger = _shieldy_window(vendor=VENDOR_MOBILE)   # a window we never opened
+    skill = BuyIngots()
+    mem = _buy_trip_mem(17, vendor=VENDOR_SERIAL)      # ...and OUR vendor is a different one
+    _rerolls, res = _rerolls_this_trip(skill, items, mem, stranger, 17)
+    assert mem["mkt_phase"] == "buy_return"
+    assert not isinstance(res.action, BuyItems), (
+        f"a stranger's window is not ours to cancel: {res.action}")
+
+
+def test_a_buy_trip_that_gave_up_with_no_window_open_emits_no_cancel():
+    """No surface, no action. The close is conditional on there being one of ours, not
+    a routine emitted on every give-up — an unconditional cancel would be a repair, and
+    a repair is exactly what this must not be."""
+    items = [_backpack(), _gold(0x900, amount=100)]
+    skill = BuyIngots()
+    mem = _buy_trip_mem(17)
+    mem["buy_stage"] = "window"
+    mem["buy_ask_wait"] = ASK_RETRY          # the window never arrived — give up
+    res = skill.step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0), goal_id=17))
+    assert mem["mkt_phase"] == "buy_return"
+    assert not isinstance(res.action, BuyItems), res.action
+
+
+def test_a_SUCCESSFUL_buy_also_leaves_no_window_behind():
+    """The confirm stage's own `return None` is a give-up path too — the good one, taken
+    the moment the iron lands. It goes through the same exit edge, so a trip that WORKED
+    also clears the surface that would otherwise refuse the next sixteen gates."""
+    items = [_backpack(), _gold(0x900, amount=50), _iron_pack(0x901, amount=BUY_AMOUNT)]
+    buy = _buy_window()
+    skill = BuyIngots()
+    mem = _buy_trip_mem(17)
+    mem["buy_stage"] = "confirm"
+    mem["buy_iron_start"] = 0                # the order landed: pack iron rose above it
+    res = skill.step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                          shop_buy=buy, goal_id=17))
+    assert mem["mkt_phase"] == "buy_return"
+    assert res.action == BuyItems(vendor=VENDOR_SERIAL, items=[]), res.action
+
+
+def test_an_unlucky_toolbuy_trip_no_longer_poisons_every_later_trip():
+    """`toolbuy_offer_reopens` is the same counter in a different memory namespace, and
+    it had the identical defect. Fixed together rather than waiting to be caught on its
+    own live run — the tool buy rides the same flagship tinker path."""
+    from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
+
+    items = [_backpack(), _gold(0x900, amount=100)]
+    buy = _shieldy_window()
+    skill = BuyTool()
+    budgets = []
+    # ONE memory across all three trips — that is the whole point. A live economy agent
+    # never gets a fresh dict between goal frames, so anything a trip leaves behind is
+    # what the next trip starts from.
+    mem: dict = {}
+    for goal_id in (17, 18, 19):
+        mem.update({
+            "vendor_spot": VENDOR, "bs_stand": (0, 0), "mkt_phase": "toolbuy",
+            "toolbuy_stage": "window", "toolbuy_vendor": VENDOR_SERIAL,
+            "cap_toolbuy_goal_id": goal_id, "cap_toolbuy_route": (VENDOR,),
+            "cap_toolbuy_start_tools": 0, "cap_toolbuy_start_gold": 100,
+        })
+        rerolls, res = _rerolls_this_trip(skill, items, mem, buy, goal_id,
+                                          stage_key="toolbuy_stage")
+        budgets.append(rerolls)
+        assert mem["mkt_phase"] == "toolbuy_return"
+        assert "toolbuy_offer_reopens" not in mem
+        assert res.action == BuyItems(vendor=VENDOR_SERIAL, items=[]), (
+            f"the tool trip must cancel its own window too: {res.action}")
+    assert budgets == [OFFER_REOPEN_ATTEMPTS] * 3, budgets
+
+
+# --- the two live acceptance gates count ORDERS, not `BuyItems` ----------------------
+#
+# Both empty-list cancels above are `BuyItems` addressed to the vendor, and both live
+# gates collected every such action and passed only on `len(buys) == 1`
+# (`live_buy_goal.py`, `live_toolbuy_goal.py`). So the exit edge made a CORRECT buy fail
+# its own gate, and the re-roll — the behaviour those attempts exist for — became
+# ungateable: measured against a shard simulator driving the real FSM, a run that bought
+# 15 iron at the quoted price with an exact gold delta scored
+# `transaction_actions_once=False, only_iron_bought=False` purely because one trailing
+# cancel made `len(buys) == 2`. `market.is_vendor_cancel` is the one predicate both
+# gates now filter through.
+
+def test_is_vendor_cancel_separates_a_close_from_a_purchase():
+    from anima2.skills.market import is_vendor_cancel
+
+    assert is_vendor_cancel(BuyItems(vendor=VENDOR_SERIAL, items=[]))
+    assert not is_vendor_cancel(
+        BuyItems(vendor=VENDOR_SERIAL, items=[(IRON_SERIAL, BUY_AMOUNT)]))
+    # Only ever asked about actions; anything else is not a buy at all.
+    assert not is_vendor_cancel(None)
+    assert not is_vendor_cancel(SellItems(vendor=VENDOR_SERIAL, items=[]))
+
+
+def test_every_cancel_this_fsm_emits_is_recognised_as_one():
+    """The gates' filter is only correct if it catches EVERY close the FSM produces —
+    a missed one is counted as a purchase and fails the gate again. Three producers:
+    the entry edge (8cdd2f0), the partial-subset re-roll, and the exit edge."""
+    from anima2.skills.market import is_vendor_cancel
+
+    items = [_backpack(), _gold(0x900, amount=100)]
+    skill = BuyIngots()
+
+    # 1. ENTRY edge — a window belonging to somebody else, seen on arrival.
+    mem = _buy_trip_mem(17)
+    mem["buy_stage"] = "popup"
+    res = skill.step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                          shop_buy=_shieldy_window(vendor=VENDOR_MOBILE), goal_id=17))
+    assert is_vendor_cancel(res.action), res.action
+
+    # 2. RE-ROLL, and 3. EXIT edge (the last action `_rerolls_this_trip` returns).
+    mem = _buy_trip_mem(18)
+    buy = _shieldy_window()
+    mem["buy_stage"] = "window"
+    res = skill.step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                          shop_buy=buy, goal_id=18))
+    assert mem["buy_stage"] == "popup" and is_vendor_cancel(res.action), res.action
+    _rerolls, giveup = _rerolls_this_trip(skill, items, mem, buy, 18)
+    assert mem["mkt_phase"] == "buy_return" and is_vendor_cancel(giveup.action)
+
+
+def test_the_gate_counting_rule_passes_a_correct_trip_that_re_rolled_and_cancelled():
+    """The gates' arithmetic, over the actions a real trip emits.
+
+    `orders` is what `live_buy_goal.py`/`live_toolbuy_goal.py` now count, and the pass
+    criterion is exactly one of them. Every shape below is a CORRECT buy of 15 iron:
+    with and without a trailing exit-edge cancel, and after one or two subset re-rolls.
+    The old `len(buys) == 1` rule passed only the first."""
+    from anima2.skills.market import OFFER_REOPEN_ATTEMPTS, is_vendor_cancel
+
+    order = BuyItems(vendor=VENDOR_SERIAL, items=[(IRON_SERIAL, BUY_AMOUNT)])
+    cancel = BuyItems(vendor=VENDOR_SERIAL, items=[])
+    shapes = {
+        "first opening, window already gone": ([order], 1),
+        "first opening, window lingers":      ([order, cancel], 1),
+        "one re-roll":                        ([cancel, order], 2),
+        "two re-rolls":                       ([cancel, cancel, order], 3),
+    }
+    for label, (buys, opens) in shapes.items():
+        orders = [b for b in buys if not is_vendor_cancel(b)]
+        assert (len(orders) == 1
+                and opens <= 1 + OFFER_REOPEN_ATTEMPTS), label
+        assert orders[0].items == [(IRON_SERIAL, BUY_AMOUNT)], label
+        # ...and the old rule, kept here as the reason this test exists.
+        assert (len(buys) == 1) is (label == "first opening, window already gone")

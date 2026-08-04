@@ -446,7 +446,15 @@ class WarriorLife:
         # so the exit-edge rule below — not a second agent — is how an owed transaction
         # gets finished.
         self.body.begin_tick()  # this tick's first observe pumps for real
-        action = (self.econ_agent if self.mode == "economy" else self.hunt_agent).tick()
+        # Which inner agent that ONE tick went to, remembered so the Agent-compatible
+        # surface below can forward its `last_skill_name`. `self.mode` is reassigned
+        # further down before this tick ends, so a later reader cannot reconstruct it —
+        # and the work-liveness alarm in `village._run_worker` needs to know whether the
+        # skill that just ran was idle-by-design (`wander` while hunting with no prey,
+        # `capability_wait` with nothing admitted) or real work. No Life subclass
+        # overrides `tick`, so every one of the five gets this by construction.
+        self._ticked_agent = self.econ_agent if self.mode == "economy" else self.hunt_agent
+        action = self._ticked_agent.tick()
         obs = self.body.last_obs
         if obs is None:
             return action
@@ -698,6 +706,18 @@ class WarriorLife:
     @property
     def episodes(self):
         return self.hunt_agent.episodes
+
+    @property
+    def last_skill_name(self) -> str | None:
+        """The skill the LAST-TICKED inner agent ran — see `_ticked_agent` in `tick`.
+
+        Not `hunt_agent`'s: a carpenter measured 2994 econ ticks against 6 hunt ticks
+        over a 3000-tick offline run, so reading the hunt agent here would describe an
+        agent that barely ran (its last skill would read `wander` for the whole window,
+        which `village._doing_work` treats as idle — the alarm would go permanently
+        silent on the Life that works hardest)."""
+        agent = getattr(self, "_ticked_agent", None)
+        return None if agent is None else agent.last_skill_name
 
     @property
     def memory(self) -> dict:

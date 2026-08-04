@@ -2520,3 +2520,124 @@ def test_a_worn_tool_no_longer_triggers_buying_another():
     from anima2.skills.woodwork import AXE_GRAPHICS
 
     assert _owned_tool(_tool_ctx(_WORN_PLAYER, 2), AXE_GRAPHICS) is not None
+
+
+# --- bound 1 of the exit-edge hold: telling a give-up ladder from an achievement -----
+#
+# 2026-08-03 finding (C). `CapabilityGoalComplete` closes a frame through two branches —
+# achievement (`profession.py`, returns SUCCESS before the marker branch is reached) and
+# the FSM's give-up ladder keyed on `cap_run_finished_goal_id` (returns FAILURE, and IS
+# bound 1) — and no live log could ever tell them apart: every low-age frame on the
+# three ordinary runs closed beside a SUCCESSFUL sale or deposit, a ladderless `buy_iron`
+# frame closed just as fast at age 4, and the status line shows only that the frame is
+# gone. These three arms are byte-identical in everything that line carries today.
+
+
+def _retire_life(agent):
+    """A LIFE-shaped wrapper around this agent: the two-agent object whose capability
+    frames live on `econ_agent.goal_stack`.
+
+    It is a shim, and review caught what the shim hid: `run_village --capability-goals`
+    hands `_run_worker` this very agent UNWRAPPED — a plain `Agent` with a real
+    `CapabilityPolicy` and no `econ_agent`, ever — and `frame_retirements` used to
+    return `()` for it, so bound-1 observability shipped dead for the whole capability
+    fleet while these three tests were green. `test_a_plain_capability_agent_reports_its
+    _own_retirements` below drives the unwrapped shape; this wrapper stays because the
+    Life shape is real too and both must work."""
+
+    return type("_Life", (), {"econ_agent": agent})()
+
+
+def _retired_bank_frame(*, achieved: bool, ladder: bool):
+    """One real `bank_gold` capability frame, retired through the real planner.
+
+    `achieved` drives the achievement branch, `ladder` writes the neutral run-finished
+    marker `SellItemCapability`/`BankGoldCapability` leave when their FSM gives up and
+    walks home. Exactly one input differs between the arms below.
+    """
+    from anima2.life_runner import frame_retirements, retirement_tally
+
+    agent = _capability_agent(capability_goal("blacksmith", "bank_gold"))
+    agent.tick()
+    agent.cognition = NullCognition()
+    frame = agent.goal_stack.current
+    assert frame is not None
+    _mark_active_bank_goal_terminal(agent, achieved=achieved)
+    if ladder:
+        agent.memory["cap_run_finished_goal_id"] = frame.id
+    agent.tick()
+    life = _retire_life(agent)
+    return agent, frame_retirements(life), retirement_tally(life)
+
+
+def test_frame_retirement_separates_bound_1_from_an_ordinary_achievement():
+    give_up_agent, give_up, give_up_tally = _retired_bank_frame(achieved=False, ladder=True)
+    achieved_agent, achieved, achieved_tally = _retired_bank_frame(achieved=True, ladder=False)
+
+    # What the status line has TODAY is identical for both — the whole of finding (C).
+    assert give_up_agent.goal_stack.current is achieved_agent.goal_stack.current is None
+    assert len(give_up_agent.goal_stack.history) == len(achieved_agent.goal_stack.history) == 1
+    assert give_up[0][:4] == achieved[0][:4] == (1, "bank_gold", 2, 120)
+
+    # ...and the reason field, which is read off `frame.outcome` alone, is not.
+    assert give_up[0][4] == "giveup" and give_up_tally == "retired=1:1g"
+    assert achieved[0][4] == "achieved" and achieved_tally == "retired=1:1a"
+    assert give_up_agent.goal_stack.history[-1].outcome is GoalOutcome.FAILURE
+    assert achieved_agent.goal_stack.history[-1].outcome is GoalOutcome.SUCCESS
+
+
+def test_a_run_that_achieved_and_also_walked_home_is_reported_as_achieved():
+    """`SellItemCapability` and `BankGoldCapability` set the run-finished marker
+    UNCONDITIONALLY at the end of their return leg, so a run that achieved AND walked
+    home satisfies BOTH of `can_run`'s branches. `can_run` answers on the achievement
+    branch and the goal stack records SUCCESS — a successful sale must never be counted
+    as evidence of the give-up ladder, or the bound this reports for becomes unfalsifiable."""
+    agent, rows, tally = _retired_bank_frame(achieved=True, ladder=True)
+    assert agent.goal_stack.history[-1].outcome is GoalOutcome.SUCCESS
+    assert rows[0][4] == "achieved" and tally == "retired=1:1a"
+
+
+def test_a_frame_that_neither_achieved_nor_ran_a_ladder_is_still_live():
+    """The control: with neither branch satisfied nothing closes the frame, so there is
+    no retirement to report. This is the state bound 2 (the deadline) exists for."""
+    agent, rows, tally = _retired_bank_frame(achieved=False, ladder=False)
+    assert agent.goal_stack.current is not None
+    assert rows == () and tally == "retired=0"
+
+
+def test_a_plain_capability_agent_reports_its_own_retirements(capsys):
+    """NO `_retire_life` SHIM — the shape `run_village --capability-goals` actually
+    builds, all the way through `village._run_worker`.
+
+    `_build_villager_agent` creates a plain `Agent` with a real `CapabilityPolicy`; its
+    capability frames retire on `agent.goal_stack`, and it has no `econ_agent` and never
+    will. Measured before the fix (review, 2026-08-03): a `bank_gold` frame closed
+    through the FSM give-up ladder — `goal_stack.current is None`,
+    `history[-1].outcome is FAILURE` — and `frame_retirements(agent)` returned `()`, so
+    `_run_worker` printed nothing. A real bound-1 close, invisible, on the only fleet
+    the report was added for."""
+    import threading
+
+    from anima2.life_runner import frame_retirements, retirement_tally
+    from anima2.village import _run_worker
+
+    agent = _capability_agent(capability_goal("blacksmith", "bank_gold"))
+    agent.tick()
+    agent.cognition = NullCognition()
+    frame = agent.goal_stack.current
+    assert frame is not None
+    _mark_active_bank_goal_terminal(agent, achieved=False)
+    agent.memory["cap_run_finished_goal_id"] = frame.id
+
+    assert not hasattr(agent, "econ_agent"), "the production shape has no economy agent"
+    _run_worker(agent, 3, 0, {}, threading.Lock(), "blacksmith")
+    assert agent.goal_stack.current is None
+    assert agent.goal_stack.history[-1].outcome is GoalOutcome.FAILURE
+    assert frame_retirements(agent)[0][:2] == (1, "bank_gold")
+    assert frame_retirements(agent)[0][4] == "giveup"
+    assert retirement_tally(agent) == "retired=1:1g"
+    out = capsys.readouterr().out
+    assert "FRAME RETIRED bank_gold#1" in out, out
+    assert "-> giveup (bound 1: the FSM's give-up ladder)" in out, out
+    # Reported exactly once, by the same id cursor a Life uses.
+    assert out.count("FRAME RETIRED") == 1, out
