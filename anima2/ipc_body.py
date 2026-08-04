@@ -58,7 +58,23 @@ from .contract import Action, Observation
 # terrain-blind relocation in the forge campaign, docs/AUDIT-2026-07-29.md), and
 # the body now offers the signal. Surfacing it in `contract.py` is the follow-up
 # this comment exists to keep from being forgotten.
-SUPPORTED_SCHEMA_VERSION = 17
+#
+# 17→18 verified the same way (anima-client 59413bd): four deleted lines, all of
+# them the changelog sentence, the constant and a test. v18 adds `display` to
+# journal lines — the cliloc resolved to real words, where a brain could
+# previously be told `#1005445` and nothing else — plus 0xCC's `affix`/
+# `affix_prepend`; `text` still carries the raw args, so every existing read is
+# unchanged. `display` is the same shape of missed signal as `terrain`: a second
+# follow-up, not a reason to hold the bump.
+#
+# One commit AFTER that bump touched the serializer without moving the number
+# (anima-client 2d1557d, gump layout): `radio` gained `group`, `entry` gained
+# `limit`, and seven element types were added. That is allowed by the body's own
+# stated rule — it bumps only when a key is RENAMED OR REMOVED — and it is
+# harmless here because `contract.GumpView` keeps elements as opaque dicts on
+# purpose. Worth knowing when reading a mismatch: the version proves no BREAK,
+# not that nothing moved.
+SUPPORTED_SCHEMA_VERSION = 18
 
 
 def default_bridge_path() -> Path:
