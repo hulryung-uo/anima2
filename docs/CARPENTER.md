@@ -140,13 +140,24 @@ this (audit §6.1):**
   this carpenter closes the frame on the FSM's give-up ladder at 17 economy ticks, is
   therefore still **offline-only**: live it closed too fast to sample, and a successful sale
   closes by the ACHIEVEMENT branch anyway, which the status line cannot tell from the ladder.
+  *(Updated 2026-08-03 — the last clause is no longer true of a FUTURE run. `_run_worker` now
+  prints one unthrottled line per retirement, naming the branch, and the ~4s line carries a
+  `retired=` tally; both are read off `frame.outcome`, which the goal stack has always
+  stamped, so a frame that retires between two samples is still reported. Run against this
+  carpenter offline it produces, verbatim:*
+  `** Sten: FRAME RETIRED sell_furniture#1 age=17/180 -> giveup (bound 1: the FSM's give-up ladder) **`
+  *beside* `want=None admitted=None ready=[] retired=1:1g` *— the same 17 economy ticks this
+  bullet already records, now with the branch named. **The claim is still offline-only**: no
+  shard has run it, audit §8.3 and §8.5.)*
 - **Still offline-only in general, as of these three runs:** the third bound (an overdue
   frame releasing the hold) has zero live ticks on any profession, and so does the death
   override. Audit §6.3. *(Updated the same day: the third bound is now LIVE-PROVEN, on a
   TINKER rather than a carpenter — `anima2/live_frame_overdue_gate.py`, a `craft_tongs`
   frame overdue at economy tick 301 against `deadline_tick=300`, the repair closing the
   craft FSM's own gump, the hold releasing one tick later. Audit §7. The death override and
-  bound 1 are still unexercised on every profession, this one included.)*
+  bound 1 are still unexercised on every profession, this one included.)* *(And still are
+  after 2026-08-03 §8, which made bound 1 OBSERVABLE without exercising it — telemetry that
+  names the branch is not a run that produced one. Two of three bounds live-proven, unchanged.)*
 
 See `docs/WOODSMAN.md`'s telemetry legend for what `@age/budget`, `+hold`, `!frozen` and
 `!overdue` mean on a status line.

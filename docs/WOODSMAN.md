@@ -101,7 +101,7 @@ candidates differ in kind — a tool the gate cannot see, a cursor another skill
 a market phase never cleared. So the runner prints all three layers separately:
 
 ```
-want=<what the orchestrator wants>  admitted=<the goal actually admitted>@<age>/<budget><markers>  ready=<what the gate allows>
+want=<what the orchestrator wants>  admitted=<the goal actually admitted>@<age>/<budget><markers>  ready=<what the gate allows>  retired=<n>:<mix>
 [axe_in_pack=? worn=? cursor=? mkt=?]
 ```
 
@@ -121,6 +121,39 @@ frame stops being ticked — plus up to two markers:
 | `!overdue` | the frame is past its own budget. Printed alongside either of the above, because "age > budget" is a comparison nobody makes by eye. The Life prints `FRAME OVERDUE` too, throttled. |
 
 An `admitted=` with no `@` means no frame is on the stack at all (`admitted=None`).
+
+**`retired=` (added 2026-08-03) is the fourth layer, and it exists because the first three all
+describe the frame that is HERE.** A frame that has already gone is simply absent from them —
+which is exactly why bound 1 of the exit-edge hold, the FSM's own give-up ladder, was
+indistinguishable from an ordinary successful sale on every live log
+(`docs/AUDIT-2026-07-29.md` §6.3: a low frame age is NOT a give-up signature; a ladderless
+`buy_iron` frame closed at age 4 just like a completed sale).
+
+| field | meaning |
+| --- | --- |
+| `retired=0` | nothing has retired yet on this Life's economy goal stack. |
+| `retired=6:4a/1g/1x` | six capability frames have retired: 4 `achieved`, 1 `giveup` (bound 1), 1 `expired` (bound 2). Order is fixed (`a`, `g`, `x`, then `r`/`c`), never alphabetical, so the mix always reads achieved-first. |
+| `retired>=128:…` | goal-stack history is BOUNDED at 128 frames and has started deleting its oldest. The count is a floor from here on; the per-tick alarm below is the exact record. |
+
+Alongside it, `_run_worker` prints one **unthrottled** line per retirement, because a
+retirement is an edge and the 4-second sampling misses edges:
+
+```
+  ** Sten: FRAME RETIRED sell_furniture#1 age=17/180 -> giveup (bound 1: the FSM's give-up ladder) **
+```
+
+The reason comes from `frame.outcome` — stamped by `GoalStack._archive` since the goal stack
+was written — so it is a projection of durable state and gives the same answer whenever it is
+read. That is not a nicety: the design this replaced consulted a single marker slot in agent
+memory that every later transaction overwrites, and 116 of 117 give-ups read as "no ladder
+ran" when the same history was re-read later. **Bound 1 is now OBSERVABLE. It has still never
+been exercised on a shard** — audit §8.3.
+
+Two more fields ride the *worker's* own line (the `Name job @(x,y) t=… out+… eps=… steps=…`
+one, not the telemetry line above): `eps=` is every skill outcome the agent's ledgers have
+recorded — for a Life the SUM of hunt and economy, since the hunt ledger alone can sit at 0
+for thousands of ticks — and `!stalled` / `· STALLED n` mark a work-liveness stall. Legend:
+`docs/MONITORING.md`.
 
 *Provenance, because it changes how to read these on the next run:* the run that made
 `admitted=` lie was live (2026-08-03); when this legend was written the orchestrator fix
@@ -155,6 +188,14 @@ So `!frozen` on a live frame while the character is not dead **and without `!ove
 it**, or a `+hold` whose `@age` stops climbing, is still the first thing to look for rather
 than a curiosity — that combination is the hold being defeated, and nothing has yet shown it
 on a shard.
+
+**Bound 1, after 2026-08-03 §8: OBSERVABLE, NOT EXERCISED — and the two words are kept apart
+deliberately.** `retired=` and `FRAME RETIRED … -> giveup` give the give-up ladder the
+signature it never had, so a future run can recognise it. No run has produced one. The count
+of live-proven bounds is unchanged: bound 2 and bound 3, not bound 1. Proving it still needs
+a transaction that FAILS on a shard — a sale the vendor refuses, a bank trip that cannot
+reach its banker — and the cheapest path to one is naming a run-finished marker on the buy
+families' give-up branch (audit follow-up 19).
 
 ## Live result
 

@@ -133,6 +133,86 @@ smelt and no deliver on the 126 samples that followed — nothing on the tape sa
 death, a lost tool and a dead vein remain indistinguishable. This is the second sighting of
 the 2026-07-30 health check's "liveness line for NON-Life agents" item.
 
+**Half of that gap is closed as of 2026-08-03, and the half that is closed is "did it stop",
+not "is it alive".** See the two new sections below. The hp half is still missing: the pair
+line still calls `hp_readout` for neither agent, so the tape still cannot say whether the
+miner died. Audit §8.1 and follow-up 18.
+
+## Work-liveness: `eps=`, `NO OUTPUT`, `!stalled` (2026-08-03)
+
+`NO PROGRESS` is **body**-liveness — it watches reward, steps, speech AND position, so an
+agent that keeps WALKING resets it forever. That is exactly how the forge miner died in the
+open, twice. In the 1800-tick run of 2026-08-03 his ten `NO PROGRESS` pulses all read the
+identical string `for 40 ticks`, three of them before he stopped producing at all; the alarm
+carried the same text in the healthy half and the dead half, which is zero information.
+
+So `_run_worker` now carries a second, different alarm: **work**-liveness.
+
+| surface | what it is |
+|---|---|
+| `eps=N` on the per-agent status line | every skill outcome the agent's ledgers have recorded — terminal OR rewarded. For a **Life** it is the SUM of the hunt and economy ledgers, because `Life.episodes` is the hunt one alone and a carpenter can record 0 there while retiring hundreds of capability frames. Printed for every agent, always. |
+| `** <name>: NO OUTPUT for <n> ticks (eps=N unchanged since t=K, skill=<s>) — no skill has finished or paid since **` | the alarm, every 240 ticks of silence, **escalating** (240 → 480 → 720 …) so two pulses can never be confused the way ten identical `40`s were. |
+| `!stalled` on the status line | printed while the stall holds, so an operator who missed the alarm scrolling past still sees it. |
+| `[BUDGET SPENT · STALLED n]` | folded into the terminal suffix, because the terminal line is what a post-hoc reader looks at first and the miner's said `out+176.9 steps=139 … [BUDGET SPENT]`. |
+
+Two things about it are worth knowing before you read one:
+
+- **240 ticks is measured.** Sample cadence in both 2026-08-03 forge logs is 9 ticks median /
+  10 max; the miner's longest *healthy* reward-silence stretch across them is **159 ticks**
+  (two full relocations with every swing stuck, then live rock). 240 produces zero false
+  positives on both healthy windows and is 1.51× that worst case. 160 also scores zero and
+  clears it by ONE tick, which is not a margin.
+- **It only speaks while the agent is running a skill that is supposed to finish or pay.** An
+  agent in `wander` / `capability_wait` / `curriculum_wait` is idle BY DESIGN — the default
+  village roster's `townsfolk` is defined `work_skill=None`, so wandering is its whole job and
+  it records nothing forever. Ungated, this alarm fires on it at 240/480/720/960 and ends the
+  run `!stalled`, i.e. 100% wrong on a perfectly healthy agent. `Agent.last_skill_name` is
+  what arms it. If you see `NO OUTPUT` beside `skill=wander`, that is a bug in the gate, not
+  a stalled agent.
+
+**What it still misses:** it is orthogonal to WALKING, not to every zero-reward terminal
+skill. An agent whose work is dead but which cycles death/resurrection (`RecoverDeath`) or
+finishes a bandage (`Survive`) once per 240 ticks keeps `eps=` moving and stays silent. That
+shape has never been observed; it is the known hole.
+
+**Never run on a shard.** Every number above is read off the two existing forge logs or
+produced offline. Audit §8.1 and §8.5.
+
+## Frame retirements: `retired=` and `FRAME RETIRED` (2026-08-03)
+
+`want=` / `admitted=` / `ready=` all describe the frame that is HERE. A frame that has already
+gone is simply *absent* — which is why bound 1 of the exit-edge hold (the FSM's own give-up
+ladder) could not be told from an ordinary successful sale on **any** log: both leave the same
+hole, and a low frame age is not a give-up signature (audit §6.3). Two surfaces close that:
+
+- **`** <name>: FRAME RETIRED <capability>#<id> age=<a>/<budget> -> <reason> **`**, printed by
+  `_run_worker` **every tick, unthrottled**, because a retirement is an EDGE — one per
+  transaction — and the ~4s status sampling misses edges. `giveup` and `expired` carry their
+  bound in the line: `-> giveup (bound 1: the FSM's give-up ladder)`,
+  `-> expired (bound 2: the frame's own deadline)`. `achieved` is unannotated; it is the
+  ordinary outcome and glossing it would bury the two that are not.
+- **`retired=6:4a/1g/1x`** on the Life status line — the LEVEL signal for an operator joining
+  late or grepping afterwards. `a` achieved, `g` giveup, `x` expired (then `r`/`c`).
+
+Two properties that make them trustworthy, and one that limits them:
+
+- The reason is read off **`frame.outcome` alone**, which `GoalStack._archive` has stamped on
+  every retirement since the goal stack was written. Nothing new is recorded to produce it, so
+  the answer does not depend on WHEN it is read. That matters concretely: an earlier design
+  tested a marker in agent memory, and because that marker is a single slot every later
+  transaction overwrites, 116 of 117 give-ups flipped to "no ladder ran" when the same history
+  was re-read at the end of the run — the one error direction that erases bound-1 evidence.
+- Reading durable per-frame history is also what lets a retirement that lands *between* two
+  4-second samples still be reported.
+- **The tally is a bounded window, and it says so.** Goal-stack history holds 128 frames; past
+  that the oldest are deleted. Measured offline, a carpenter retires 58 / 117 / 176 / 234
+  frames at 1000 / 2000 / 3000 / 4000 ticks while history saturates from tick ~2182 — so the
+  field switches to `retired>=128:…` once the cap binds rather than reporting 128 of 176 as if
+  it were a total. The per-tick alarm remains the exact per-frame record.
+
+**`FRAME RETIRED … -> giveup` has never printed on a shard.** Bound 1 is OBSERVABLE now; it is
+not exercised. Audit §8.3.
+
 ## Implementation
 
 | Piece | Where |

@@ -161,6 +161,19 @@ reward** — a solo artisan made 5 tongs with `total_reward() == 0.0`. Reading `
 "the artisan produced nothing" was therefore wrong, and an earlier conclusion here (that
 shard contention starves crafting in the village) is **retracted**.
 
+*(2026-08-03: that line now also carries `eps=`, the count of skill outcomes the agent's
+ledgers have recorded — for a Life the SUM of its hunt and economy ledgers, since
+`Life.episodes` is the hunt one alone. It is the field this retraction was missing.
+`Agent.tick` records an episode when `result.reward` is non-zero **OR** the status is not
+`RUNNING`, so a zero-reward craft that FINISHES still bumps `eps=` even though it never
+moves `out+`. Read off the recording filter in `agent.py`, not measured on this roster —
+no live run has happened since (audit §8.5). The same change adds a work-liveness alarm,
+`** NO OUTPUT for 240 ticks … **` with `!stalled`, to both halves of this roster; the mage
+half is a throttled `MageLife` and the artisan half a plain capability `Agent`, and both go
+through the same worker. Legend: `docs/MONITORING.md`. Note for anyone reading it here: the
+alarm is armed by the skill the agent is running, and `capability_wait` counts as idle — an
+artisan that is merely waiting for its next admitted capability will NOT be flagged.)*
+
 `village.py` now carries `_TapBody` (records each agent's last observation, adding no
 traffic of its own) and `_pipeline_progress`, so the monitor reports what actually matters:
 

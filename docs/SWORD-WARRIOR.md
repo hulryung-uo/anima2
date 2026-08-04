@@ -186,6 +186,12 @@ robustness cliff plus one shipped improvement. Full write-up:
   warrior death mid-transaction remains the run this fix is owed. It is not the only gap
   left — bound 1, the `OVERDUE_REPAIRS` cap and any extension beyond one tick are all still
   unexercised (audit §7.4) — but it is the only one that is this profession's.
+  *(Unchanged by 2026-08-03 §8: bound 1 became OBSERVABLE — every warrior's worker now prints
+  `** <name>: FRAME RETIRED <cap>#<id> age=<a>/<b> -> giveup (bound 1: the FSM's give-up
+  ladder) **` the tick a frame closes that way — but observable is not exercised, and no
+  shard has produced one. The same runs added `eps=` and a `!stalled` work-liveness marker to
+  every warrior's status line, so the `out+301.0, 2 kills` shape below now reads
+  `out+301.0 eps=N steps=…`; `docs/MONITORING.md` has the legend. None of it has run live.)*
 - **Village integration (wired).** `village.py::run_warrior_village` + `--warriors N` run
   N swordsmen living the loop via `WarriorLife` in the standing village: each is staged at
   its own pocket with a Weaponsmith/Healer/Banker (pushed well out so they don't distract

@@ -729,6 +729,52 @@ close spent of three), any extension beyond 1 tick, and `_clear_stale_ui`'s vend
 branches at an overdue frame.** No economy claim: no gold moved, by construction. Detail:
 `docs/AUDIT-2026-07-29.md` 2026-08-03 §7.
 
+**The three defects those runs found were answered OFFLINE the same day — and the shard went
+down before any of it could be verified live (2026-08-03).** 1469 → **1495 tests**, both ruff
+clean, nothing committed. (1) **The silent miner is no longer silent — at the SECOND time of
+asking, which is the finding.** A liveness line for non-Life agents was named in this project's
+own 2026-07-30 health check, never adopted, and the identical failure recurred on the identical
+runner four days later; only then was it built. `village._run_worker` now watches
+`_work_recorded` — the agent's own count of terminal-or-rewarded skill outcomes, summed over
+the hunt AND economy ledgers — and prints an escalating `** NO OUTPUT for 240 ticks (eps=N
+unchanged since t=K, skill=mine) **`, with `eps=` on every status line, `!stalled` while it
+holds and `· STALLED n` in the terminal suffix. The 240 is measured, not chosen: sample cadence
+in both forge logs is 9 ticks median / 10 max, Grimm's longest HEALTHY reward-silence stretch
+across them is **159 ticks**, and 240 has zero false positives on both healthy windows while
+160 clears 159 by a single tick. It could not simply be "no episodes for a while": the default
+roster's `townsfolk` is *defined* `work_skill=None`, so `Wander` is its whole job and it records
+nothing — measured through `_run_worker`, that agent fired the alarm at 240/480/720/960 and
+ended `!stalled` while behaving exactly as specified. So a new pure-telemetry field
+`Agent.last_skill_name` arms the alarm only while a non-idle skill is running. The first draft
+also excluded every Life (`mode is None`), which left `run_supply_pair` and
+`run_warrior_village` with ZERO coverage; summing both ledgers replaced it — a healthy offline
+carpenter records 0 in its hunt ledger against 234 in its economy one over 4000 ticks, with a
+worst combined silence of 17 ticks. **Half the follow-up is still open: the tape now says an
+agent STOPPED, and still cannot say whether it DIED** — `run_forge_pair` calls `hp_readout` for
+neither agent. (2) **The `buy_iron` wedge that ate 556 live ticks is fixed offline, and its
+mechanism is named** — three defects, not the one the audit guessed at: `buy_offer_reopens`
+survived its own trip, so one unlucky trip left every later trip giving up on its first
+`window` tick; the "re-roll" emitted no action against a window that is a SNAPSHOT, so it
+re-rolled nothing; and no give-up path closed the window the trip had opened. All three fixed
+and mirrored to the tool-buy FSM, the exit-edge close carrying its safety argument in its own
+docstring (it is the OWNER cleaning up, on the tick its own FSM decided the trip was over, and
+only for the vendor serial that trip recorded). The audit's other candidate — the cancel is
+sent but the surface does not close — is untouched and still open. (3) **Bound 1 of the
+exit-edge hold became OBSERVABLE, which is not the same as exercised, and the count of
+live-proven bounds is unchanged at two.** `life_runner.retirement_reason` reads
+`frame.outcome` — stamped by `GoalStack._archive` since the goal stack was written — and the
+runner prints `** FRAME RETIRED sell_furniture#1 age=17/180 -> giveup (bound 1: the FSM's
+give-up ladder) **` per tick, with a `retired=1:1g` tally on the ~4s line. The design it
+replaced would have read a marker in agent memory; that was falsified before it shipped — the
+marker is a single slot every later transaction overwrites, and 116 of 117 give-ups flip to
+"no ladder ran" when re-read later, the one error direction that ERASES bound-1 evidence.
+**No live run happened.** The shard at `127.0.0.1:2594` was down — four probes, connection
+REFUSED — so the liveness line, the wedge fix and the bound-1 signature have all never touched
+a shard, `live_frame_overdue_gate.py` was not re-run (bound 3 is neither reconfirmed nor
+regressed), and the two live buy gates, which had to be taught that an empty-list `BuyItems` is
+a CANCEL and not a purchase, have never executed with that change. Detail:
+`docs/AUDIT-2026-07-29.md` 2026-08-03 §8, follow-ups 16/17 (updated) and 18-22 (new).
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
