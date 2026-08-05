@@ -405,6 +405,79 @@ def hp_readout(obs: Observation | None) -> str:
     return "DEAD" if p.dead else f"{p.hits}/{p.hits_max}"
 
 
+def validate_knobs(knobs: dict[str, Any] | None, knob_names, *,
+                   label: str) -> dict[str, Any]:
+    """The ONE check that a caller's tuning dict contains only tuning KNOBS, and the
+    single place the refusal is worded. Returns a COPY, splat-ready.
+
+    Two separate failures, one check — both first found on the `LifeSpec` half of this
+    channel, and both reachable from every other construction site the moment one grows
+    a `knobs` argument, which is why this moved out of `LifeSpec.__post_init__`:
+
+    The first is SILENT. A Life constructor's non-knob parameters are IDENTITY, and
+    `profession` is the worst of them: `knobs={"profession": "mage"}` on a carpenter
+    built a Life that staged, labelled and reported itself as a carpenter
+    (`spec.profession` drives all three, including `telemetry_line`'s `ready=` list)
+    while its goal policy, capability cognition and disagreement detector ran as a mage,
+    with the carpenter's `decide` rule still choosing what to want — a permanent
+    want-vs-refuse standoff the operator's own status line contradicts. That is the
+    rule-vs-gate drift class `obsview.py` and `knobs.py` exist to end, re-entered through
+    the channel meant to be the safe way to tune. Not a contrived key either:
+    `foundry/archive.py::Genome`'s first axis is literally named `profession`, and the
+    genome is the searcher this channel is being built for.
+
+    The second is merely loud, but expensively placed. A genuine TYPO
+    (`disagreement_tick`) raises `TypeError` from the constructor — and every runner
+    builds its Lives AFTER the login, the GM staging, the provenance gold-wipe and the
+    seed grant. **So every caller must run this BEFORE the first packet**, not at the
+    construction site: a one-character mistake otherwise abandons a spawned, logged-in,
+    seeded character behind an unhandled traceback. `LifeSpec` gets that for free by
+    checking at spec construction; the inline runners call this at the top of the
+    function, above `ResilientIpcBody.spawn`.
+
+    `knob_names` is passed rather than read off a class because `LifeSpec`'s factory is a
+    lambda closing over its Life class and cannot be introspected. A caller that passes
+    the WRONG set fails in the fail-safe direction — the base `WarriorLife.KNOBS` against
+    a `TinkerLife` rejects `bank_trip_surplus` loudly and offline, which is the wrong
+    answer but the harmless one.
+    """
+    knobs = dict(knobs or {})
+    unknown = set(knobs) - set(knob_names)
+    if unknown:
+        raise ValueError(
+            f"{label}: {sorted(unknown)} is not a tuning knob. "
+            f"Knobs for this Life: {sorted(knob_names)}. Every key must be a "
+            "threshold the Life reads back through anima2/knobs.py's clamp; a "
+            "constructor parameter that is identity (profession) or cognition "
+            "(steering) is not one, and tuning it here recreates the rule-vs-gate "
+            "drift this channel exists to avoid.")
+    return knobs
+
+
+def build_tuned_life(life_cls, knobs: dict[str, Any] | None, /, **kwargs):
+    """Construct `life_cls` with `knobs` checked against ITS OWN `KNOBS` allowlist.
+
+    `LifeRunner.build_life` is this for the two `LifeSpec` runners, and its docstring
+    gives the reason both exist: `run()` needs a live shard, so without a named seam the
+    knob channel could only ever be proved by re-implementing the construction line in a
+    test — which is exactly how a channel ends up asserted-but-not-wired. The four INLINE
+    runners have the same problem and had no such seam, so a test could reach two of the
+    seven Life-construction sites. They call this.
+
+    Reading `life_cls.KNOBS` off the class rather than taking the set is the one thing
+    this can do that `LifeSpec` cannot: a spec's factory is a lambda and has to be TOLD
+    its allowlist (`knob_names`, defaulting to the base set, fail-safe but tellable
+    wrong). Here the class is named once and the allowlist follows it.
+
+    It does NOT replace the runner's own early `validate_knobs` call: construction
+    happens after the login and the GM staging, and the whole point of checking is to
+    fail before the first packet. Same check, run twice, deliberately — the second is
+    where the value is USED and so is where a test can watch it arrive.
+    """
+    return life_cls(**kwargs,
+                    **validate_knobs(knobs, life_cls.KNOBS, label=life_cls.__name__))
+
+
 # --- the harness ---------------------------------------------------------------------
 
 @dataclass
@@ -469,37 +542,16 @@ class LifeSpec:
     knob_names: frozenset[str] = WarriorLife.KNOBS
 
     def __post_init__(self) -> None:
-        """Reject a `knobs` key that is not a knob, at SPEC construction.
+        """Reject a `knobs` key that is not a knob, at SPEC construction — the earliest
+        point on this path, and the whole reason the check sits here rather than in
+        `build_life`: `knobs` is fully known before the first packet.
 
-        Two separate failures, one check. The first is silent: `build_life` splats
-        `knobs` into the Life constructor, whose other parameters are identity rather
-        than thresholds, so `knobs={"profession": "mage"}` on a carpenter spec built a
-        Life that staged, labelled and reported itself as a carpenter (`spec.profession`
-        drives all three, including the `ready=` list in `telemetry_line`) while its goal
-        policy, capability cognition and disagreement detector ran as a mage, with the
-        carpenter's `decide` rule still choosing what to want. A permanent want-vs-refuse
-        standoff that the operator's own status line contradicts — the exact rule-vs-gate
-        class `obsview.py` and `knobs.py` were written to end, re-entered through the
-        tuning channel. See `WarriorLife.KNOBS` for why `profession` is the likely key
-        and not a contrived one.
-
-        The second is merely loud, but expensively placed: a genuine TYPO
-        (`disagreement_tick`) does raise `TypeError` — from `build_life`, which `run()`
-        reaches only AFTER the login, the GM staging, the provenance gold-wipe and the
-        seed grant. Nobody has spent a shard slot on that yet; the point is that the
-        first person to would get a spawned, logged-in, seeded character abandoned behind
-        an unhandled traceback for a one-character mistake. `knobs` is fully known here,
-        before the first packet, so this is where it is checked.
+        The rule and its refusal text are `validate_knobs`, shared with the four inline
+        runners so the two halves of the channel can never disagree about what a knob is.
+        See it for the two failures this catches and what each one cost.
         """
-        unknown = set(self.knobs) - set(self.knob_names)
-        if unknown:
-            raise ValueError(
-                f"{self.profession} spec: {sorted(unknown)} is not a tuning knob. "
-                f"Knobs for this Life: {sorted(self.knob_names)}. Every key must be a "
-                "threshold the Life reads back through anima2/knobs.py's clamp; a "
-                "constructor parameter that is identity (profession) or cognition "
-                "(steering) is not one, and tuning it here recreates the rule-vs-gate "
-                "drift this channel exists to avoid.")
+        self.knobs = validate_knobs(self.knobs, self.knob_names,
+                                    label=f"{self.profession} spec")
 
 
 class LifeRunner:

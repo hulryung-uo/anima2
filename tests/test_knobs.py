@@ -473,26 +473,85 @@ def test_a_malformed_knob_pair_dies_at_the_command_line_not_on_the_shard():
 
 
 def test_the_cli_refuses_a_knob_no_runner_would_carry():
-    """Only --carpenter and --woodsman have the channel. A knob passed with any other
-    roster must not be silently dropped: the operator would read the run as tuned when
-    it ran on defaults, which is the wireless-channel defect wearing a command line.
+    """A knob passed to a roster that builds no Life must not be silently dropped: the
+    operator would read the run as tuned when it ran on defaults, which is the
+    wireless-channel defect wearing a command line.
+
+    This USED to assert `--pipeline` was refused, because only --carpenter and
+    --woodsman carried the channel. That limitation is what audit follow-up 2 named and
+    what the seven-site wiring removed, so the test now pins the property rather than
+    the allowlist: the DEFAULT trade-village roster is plain `Agent`s with no
+    orchestrator and no thresholds, and it is the one thing left that has to refuse.
 
     The guard has to run BEFORE any runner does, so this asserts on argument parsing
     alone — no shard, no bridge, no roster."""
     import pytest
 
-    with pytest.raises(SystemExit, match="carpenter"):
-        _run_cli(["--pipeline", "--knob", "bank_reserve=400"])
+    with pytest.raises(SystemExit, match="builds no Life"):
+        _run_cli(["--miners", "1", "--knob", "bank_reserve=400"])
 
 
-def test_the_cli_hands_a_parsed_knob_to_the_runner_that_carries_it():
-    """The other half of the same guard: with --carpenter the value must ARRIVE. A
-    refusal test alone would pass just as well against a CLI that dropped every knob."""
+def test_the_cli_hands_a_parsed_knob_to_every_runner_that_carries_one():
+    """The other half of the same guard: the value must ARRIVE. A refusal test alone
+    would pass just as well against a CLI that dropped every knob.
+
+    All SEVEN Life-construction sites, because "two of seven are wired" is exactly the
+    state audit follow-up 2 warned against reading as done."""
     from unittest.mock import patch
 
     with patch("anima2.village.run_carpenter_life") as run:
         _run_cli(["--carpenter", "--knob", "bank_reserve=400", "--knob", "econ_grace=3"])
     assert run.call_args.kwargs["knobs"] == {"bank_reserve": 400, "econ_grace": 3}
+
+    with patch("anima2.village.run_woodsman_life") as run:
+        _run_cli(["--woodsman", "--knob", "bank_reserve=222"])
+    assert run.call_args.kwargs["knobs"] == {"bank_reserve": 222}
+
+    # The FLAGSHIP: the positive-margin miner->tinker chain, the loop a gold-per-life
+    # fitness run would actually measure, and `bank_trip_surplus` is the tinker's own
+    # knob — reachable from a shell for the first time here.
+    with patch("anima2.village.run_forge_pair") as run:
+        _run_cli(["--forge-pair", "--knob", "bank_trip_surplus=90"])
+    assert run.call_args.kwargs["knobs"] == {"bank_trip_surplus": 90}
+
+    with patch("anima2.village.run_warrior_village") as run:
+        _run_cli(["--warriors", "2", "--knob", "econ_grace=5"])
+    assert run.call_args.kwargs["knobs"] == {"econ_grace": 5}
+
+    with patch("anima2.village.run_artisan_mage_village") as run:
+        _run_cli(["--pipeline", "--knob", "bank_reserve=77"])
+    assert run.call_args.kwargs["mage_knobs"] == {"bank_reserve": 77}
+
+    # Two Lives, so two dicts, and the prefix decides which — no bare form here.
+    with patch("anima2.village.run_supply_pair") as run:
+        _run_cli(["--supply-pair", "--knob", "woodsman:bank_reserve=1",
+                  "--knob", "carpenter:bank_reserve=2"])
+    assert run.call_args.kwargs["woodsman_knobs"] == {"bank_reserve": 1}
+    assert run.call_args.kwargs["carpenter_knobs"] == {"bank_reserve": 2}
+
+
+def test_a_bare_knob_is_refused_where_it_would_have_to_guess_a_life():
+    """`--supply-pair` builds a woodsman AND a carpenter, both with a `bank_reserve`.
+    A bare `bank_reserve=400` there has no honest meaning, and picking one silently is
+    the same misreporting the roster guard above exists to stop — so it is refused with
+    the roles named and a corrected command in the message."""
+    import pytest
+
+    with pytest.raises(SystemExit, match="ambiguous"):
+        _run_cli(["--supply-pair", "--knob", "bank_reserve=400"])
+    # ...and the refusal must name a role that actually exists on this runner.
+    with pytest.raises(SystemExit, match="has no 'tinker'"):
+        _run_cli(["--supply-pair", "--knob", "tinker:bank_reserve=400"])
+
+
+def test_the_role_prefix_is_optional_where_there_is_only_one_life():
+    """Requiring it everywhere would break every shipped `--carpenter --knob K=V`
+    invocation for no gain: with one Life the bare form cannot be ambiguous."""
+    from unittest.mock import patch
+
+    with patch("anima2.village.run_carpenter_life") as run:
+        _run_cli(["--carpenter", "--knob", "carpenter:bank_reserve=400"])
+    assert run.call_args.kwargs["knobs"] == {"bank_reserve": 400}
 
 
 def _run_cli(argv: list[str]) -> None:
@@ -503,3 +562,121 @@ def _run_cli(argv: list[str]) -> None:
 
     with patch.object(sys, "argv", ["village", *argv]):
         village.main()
+
+
+# --- the FIVE inline construction sites (audit follow-up 2) ---------------------------
+#
+# `LifeSpec`/`LifeRunner.build_life` covers two of the seven places a Life is built.
+# The other five are hand-written inside `run_forge_pair` (the flagship positive-margin
+# tinker), `run_supply_pair` (a woodsman AND a carpenter), `run_warrior_village` and
+# `run_artisan_mage_village` — and CLAUDE.md gates a multi-hour single-GM live budget on
+# precondition (a), "the genome's axes can steer a full Life". Two of seven is not that.
+
+
+def test_every_life_class_can_be_built_through_the_inline_seam():
+    """`build_tuned_life` is `LifeRunner.build_life` for the runners that have no spec,
+    and it exists for the same stated reason: those runners need a shard, so without a
+    named seam the only way to prove a tuned value reaches the Life is to re-implement
+    the construction line in a test — the exact shape of an asserted-but-not-wired
+    channel. Both knob shapes travel, as on the spec path."""
+    from anima2.carpenter_life import CarpenterLife
+    from anima2.life_runner import build_tuned_life
+    from anima2.mage_life import MageLife
+    from anima2.tinker_life import TinkerLife
+    from anima2.warrior_life import WarriorLife
+    from anima2.woodsman_life import WoodsmanLife
+
+    for cls in (TinkerLife, CarpenterLife, WoodsmanLife, MageLife, WarriorLife):
+        life = build_tuned_life(cls, {"bank_reserve": 4242, "disagreement_ticks": 3},
+                                body=_MockBody(), persona=Persona(name="T"),
+                                routes={"banker_spot": ((10, 10),)})
+        assert life.econ_agent.memory["bank_reserve"] == 4242, cls.__name__
+        assert life.disagreement_ticks == 3, cls.__name__
+        assert life.econ_agent.memory["banker_spot"] == ((10, 10),), cls.__name__
+        # Unknobbed is byte-for-byte the shipped behaviour, for every one of them.
+        plain = build_tuned_life(cls, None, body=_MockBody(), persona=Persona(name="T"),
+                                 routes={})
+        assert plain.econ_agent.memory["bank_reserve"] == cls.DEFAULT_BANK_RESERVE
+
+
+def test_the_inline_seam_reads_its_allowlist_off_the_class_it_builds():
+    """The one thing this seam can do that `LifeSpec` cannot. A spec's factory is a
+    lambda, so the spec must be TOLD its allowlist (`knob_names`) and can be told the
+    wrong one; here the class is named once and the allowlist follows it. So the
+    tinker's own knob is accepted on a tinker and refused on a carpenter, with no
+    per-site declaration to keep in step."""
+    import pytest
+
+    from anima2.carpenter_life import CarpenterLife
+    from anima2.life_runner import build_tuned_life
+    from anima2.tinker_life import TinkerLife
+
+    life = build_tuned_life(TinkerLife, {"bank_trip_surplus": 90}, body=_MockBody(),
+                            persona=Persona(name="Pim"), routes={})
+    assert life.econ_agent.memory["bank_trip_surplus"] == 90
+
+    with pytest.raises(ValueError, match="bank_trip_surplus"):
+        build_tuned_life(CarpenterLife, {"bank_trip_surplus": 90}, body=_MockBody(),
+                         persona=Persona(name="Sten"), routes={})
+
+
+def test_a_bad_knob_stops_an_inline_runner_BEFORE_it_spawns_anything():
+    """The placement, which is the part each inline site has to choose and the part a
+    shared helper cannot choose for it. `LifeSpec` checks at spec construction and gets
+    this free; an inline runner builds its Lives only after the logins, the GM staging,
+    the provenance gold-wipe and the seed grant, so a one-character typo would otherwise
+    abandon spawned, staged characters behind a traceback.
+
+    Asserted by making the FIRST network call explode: if the guard ran late, the test
+    would see that explosion instead of the ValueError."""
+    from unittest.mock import patch
+
+    from anima2 import village
+
+    class _NoNetwork:
+        @staticmethod
+        def spawn(*a, **k):
+            raise AssertionError("the runner reached the shard before checking its knobs")
+
+    calls = [
+        (village.run_forge_pair, {"knobs": {"nope": 1}}),
+        (village.run_supply_pair, {"woodsman_knobs": {"nope": 1}}),
+        (village.run_supply_pair, {"carpenter_knobs": {"nope": 1}}),
+        (village.run_artisan_mage_village, {"mage_knobs": {"nope": 1}}),
+    ]
+    with patch.object(village, "ResilientIpcBody", _NoNetwork):
+        for fn, kwargs in calls:
+            with pytest.raises(ValueError, match="not a tuning knob"):
+                fn(**kwargs)
+        with pytest.raises(ValueError, match="not a tuning knob"):
+            village.run_warrior_village(2, knobs={"nope": 1})
+
+
+def test_the_forge_pairs_banner_would_report_a_tuned_value_not_the_module_default():
+    """The staged line is how a live operator learns the channel carried anything —
+    `run_carpenter_life`'s equivalent printing `reserve 400` against a module default of
+    129 is the whole of the 2026-08-03 live proof. The flagship pair prints BOTH of the
+    tinker's knobs, and both are read off the BUILT Life through the same clamp every
+    other reader uses, so the banner cannot drift from what the Life will do."""
+    from anima2.life_runner import build_tuned_life
+    from anima2.tinker_life import (
+        BANK_RESERVE,
+        BANK_TRIP_SURPLUS,
+        TinkerLife,
+        bank_trip_surplus,
+    )
+
+    plain = build_tuned_life(TinkerLife, None, body=_MockBody(),
+                             persona=Persona(name="Pim"), routes={})
+    assert _bank_reserve(plain.econ_agent.memory) == BANK_RESERVE
+    assert bank_trip_surplus(plain.econ_agent.memory) == BANK_TRIP_SURPLUS
+
+    tuned = build_tuned_life(TinkerLife, {"bank_reserve": 400, "bank_trip_surplus": 90},
+                             body=_MockBody(), persona=Persona(name="Pim"), routes={})
+    assert _bank_reserve(tuned.econ_agent.memory) == 400
+    assert bank_trip_surplus(tuned.econ_agent.memory) == 90
+    # ...and a malformed value collapses to the floor on the banner exactly as it does
+    # in the rule, because they are the same read.
+    bad = build_tuned_life(TinkerLife, {"bank_trip_surplus": -5}, body=_MockBody(),
+                           persona=Persona(name="Pim"), routes={})
+    assert bank_trip_surplus(bad.econ_agent.memory) == 0

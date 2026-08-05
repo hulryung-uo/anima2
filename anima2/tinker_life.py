@@ -78,6 +78,17 @@ BANK_RESERVE = IRON_BATCH_COST + TOOL_COST
 #: the same drift `bank_reserve` already paid for, arriving through a second knob.
 BANK_TRIP_SURPLUS = IRON_BATCH_COST
 
+
+def bank_trip_surplus(memory) -> int:
+    """The ONE clamped read of this knob, mirroring `market._bank_reserve` for the
+    reserve. It was a bare `knob_int(...)` call inside `decide_mode` while `decide_mode`
+    was the only reader; the moment a second one appeared (`run_forge_pair`'s staged
+    banner, which must print what the Life will ACTUALLY use rather than the module
+    constant) the choice was a named read point or a second copy of the clamp — and
+    `knobs.py`'s docstring is about what the second copy costs."""
+    return knob_int(memory, "bank_trip_surplus", BANK_TRIP_SURPLUS)
+
+
 _TOOL_GRAPHICS = frozenset(TinkerTongs.craft_tool_graphics)
 _CRAFT_RADIUS = getattr(TinkerTongs, "craft_spot_radius", 0)
 
@@ -114,7 +125,7 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     reserve = _bank_reserve(memory, BANK_RESERVE)
     # Both knobs read through the same clamp (`knobs.py`), so a malformed value moves
     # this rule and the `bank_gold` gate to the same place instead of prying them apart.
-    surplus = knob_int(memory, "bank_trip_surplus", BANK_TRIP_SURPLUS)
+    surplus = bank_trip_surplus(memory)
     # Pockets full -> the bank outranks even a ready craft. The patient branch below
     # only fires when nothing above it wants a turn, and forge4 (2026-07-30) proved
     # live that a HEALTHY supply chain never opens that gap: with the miner

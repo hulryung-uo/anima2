@@ -1779,7 +1779,9 @@ def _run_online_village(
 
 def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
                     ticks: int = 1200, account_prefix: str = "animapair",
-                    monitor: bool = False, carpenter_tick_every: int = 3) -> None:
+                    monitor: bool = False, carpenter_tick_every: int = 3,
+                    woodsman_knobs: dict[str, Any] | None = None,
+                    carpenter_knobs: dict[str, Any] | None = None) -> None:
     """Bjorn supplies Sten: a lumberjack hauls boards to a carpenter's drop point.
 
     The two capabilities were built for each other and had never met — `deliver_boards`
@@ -1797,14 +1799,27 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     finding it — which is the thing a village is made of and the thing that pays off the
     moment crafted goods are worth more than vendor scrap. The gold is reported honestly
     either way.
+
+    TWO knob dicts, one per Life, and deliberately not one shared `knobs=`. Both sides
+    are Lives with a `bank_reserve`, so a single dict would have to mean "both" — and
+    "both" is a value a searcher can never ask for separately afterwards. Naming them
+    costs one argument and removes the only ambiguity a multi-Life runner has.
     """
     from .carpenter_life import SAW_COST, CarpenterLife
+    from .life_runner import build_tuned_life, validate_knobs
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .skills.carpentry import SellFurniture
     from .skills.hunt import GOLD_GRAPHIC
     from .skills.craft import PICKUP_RADIUS
     from .skills.woodwork import BOARD_GRAPHIC, LOG_GRAPHIC
     from .woodsman_life import WoodsmanLife
+
+    # Before the first packet — see `run_forge_pair`'s copy for why the placement, not
+    # the check, is the part that has to be chosen at each inline site.
+    woodsman_knobs = validate_knobs(woodsman_knobs, WoodsmanLife.KNOBS,
+                                    label="supply pair woodsman")
+    carpenter_knobs = validate_knobs(carpenter_knobs, CarpenterLife.KNOBS,
+                                     label="supply pair carpenter")
 
     FURNITURE = SellFurniture.sold_graphic
 
@@ -1897,14 +1912,16 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
         except Exception:  # noqa: BLE001
             pass
 
-    bjorn = WoodsmanLife(body=bodies["woodsman"], persona=Persona(name="Bjorn"),
-                         routes={**w_routes, "carpenter_drop": drop})
+    bjorn = build_tuned_life(WoodsmanLife, woodsman_knobs,
+                             body=bodies["woodsman"], persona=Persona(name="Bjorn"),
+                             routes={**w_routes, "carpenter_drop": drop})
     bjorn.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
     for m in (bjorn.memory, bjorn.econ_agent.memory):
         m["shop_serials"] = shop_serials  # identity pin, not a nearest-tile guess
     bjorn.set_leash((wx, wy))
-    sten = CarpenterLife(body=bodies["carpenter"], persona=Persona(name="Sten"),
-                         routes=c_routes)
+    sten = build_tuned_life(CarpenterLife, carpenter_knobs,
+                            body=bodies["carpenter"], persona=Persona(name="Sten"),
+                            routes=c_routes)
     for m in (sten.memory, sten.econ_agent.memory):
         m["craft_spot"] = (cx, cy)
         m["shop_serials"] = shop_serials
@@ -1919,7 +1936,16 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     sten.set_leash(drop, sten_leash)
     print(f"  Sten leashed to the drop at {sten_leash} tiles "
           f"(shops reach {shop_reach}, pickup radius {PICKUP_RADIUS})")
-    print(f"staged: Bjorn@({wx},{wy}) -> drop {drop} -> Sten@({cx},{cy})\n")
+    # Both reserves read off the BUILT Lives through `market._bank_reserve` — the clamp
+    # the decide rule, the `bank_gold` gate and `BankGold`'s FSM all share. This runner
+    # printed no reserve at all before it could be tuned, which was defensible then and
+    # is not now: a tuned value an operator cannot see is one they will read the run as
+    # if it had never carried. Same shape as `LifeRunner.staged_line`'s, for the same
+    # reason it reads the Life and not the module constant.
+    from .skills.market import _bank_reserve
+    print(f"staged: Bjorn@({wx},{wy}) -> drop {drop} -> Sten@({cx},{cy})  "
+          f"(reserves: Bjorn {_bank_reserve(bjorn.econ_agent.memory)}, "
+          f"Sten {_bank_reserve(sten.econ_agent.memory)})\n")
 
     agents = [("lumberjack", bjorn),
               ("carpenter", _ThrottledAgent(sten, carpenter_tick_every))]
@@ -1996,7 +2022,8 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
 
 def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
                    ticks: int = 1200, account_prefix: str = "animaforge",
-                   monitor: bool = False) -> None:
+                   monitor: bool = False,
+                   knobs: dict[str, Any] | None = None) -> None:
     """The FLAGSHIP pair: Grimm mines and delivers iron, Pim turns it into tongs.
 
     This is the one supply chain the shard's own price tables reward (pinned by
@@ -2011,6 +2038,13 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
 
     Provenance: BOTH start broke; the tinker gets no iron and no gold. Every coin at
     the end came out of the mountain.
+
+    `knobs` tunes PIM, the one Life here (Grimm is a plain `Agent` driving
+    `MineSmeltDeliver` and has no knob channel — see the module note on the two halves
+    of a pair). This is the runner audit follow-up 2 named as "the closest candidate,
+    and the one that matters most": the flagship positive-margin loop is the one a
+    gold-per-life fitness run would actually measure, so a genome that cannot reach it
+    cannot steer anything worth scoring.
     """
     from .life_runner import (
         banked_amount,
@@ -2020,6 +2054,7 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         stage_shops,
         telemetry_line,
     )
+    from .life_runner import build_tuned_life, validate_knobs
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .skills.craft import PICKUP_RADIUS
     from .skills.hunt import GOLD_GRAPHIC
@@ -2028,6 +2063,13 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     from .planner import Planner
     from .skills.market import _bank_reserve
     from .tinker_life import TinkerLife
+
+    # BEFORE the first packet. A bad key raises `TypeError` from the constructor
+    # otherwise, and that construction happens after two logins, the GM staging and the
+    # provenance gold-wipe — a one-character typo would abandon two spawned, staged
+    # characters behind a traceback. `LifeSpec` gets this placement for free by checking
+    # at spec construction; an inline runner has to choose it.
+    knobs = validate_knobs(knobs, TinkerLife.KNOBS, label="forge pair tinker")
 
     print(f"raising the forge pair at {host}:{port}")
     bodies = {}
@@ -2104,7 +2146,9 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         miner.memory["harvest_nodes"] = home_nodes  # dig real rock, not a blind ring
     miner.memory["harvest_spot_pool"] = spot_pool  # relocation walks to KNOWN faces
 
-    pim = TinkerLife(body=bodies["tinker"], persona=Persona(name="Pim"), routes=routes)
+    pim = build_tuned_life(TinkerLife, knobs,
+                           body=bodies["tinker"], persona=Persona(name="Pim"),
+                           routes=routes)
     for m in (pim.memory, pim.econ_agent.memory):
         m["craft_spot"] = (tgx, tgy)
         # Shop-identity pin: the Tinker and the Banker stand a tile either side
@@ -2116,12 +2160,18 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     shop_reach = max((max(abs(v[0][0] - tgx), abs(v[0][1] - tgy))
                       for v in routes.values()), default=1)
     pim.set_leash((tgx, tgy), min(max(1, shop_reach), PICKUP_RADIUS - 1))
-    # Read off PIM, through the clamp every other reader of this key uses — not off the
-    # module constant. Identical today (nothing tunes this runner), and it stays true the
-    # day something does; `run_carpenter_life`'s banner was the same shape and would have
-    # started lying the moment that runner grew a `knobs` argument.
+    # Read off PIM, through the clamp every other reader of these keys uses — not off the
+    # module constants. That was written when nothing could tune this runner, on the
+    # argument that it "stays true the day something does"; `knobs=` is that day, and the
+    # banner needed no change to survive it, which is the whole point of reading the
+    # BUILT Life. `run_carpenter_life`'s banner was the same shape and its live proof
+    # (2026-08-03, `reserve 400` against a module default of 129) is what this now makes
+    # available on the flagship pair. Both of the tinker's knobs are here: a channel whose
+    # value an operator cannot see is one they will read the run as if it had not carried.
+    from .tinker_life import bank_trip_surplus
     print(f"staged: Grimm@({mgx},{mgy}) -> drop {TRADE_SMITH_SPOT} -> Pim@({tgx},{tgy}) "
-          f"(reserve {_bank_reserve(pim.econ_agent.memory)}, both broke)\n")
+          f"(reserve {_bank_reserve(pim.econ_agent.memory)}, "
+          f"trip surplus {bank_trip_surplus(pim.econ_agent.memory)}, both broke)\n")
 
     status: dict[int, str] = {}
     lock = threading.Lock()
@@ -2407,7 +2457,8 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
                         ticks: int = 200, account_prefix: str = "animawar",
                         prey: str = "Ettin", prey_target: int = 2, spacing: int = 25,
-                        monitor: bool = False) -> None:
+                        monitor: bool = False,
+                        knobs: dict[str, Any] | None = None) -> None:
     """Run `count` swordsmen LIVING the full autonomous loop via `WarriorLife`: each
     hunts, and when it loses its blade or runs low on bandages it re-arms/restocks/banks
     on its own, then resumes. Each warrior is staged at its own hunting pocket with a
@@ -2415,11 +2466,21 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
     to the right one), full plate + Katana + bandages + seed gold, and a KILLS-DRIVEN
     prey supply the monitor tops up (spawn one per confirmed kill — no accumulating
     swarm). Uses `_run_worker` unchanged (`WarriorLife` duck-types as an `Agent`).
+
+    ONE `knobs` dict for the whole roster, not one per warrior. Every Bram is the same
+    class staged the same way, so per-warrior tuning would be a fleet EXPERIMENT (N
+    genomes on one shard) and not a runner argument — and this runner's roster shares a
+    single GM control plane and one prey budget, which is exactly the confound that makes
+    such a comparison unsound. Whoever wants that should say so and build it.
     """
-    from .life_runner import enforce_gold_provenance
+    from .life_runner import build_tuned_life, enforce_gold_provenance, validate_knobs
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle
     from .profession import HUNTING_SPOT
     from .warrior_life import WarriorLife
+
+    # Before the first packet — and this runner spawns `count` of them, so the cost of
+    # checking late scales with the roster.
+    knobs = validate_knobs(knobs, WarriorLife.KNOBS, label="warrior village")
 
     hx, hy = HUNTING_SPOT
     prof = PROFESSIONS["swordsman"]
@@ -2513,9 +2574,10 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                       "healer_spot": [(gx - 12, gy)],
                       "banker_spot": [(gx, gy + 12)],
                       "armorer_spot": [(gx, gy - 12)]}
-            life = WarriorLife(body=body,
-                               persona=Persona(name=f"Bram{i}", combat_disposition="aggressive"),
-                               routes=routes)
+            life = build_tuned_life(
+                WarriorLife, knobs, body=body,
+                persona=Persona(name=f"Bram{i}", combat_disposition="aggressive"),
+                routes=routes)
             warriors.append({"i": i, "life": life, "spot": (gx, gy, gz), "respawned": 0})
         # Staging is serial and GM-heavy, so with a big roster the FIRST-staged bodies sit
         # idle for a long time before anyone starts playing. Warm every body (and report
@@ -2877,7 +2939,8 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
                             ticks: int = 400, account_prefix: str = "animapipe",
                             prey: str = "Ettin", mage_tick_every: int = 8,
                             monitor: bool = False,
-                            steer_mage: str = "scripted") -> None:
+                            steer_mage: str = "scripted",
+                            mage_knobs: dict[str, Any] | None = None) -> None:
     """Run the WHOLE production pipeline unattended: an artisan and a mage, side by side.
 
     This is the goal's arc turned into a standing village rather than a scripted proof. The
@@ -2894,10 +2957,18 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
 
     Both are driven by `_run_worker` unchanged (`MageLife` duck-types as an `Agent`, and the
     artisan simply IS one).
+    `mage_knobs` names its target because only ONE of these two is a Life: the artisan is
+    a plain `Agent` under a `CapabilityCognition`, with no orchestrator and so no
+    thresholds to tune. `knobs=` would have read as "the pipeline's knobs" and silently
+    meant "the mage's".
     """
     from .capability_cognition import CapabilityCognition
+    from .life_runner import build_tuned_life, validate_knobs
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle, wipe_area
     from .mage_life import MageLife
+
+    # Before the first packet — see `run_forge_pair`'s copy.
+    mage_knobs = validate_knobs(mage_knobs, MageLife.KNOBS, label="pipeline mage")
 
     print(f"raising an artisan+mage village at {host}:{port}")
     bodies = {}
@@ -3022,11 +3093,11 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
             "mage_drop": MAGE_DROP,                      # where the purse goes
         })
         # The MAGE: its own orchestrator, switching itself between hunting and resupply.
-        mage = MageLife(body=bodies["mage"],
-                        persona=Persona(name="Mage", combat_disposition="aggressive"),
-                        routes={"mage_vendor_spot": [MAGE_VENDOR],
-                                "banker_spot": [MAGE_BANKER]},
-                        steering=steer_mage)
+        mage = build_tuned_life(
+            MageLife, mage_knobs, body=bodies["mage"],
+            persona=Persona(name="Mage", combat_disposition="aggressive"),
+            routes={"mage_vendor_spot": [MAGE_VENDOR], "banker_spot": [MAGE_BANKER]},
+            steering=steer_mage)
         # Leash the mage to its plaza. Without this it wanders off once the prey is dead
         # and never observes the purse the artisan delivers — live-caught here: a correct
         # `deliver_gold` handed over 140 gold that simply sat on the ground, because by
@@ -3144,6 +3215,53 @@ def _parse_knobs(pairs: list[str]) -> dict[str, int]:
     return out
 
 
+def _route_knobs(parsed: dict[str, int], roles: tuple[str, ...], *, runner: str,
+                 default_role: str | None) -> dict[str, dict[str, int]]:
+    """Split `--knob [ROLE:]KEY=VALUE` pairs across the LIVES a runner actually builds.
+
+    The role prefix exists because a runner can build more than one Life and they are
+    not interchangeable: `run_supply_pair` builds a woodsman AND a carpenter, both with
+    a `bank_reserve`, so a bare `bank_reserve=400` there has no honest meaning. Rather
+    than pick one silently it is refused, with the roles named — `default_role=None` is
+    how a runner declares that. Where there IS only one Life the bare form is the whole
+    interface and the prefix is optional.
+
+    Three refusals, all of them the same failure the pre-existing blanket guard caught
+    for two runners ("a knob the run silently ignores is the wireless-channel defect
+    wearing a CLI"), now stated per runner instead of allowlisted:
+      - a knob passed to a runner that builds no Life at all,
+      - a role this runner does not have,
+      - a bare key on a runner with several.
+
+    What it does NOT check is the knob NAMES: that belongs to `validate_knobs` against
+    the allowlist of the class each runner actually builds, so the two can never
+    disagree. Same division of labour `_parse_knobs` already documents for values.
+    """
+    by_role: dict[str, dict[str, int]] = {r: {} for r in roles}
+    for key, value in parsed.items():
+        role, sep, name = key.rpartition(":")
+        if not sep:
+            role = None
+        if not roles:
+            raise SystemExit(
+                f"--knob does not apply to {runner}: it builds no Life, and every "
+                "tuning knob is a Life threshold. Ignoring it silently would misreport "
+                "what the run actually ran.")
+        if role is None:
+            if default_role is None:
+                raise SystemExit(
+                    f"--knob {key}={value} is ambiguous on {runner}, which builds "
+                    f"{len(roles)} Lives ({', '.join(roles)}). Say which: "
+                    f"--knob {roles[0]}:{name}={value}")
+            role = default_role
+        if role not in by_role:
+            raise SystemExit(
+                f"--knob {key}={value}: {runner} has no {role!r}. "
+                f"Roles here: {', '.join(roles)}")
+        by_role[role][name] = value
+    return by_role
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pipeline", action="store_true",
@@ -3190,11 +3308,13 @@ def main() -> None:
     ap.add_argument("--woodsman", action="store_true",
                     help="run ONE lumberjack living the full loop (chop -> process -> "
                          "sell -> bank, and replace a broken axe) via WoodsmanLife")
-    ap.add_argument("--knob", action="append", metavar="KEY=VALUE", default=[],
-                    help="tune one Life threshold, repeatable (e.g. --knob bank_reserve=400). "
-                         "Only --carpenter and --woodsman carry the channel. Every key must "
-                         "be a knob the Life routes through anima2/knobs.py; an unknown one "
-                         "fails at spec construction, before the shard connection")
+    ap.add_argument("--knob", action="append", metavar="[ROLE:]KEY=VALUE", default=[],
+                    help="tune one Life threshold, repeatable (e.g. --knob bank_reserve=400, "
+                         "or --knob carpenter:bank_reserve=400 on a runner with two Lives). "
+                         "Carried by --carpenter, --woodsman, --forge-pair, --supply-pair, "
+                         "--warriors and --pipeline; --supply-pair REQUIRES the role prefix. "
+                         "Every key must be a knob the Life routes through anima2/knobs.py; "
+                         "an unknown key or role fails before the shard connection")
     ap.add_argument("--monitor", action="store_true",
                     help="serve a read-only web view of each agent (loopback only); "
                          "the URL per agent is printed at startup")
@@ -3259,46 +3379,65 @@ def main() -> None:
                      help="gate LLM speech on Persona.talkativeness (Phase 6 item 5; "
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
-    knobs = _parse_knobs(args.knob)
-    # A knob the run silently ignores is the wireless-channel defect wearing a CLI:
-    # the operator believes a threshold was tuned and reads the run as if it were.
-    if knobs and not (args.carpenter or args.woodsman):
-        raise SystemExit("--knob needs --carpenter or --woodsman; no other runner "
-                         "carries the tuning channel, and ignoring it silently would "
-                         "misreport what the run actually ran")
+    parsed_knobs = _parse_knobs(args.knob)
+    # Every branch routes its own knobs now. The blanket guard this replaces —
+    # "--knob needs --carpenter or --woodsman" — was an allowlist of the two runners that
+    # carried the channel, and it was correct only while the other five construction
+    # sites were wireless (audit follow-up 2).
     if args.forge_pair:
+        k = _route_knobs(parsed_knobs, ("tinker",), runner="--forge-pair",
+                         default_role="tinker")
         run_forge_pair(host=args.host, port=args.port, ticks=args.ticks,
-                       monitor=args.monitor)
+                       monitor=args.monitor, knobs=k["tinker"])
         return
 
     if args.supply_pair:
+        # No default role ON PURPOSE: two Lives, both with a `bank_reserve`.
+        k = _route_knobs(parsed_knobs, ("woodsman", "carpenter"),
+                         runner="--supply-pair", default_role=None)
         run_supply_pair(host=args.host, port=args.port, ticks=args.ticks,
-                        monitor=args.monitor)
+                        monitor=args.monitor,
+                        woodsman_knobs=k["woodsman"], carpenter_knobs=k["carpenter"])
         return
 
     if args.carpenter:
+        k = _route_knobs(parsed_knobs, ("carpenter",), runner="--carpenter",
+                         default_role="carpenter")
         run_carpenter_life(host=args.host, port=args.port, ticks=args.ticks,
-                           monitor=args.monitor, knobs=knobs)
+                           monitor=args.monitor, knobs=k["carpenter"])
         return
 
     if args.woodsman:
+        k = _route_knobs(parsed_knobs, ("woodsman",), runner="--woodsman",
+                         default_role="woodsman")
         run_woodsman_life(host=args.host, port=args.port, ticks=args.ticks,
                           monitor=args.monitor,
-                          persist_insights=args.persist_insights, knobs=knobs)
+                          persist_insights=args.persist_insights, knobs=k["woodsman"])
         return
 
     if args.pipeline:
+        k = _route_knobs(parsed_knobs, ("mage",), runner="--pipeline",
+                         default_role="mage")
         run_artisan_mage_village(host=args.host, port=args.port, ticks=args.ticks,
                                  monitor=args.monitor, steer_mage=args.steer_mage,
                                  account_prefix=args.account_prefix,
-                                 mage_tick_every=args.mage_tick_every)
+                                 mage_tick_every=args.mage_tick_every,
+                                 mage_knobs=k["mage"])
         return
 
     if args.warriors > 0:
+        # One dict for the roster — see `run_warrior_village` for why per-warrior tuning
+        # is a fleet experiment and not a runner argument.
+        k = _route_knobs(parsed_knobs, ("swordsman",), runner="--warriors",
+                         default_role="swordsman")
         run_warrior_village(args.warriors, host=args.host, port=args.port,
-                            monitor=args.monitor,
+                            monitor=args.monitor, knobs=k["swordsman"],
                             ticks=args.ticks, account_prefix=args.account_prefix)
         return
+
+    # The trade-village roster builds plain `Agent`s, not Lives, so it has no thresholds
+    # to tune and says so rather than accepting a knob it would drop.
+    _route_knobs(parsed_knobs, (), runner="the trade-village roster", default_role=None)
 
     roster = (["miner"] * args.miners + ["lumberjack"] * args.lumberjacks
               + ["fisher"] * args.fishers + ["blacksmith"] * args.blacksmiths
