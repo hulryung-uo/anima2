@@ -738,7 +738,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # module-BOTTOM re-exports at the end of this file (`MONITOR_PORT_BASE`,
     # `monitor_ports`) are module-level too, so "every other one is local" was wrong in
     # both halves. One import per worker, not per tick.
-    from .life_runner import frame_retirements
+    from .life_runner import frame_retirements, hp_readout
 
     steps = says = 0
     ticks_done = 0
@@ -862,6 +862,39 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     #: a count. Goal-stack history is bounded at 128, so a count silently under-reports
     #: after an overflow; ids are monotonic, so `> _last_retired` is total.
     _last_retired = 0
+    # DEATH — the fourth self-report, and the one that answers the question the other
+    # three structurally cannot. Follow-up 18, named three times in
+    # `docs/AUDIT-2026-07-29.md` (2026-07-30, follow-up 17, §8.6) and deferred each
+    # time. §8.1's own summary of what the work-liveness line bought: "the tape now
+    # says the miner STOPPED and still cannot say whether he DIED" — a death, a lost
+    # pickaxe and a dead vein all read as `out+176.9 eps=45` frozen forever.
+    #
+    # Two readings, because one of them is not enough:
+    #  - `hp=` on the status line is a LEVEL, and it decays to nothing. Grimm's freeze
+    #    at t=765 would show `hp=DEAD` only on the samples he was still a ghost for; a
+    #    death he was resurrected from before the next ~4s sample is invisible to it,
+    #    and that is precisely the shape §8.1 names as the work-liveness proxy's own
+    #    blind spot ("an agent whose work is dead but which cycles death/resurrection
+    #    once per 240 ticks keeps this counter moving and stays silent").
+    #  - `_deaths` is an EDGE count, read per TICK, so it survives the sampling gap the
+    #    same way the retirement report above does. `deaths=2` beside a frozen `eps=`
+    #    is a different diagnosis from `deaths=0` beside the same frozen `eps=`.
+    #
+    # Counted HERE, off the worker's own observation, rather than read off the
+    # `death_episode` marker `Agent.tick` already maintains — because that marker is
+    # per-AGENT and a Life owns two of them, each with its own `death_observed_dead`
+    # flag, exactly one ticked per orchestrator tick. Both reductions were measured on
+    # a real `CarpenterLife` over `MockBody` rather than argued: for ONE staged death
+    # observed first by the economy agent and then by the hunt agent under the death
+    # override, `hunt + econ` reports **2**; for TWO staged deaths seen by one agent
+    # each, `max(hunt, econ)` reports **1**. A sum double-counts and a max
+    # under-counts, so neither is a death counter. One body has one death; one worker
+    # watching that body counts it once. (This is `_work_recorded`'s lesson —
+    # a Life's telemetry cannot be read off one of its two ledgers — with the opposite
+    # conclusion, because episodes ADD across the two agents and deaths do not.)
+    _was_dead: bool | None = None
+    _deaths = 0
+    _dead_since = 0
     for _ in range(ticks):
         if not agent.body.connected:
             stopped = "DISCONNECTED"
@@ -980,6 +1013,33 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             says += 1
             last_say = action.text
         ticks_done += 1
+        # The death edge, unthrottled for the same reason `FRAME RETIRED` is: one line
+        # per event, not per tick the condition holds. `hp=DEAD` on the status line is
+        # the level signal beside it; the ghost stretch is bounded by the run, so this
+        # cannot outrun the retirement report's own volume. See `_deaths` above for why
+        # it is counted here rather than read off `Agent.memory["death_episode"]`.
+        _dead_now = bool(obs.player.dead)
+        if _was_dead is None:
+            if _dead_now:
+                # Dead on the worker's FIRST observation. Counted, because a run that
+                # begins with a corpse must not read as a run with no deaths — and
+                # named apart from a death this worker WATCHED, because it did not.
+                _deaths, _dead_since = 1, ticks_done
+                print(f"  ** {agent.persona.name}: DEAD at first observation "
+                      f"@({p.x},{p.y}) — counted as death #1, though it happened "
+                      f"before this worker's first tick **")
+        elif _dead_now and not _was_dead:
+            _deaths += 1
+            _dead_since = ticks_done
+            print(f"  ** {agent.persona.name}: DIED at ({p.x},{p.y}) "
+                  f"— death #{_deaths} **")
+        elif _was_dead and not _dead_now:
+            # The recovery, and how long it took. A death that resolves in 30 ticks and
+            # one the agent never comes back from look identical in a death COUNT, and
+            # the second is the one that explains a silent rest-of-run.
+            print(f"  ** {agent.persona.name}: BACK ALIVE at ({p.x},{p.y}) after "
+                  f"{ticks_done - _dead_since} ticks dead (death #{_deaths}) **")
+        _was_dead = _dead_now
         _pulse = (round(agent.episodes.total_reward(), 3), steps, says, p.x, p.y)
         _quiet = _quiet + 1 if _pulse == _last_pulse else 0
         _last_pulse = _pulse
@@ -1016,7 +1076,22 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             # every ~4s and is what an operator actually reads. It is also the only way
             # the next run measures the real `total_recorded` distribution — today's
             # logs cannot supply it.
+            # `hp=` and `deaths=` ride here for EVERY agent on EVERY runner, which is
+            # why they are built in this worker and not in the six runners' own status
+            # loops. `run_forge_pair`'s `grimm[…]` group was where follow-up 18 proposed
+            # putting hp, and one group on one runner is what that would have bought;
+            # every runner prints this snapshot directly beneath its own line, so the
+            # reading lands at the same sample and in the same place on screen for the
+            # forge pair, the supply pair, the warrior village, the artisan+mage
+            # pipeline, `run_village` and `LifeRunner.run` alike.
+            #
+            # `deaths=` prints even at 0, unlike `!stalled` beside it. An ABSENT field
+            # is ambiguous — no deaths, or a build that could not count them — and the
+            # whole point of this pair is to make a frozen `eps=` beside `deaths=0`
+            # (a lost tool, a dead vein) a different diagnosis from the same frozen
+            # `eps=` beside `deaths=3`.
             line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) t={ticks_done} "
+                    f"hp={hp_readout(obs)} deaths={_deaths} "
                     f"out+{agent.episodes.total_reward():.1f} eps={_recorded_now} "
                     f"steps={steps} says={says}")
             if _stalled >= _STALL_TICKS:
@@ -2748,14 +2823,17 @@ def _pipeline_progress(tin_tap, mage) -> str:
         d = min(max(abs(m_obs.player.pos.x - x), abs(m_obs.player.pos.y - y)) for x, y in where)
         near = f" at={where[0]} mage_is={d}away"
     # A frozen agent looks the same as a busy one from the outside, so say plainly
-    # whether the mage is alive and whole — a dead or bleeding mage explains a stalled
-    # hunt far better than any guess about its planner.
-    p = m_obs.player if m_obs else None
-    vit = "?" if p is None else ("DEAD" if p.dead else f"{p.hits}/{p.hits_max}")
-    return (f"artisan[tongs={pack_amount(t_obs, TONGS)} "
+    # whether each side is alive and whole — a dead or bleeding mage explains a stalled
+    # hunt far better than any guess about its planner. ONE definition of that readout:
+    # `life_runner.hp_readout`. This line used to re-derive it inline, which is how the
+    # only hp on any village status line ended up being a copy that no other runner
+    # could reuse — and the ARTISAN, standing right beside it in the same string, had
+    # none at all while being the half of this pipeline that earns the gold.
+    from .life_runner import hp_readout
+    return (f"artisan[hp={hp_readout(t_obs)} tongs={pack_amount(t_obs, TONGS)} "
             f"gold={pack_amount(t_obs, GOLD_GRAPHIC)}] "
             f"purse[mage_sees={ground} artisan_sees={dropped}{near}] "
-            f"mage[hp={vit} gold={pack_amount(m_obs, GOLD_GRAPHIC)} "
+            f"mage[hp={hp_readout(m_obs)} gold={pack_amount(m_obs, GOLD_GRAPHIC)} "
             f"ash={pack_amount(m_obs, SULFUROUS_ASH_GRAPHIC)}]")
 
 

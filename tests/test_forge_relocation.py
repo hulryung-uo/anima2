@@ -208,10 +208,14 @@ class _WalkerWithLedger:
     `Life.episodes` is the HUNT agent's alone, and a carpenter measured 0 there against
     176 in the economy agent over 3000 offline ticks, so a Life whose hunt ledger is
     frozen while it banks gold every few ticks is the NORMAL case and must stay silent.
-    `skill` is `Agent.last_skill_name`, the alarm's arming condition."""
+    `skill` is `Agent.last_skill_name`, the alarm's arming condition.
+
+    `dead_ticks` is the set of the worker's OWN tick numbers (1-based, matching
+    `ticks_done`) on which this agent's observation reports a corpse, so a test can
+    stage a death and a resurrection at known ticks and read the edges back."""
 
     def __init__(self, name, *, produce_every=9, producing_until=10**9, mode=None,
-                 econ_produce_every=None, skill="mine"):
+                 econ_produce_every=None, skill="mine", dead_ticks=(), hits=80):
         from anima2.contract import Walk
 
         self._walk = Walk
@@ -223,10 +227,13 @@ class _WalkerWithLedger:
         self.econ_produce_every = econ_produce_every
         self.last_skill_name = skill
         self.n = 0
+        self.dead_ticks = frozenset(dead_ticks)
         if mode is not None:
             self.mode = mode
         if econ_produce_every is not None:
             self.econ_agent = _EconStandIn()
+
+        owner = self
 
         class _Body:
             connected = True
@@ -235,6 +242,8 @@ class _WalkerWithLedger:
             def observe(self):
                 o = _obs(cursor=False, no_metal=False)
                 o.player.pos = Position(self.x, 50, 0)
+                o.player.hits, o.player.hits_max = hits, hits
+                o.player.dead = owner.n in owner.dead_ticks
                 return o
 
         self.body = _Body()
@@ -454,3 +463,181 @@ def test_a_healthy_reflection_never_mentions_fallback(capsys):
     assert r.fallback_count == 0
     assert "fallback" not in capsys.readouterr().out
     assert out and "east grove" in out[0]
+
+
+# --- DEATH: the reading the tape still could not take (follow-up 18) -----------------
+#
+# `docs/AUDIT-2026-07-29.md` §8.1, on what the work-liveness line above bought: "the
+# tape now says the miner STOPPED and still cannot say whether he DIED". A death, a
+# lost pickaxe and a dead vein all read as `out+176.9 eps=45` frozen forever, and the
+# audit named this gap on 2026-07-30, again as follow-up 17, and again as follow-up 18
+# — three times, unacted each time.
+#
+# Two readings, and each covers the other's blind spot: `hp=` is a LEVEL that says
+# whether the agent is a corpse RIGHT NOW, and `deaths=` is an EDGE count read per
+# TICK, so a death resolved between two ~4s samples still lands. That second shape is
+# not hypothetical: §8.1 names "an agent whose work is dead but which cycles
+# death/resurrection once per 240 ticks" as exactly what the work-liveness proxy
+# misses, because `RecoverDeath` returns terminal statuses that keep `eps=` moving.
+
+
+def test_a_death_is_reported_once_as_an_edge_not_once_per_ghost_tick(capsys):
+    import threading
+
+    from anima2.village import _run_worker
+
+    # Dead for 30 straight ticks — one event, not thirty.
+    agent = _WalkerWithLedger("Grimm", dead_ticks=range(20, 50))
+    status: dict = {}
+    _run_worker(agent, 80, 0, status, threading.Lock(), "miner")
+    out = capsys.readouterr().out
+    assert out.count("DIED") == 1, f"a 30-tick corpse is ONE death: {out}"
+    assert "death #1" in out, out
+    assert out.count("BACK ALIVE") == 1, out
+    # The ghost stretch is reported, because a death recovered from in 30 ticks and one
+    # the agent never comes back from are the same number in a death COUNT.
+    assert "after 30 ticks dead" in out, out
+
+
+def test_hp_and_deaths_ride_the_status_line_for_every_agent():
+    import threading
+
+    from anima2.village import _run_worker
+
+    # While dead: the level signal says so, on the line an operator actually reads.
+    agent = _WalkerWithLedger("Grimm", dead_ticks=range(20, 200))
+    status: dict = {}
+    _run_worker(agent, 40, 0, status, threading.Lock(), "miner")
+    assert "hp=DEAD" in status[0], status[0]
+    assert "deaths=1" in status[0], status[0]
+
+    # ...and after the recovery the level signal has decayed to healthy, which is why
+    # the edge count has to be there beside it: `hp=80/80 deaths=2` is a diagnosis and
+    # `hp=80/80` alone is the same string a miner who never died prints.
+    twice = _WalkerWithLedger("Grimm", dead_ticks=list(range(20, 30)) + list(range(50, 60)))
+    status = {}
+    _run_worker(twice, 80, 0, status, threading.Lock(), "miner")
+    assert "hp=80/80" in status[0], status[0]
+    assert "deaths=2" in status[0], status[0]
+
+
+def test_an_agent_that_never_dies_says_so_rather_than_saying_nothing(capsys):
+    """`deaths=` prints at 0 on purpose. An ABSENT field is ambiguous — no deaths, or a
+    build that could not count them — and the whole point of the pair is to make a
+    frozen `eps=` beside `deaths=0` (a lost tool, a dead vein) a different diagnosis
+    from the same frozen `eps=` beside `deaths=3`."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    agent = _WalkerWithLedger("Bjorn", produce_every=5)
+    status: dict = {}
+    _run_worker(agent, 50, 0, status, threading.Lock(), "lumberjack")
+    assert "deaths=0" in status[0], status[0]
+    assert "hp=80/80" in status[0], status[0]
+    out = capsys.readouterr().out
+    assert "DIED" not in out and "BACK ALIVE" not in out, out
+
+
+def test_a_corpse_on_the_first_observation_is_counted_but_named_apart(capsys):
+    """A run that opens on a corpse must not read as a run with no deaths — and must
+    not claim this worker watched it happen, because it did not."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    agent = _WalkerWithLedger("Grimm", dead_ticks=range(0, 10))
+    status: dict = {}
+    _run_worker(agent, 30, 0, status, threading.Lock(), "miner")
+    out = capsys.readouterr().out
+    assert "DEAD at first observation" in out, out
+    assert "before this worker's first tick" in out, out
+    assert "DIED at" not in out, "it was not watched, so it must not claim to be"
+    assert "deaths=1" in status[0], status[0]
+
+
+def test_a_LIFE_counts_one_death_once_though_it_owns_two_death_markers(capsys):
+    """The mutant this kills is the obvious implementation: read the `death_episode`
+    marker `Agent.tick` already maintains instead of counting the edge in the worker.
+
+    A Life owns TWO Agents, ticks exactly one per orchestrator tick, and each keeps its
+    own `death_observed_dead` flag — so one death observed first by the economy agent
+    and then by the hunt agent (which the death override guarantees) increments BOTH.
+    Measured on this exact fixture: `hunt + econ` reports 2 for the ONE death staged
+    here. The sibling assertion below stages the mirror case, where `max(hunt, econ)`
+    reports 1 for TWO deaths. Neither reduction is a death counter; the worker's own
+    edge count is."""
+    import threading
+
+    from anima2.carpenter_life import CarpenterLife
+    from anima2.contract import PlayerView
+    from anima2.mock_body import MockBody
+    from anima2.village import _run_worker
+
+    def _life(name):
+        body = MockBody(player=PlayerView(serial=PLAYER, name=name, pos=Position(5, 5, 0),
+                                          hits=80, hits_max=80, body=0x190))
+        body.items[BP] = ItemView(serial=BP, graphic=0x0E75, amount=1, pos=Position(),
+                                  container=PLAYER, layer=BACKPACK_LAYER, distance=0)
+        return body, CarpenterLife(body=body, persona=Persona(name=name), routes={})
+
+    # (a) ONE death, seen by the economy agent first — the sum double-counts.
+    body, life = _life("Sten")
+
+    class _Driver:
+        """Ticks the Life, flipping the corpse flag on a schedule, exactly as the worker
+        would see it. `_run_worker` reads `agent.body.observe()`, which the Life's
+        `_CachingBody` serves from THIS tick's cache — so the worker and the Life see
+        the same observation, which is what makes the edge count trustworthy."""
+
+        def __init__(self, life, body, dead_at, alive_at, econ_at=()):
+            self.life, self.body_, self.n = life, body, 0
+            self.dead_at, self.alive_at, self.econ_at = dead_at, alive_at, set(econ_at)
+
+        def __getattr__(self, k):
+            return getattr(self.life, k)
+
+        def tick(self):
+            self.n += 1
+            if self.n == self.dead_at:
+                self.body_.player.dead = True
+            if self.n == self.alive_at:
+                self.body_.player.dead = False
+            if self.n in self.econ_at:
+                self.life.mode = "economy"
+            return self.life.tick()
+
+    driver = _Driver(life, body, dead_at=20, alive_at=60, econ_at=(20,))
+    status: dict = {}
+    _run_worker(driver, 100, 0, status, threading.Lock(), "carpenter")
+    out = capsys.readouterr().out
+    hunt = int(life.hunt_agent.memory.get("death_episode", 0))
+    econ = int(life.econ_agent.memory.get("death_episode", 0))
+    assert (hunt, econ) == (1, 1), (hunt, econ)
+    assert hunt + econ == 2, "the sum really does double-count one death"
+    assert out.count("DIED") == 1, out
+    assert "deaths=1" in status[0], status[0]
+
+    # (b) TWO deaths inside ONE worker's run, one seen by each agent — the max
+    # under-counts. Both resurrections land the tick after the death, so the agent that
+    # did NOT hold that tick never observes the corpse and never increments.
+    body, life = _life("Sten")
+
+    class _TwoDeaths(_Driver):
+        def tick(self):
+            self.n += 1
+            body.player.dead = self.n in (20, 50)
+            if self.n == 20:
+                self.life.mode = "economy"   # death #1 lands on the economy agent
+            return self.life.tick()
+
+    driver = _TwoDeaths(life, body, dead_at=0, alive_at=0)
+    status = {}
+    _run_worker(driver, 90, 0, status, threading.Lock(), "carpenter")
+    out = capsys.readouterr().out
+    hunt = int(life.hunt_agent.memory.get("death_episode", 0))
+    econ = int(life.econ_agent.memory.get("death_episode", 0))
+    assert (hunt, econ) == (1, 1), (hunt, econ)
+    assert max(hunt, econ) == 1, "the max really does under-count two deaths"
+    assert out.count("DIED") == 2, out
+    assert "deaths=2" in status[0], status[0]
