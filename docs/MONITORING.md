@@ -133,10 +133,12 @@ smelt and no deliver on the 126 samples that followed — nothing on the tape sa
 death, a lost tool and a dead vein remain indistinguishable. This is the second sighting of
 the 2026-07-30 health check's "liveness line for NON-Life agents" item.
 
-**Half of that gap is closed as of 2026-08-03, and the half that is closed is "did it stop",
-not "is it alive".** See the two new sections below. The hp half is still missing: the pair
-line still calls `hp_readout` for neither agent, so the tape still cannot say whether the
-miner died. Audit §8.1 and follow-up 18.
+**That gap is closed as of 2026-08-05 — the "did it stop" half on 2026-08-03 and the
+"is it alive" half now.** See the two new sections below. Note the fix did NOT land where
+follow-up 18 proposed it (an `hp=` inside `run_forge_pair`'s `grimm[…]` group): that is one
+group on one runner. It landed in `_run_worker`, which every runner drives, so the reading
+covers the forge pair, the supply pair, the warrior village, the artisan+mage pipeline,
+`run_village` and `LifeRunner.run` alike.
 
 ## Work-liveness: `eps=`, `NO OUTPUT`, `!stalled` (2026-08-03)
 
@@ -177,6 +179,48 @@ shape has never been observed; it is the known hole.
 
 **Never run on a shard.** Every number above is read off the two existing forge logs or
 produced offline. Audit §8.1 and §8.5.
+
+## Death: `hp=`, `deaths=`, `DIED` / `BACK ALIVE` (2026-08-05)
+
+The other half of follow-up 17, named three times before it was built (2026-07-30, follow-up
+17, follow-up 18). The work-liveness line above says an agent STOPPED; this says whether it
+DIED, which is the difference between a corpse, a lost pickaxe and a dead vein.
+
+| surface | what it is |
+|---|---|
+| `hp=<n>/<max>` \| `hp=DEAD` \| `hp=?` on the per-agent status line | the LEVEL signal, via `life_runner.hp_readout` — the one definition, now the only one (`_pipeline_line` used to re-derive it inline, and that copy was the only hp on any village line). |
+| `deaths=N` on the per-agent status line | the EDGE count, printed for every agent **including at 0**. |
+| `** <name>: DIED at (x,y) — death #N **` | one line per death, unthrottled — an EDGE, like `FRAME RETIRED` and unlike `FRAME OVERDUE`'s level signal. |
+| `** <name>: BACK ALIVE at (x,y) after <n> ticks dead (death #N) **` | the recovery and how long it took. A death resolved in 30 ticks and one the agent never returns from are the same number in a death COUNT. |
+| `** <name>: DEAD at first observation @(x,y) — counted as death #1, though it happened before this worker's first tick **` | a run that opens on a corpse. Counted, so the run does not read as death-free; named apart, because this worker did not watch it happen. |
+
+**Why both, and not just `hp=`.** The level decays. Run the same frozen-miner shape twice,
+once with two deaths in it, and the ONLY difference in the entire tape is one field — the
+two runs below are real output from this tree, identical in `out+`, `eps=`, `steps=`,
+`!stalled` and `hp=`:
+
+```
+Grimm     miner      @(395,50) t=345 hp=80/80 deaths=0 out+0.0 eps=11 steps=345 says=0 !stalled  [BUDGET SPENT · STALLED 246]
+Grimm     miner      @(395,50) t=345 hp=80/80 deaths=2 out+0.0 eps=11 steps=345 says=0 !stalled  [BUDGET SPENT · STALLED 246]
+```
+
+That shape is not hypothetical — it is the exact hole the section above names as its own:
+an agent cycling death/resurrection keeps `eps=` moving through `RecoverDeath`'s terminal
+statuses and stays silent under the work-liveness alarm. `deaths=` is what closes it.
+
+**Why the count is not read off `Agent.memory["death_episode"]`.** That marker already
+exists and `Agent.tick` maintains it — but it is per-AGENT and a Life owns two, each with
+its own `death_observed_dead` flag, exactly one ticked per orchestrator tick. Measured on a
+real `CarpenterLife` over `MockBody`, not argued: for ONE death seen first by the economy
+agent and then by the hunt agent under the death override, `hunt + econ` reports **2**; for
+TWO deaths seen by one agent each, `max(hunt, econ)` reports **1**. A sum double-counts, a
+max under-counts. One body has one death, and the worker watching that body counts it once.
+Both reductions are pinned as failing mutants in `tests/test_forge_relocation.py`.
+
+**Never run on a shard.** Offline only. What a live run would add: whether a real death is
+observed at all on the pair runners (no forge log has ever contained one), and whether the
+ghost stretch is short enough that `hp=DEAD` ever appears on a ~4s sample — it may not, which
+is the whole reason `deaths=` is read per tick.
 
 ## Frame retirements: `retired=` and `FRAME RETIRED` (2026-08-03)
 

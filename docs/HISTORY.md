@@ -749,9 +749,10 @@ ended `!stalled` while behaving exactly as specified. So a new pure-telemetry fi
 also excluded every Life (`mode is None`), which left `run_supply_pair` and
 `run_warrior_village` with ZERO coverage; summing both ledgers replaced it — a healthy offline
 carpenter records 0 in its hunt ledger against 234 in its economy one over 4000 ticks, with a
-worst combined silence of 17 ticks. **Half the follow-up is still open: the tape now says an
-agent STOPPED, and still cannot say whether it DIED** — `run_forge_pair` calls `hp_readout` for
-neither agent. (2) **The `buy_iron` wedge that ate 556 live ticks is fixed offline, and its
+worst combined silence of 17 ticks. **Half the follow-up was still open at this point: the tape
+now said an agent STOPPED, and still could not say whether it DIED** — `run_forge_pair` called
+`hp_readout` for neither agent. (Closed 2026-08-05; see the entry below.)
+(2) **The `buy_iron` wedge that ate 556 live ticks is fixed offline, and its
 mechanism is named** — three defects, not the one the audit guessed at: `buy_offer_reopens`
 survived its own trip, so one unlucky trip left every later trip giving up on its first
 `window` tick; the "re-roll" emitted no action against a window that is a SNAPSHOT, so it
@@ -774,6 +775,34 @@ a shard, `live_frame_overdue_gate.py` was not re-run (bound 3 is neither reconfi
 regressed), and the two live buy gates, which had to be taught that an empty-list `BuyItems` is
 a CANCEL and not a purchase, have never executed with that change. Detail:
 `docs/AUDIT-2026-07-29.md` 2026-08-03 §8, follow-ups 16/17 (updated) and 18-22 (new).
+
+**Whether the agent DIED — the reading the tape still could not take, at the FOURTH time of
+asking (2026-08-05).** The process finding outranks the code again: this was named on
+2026-07-30, again as follow-up 17, again as follow-up 18 ranked *"above everything else on
+this list"*, and sat two more days. A death, a lost pickaxe and a dead vein all produced the
+same evidence — `out+176.9` frozen, `eps=45` frozen, position still moving because the miner
+kept relocating. Now `hp=<n>/<max>|DEAD` and `deaths=N` ride the per-agent status line, with
+unthrottled `** DIED at (x,y) — death #N **` / `** BACK ALIVE … after n ticks dead **` edges
+beside them. **Both readings are needed and this was measured, not asserted**: two runs of the
+same frozen-miner shape, one with two deaths in it, produce status lines identical in `out+`,
+`eps=`, `steps=`, `!stalled` **and `hp=`** — the level signal decays when the agent is
+resurrected, and the only field that differs in the entire tape is `deaths=0` vs `deaths=2`.
+That is exactly the hole the work-liveness alarm documented as its own: an agent cycling
+death/resurrection keeps `eps=` moving through `RecoverDeath`'s terminal statuses. It landed
+in **`village._run_worker`**, not in `run_forge_pair`'s `grimm[…]` group as follow-up 18
+specified — one group on one runner cannot carry a one-tick edge against a 4.0 s sampling
+loop, and the worker covers all six runners, already holds the tick's observation, and prints
+its snapshot directly beneath every runner's aggregate line. `_pipeline_line`'s inline
+re-derivation of the same readout is gone (it was the only hp on any village line and no
+other runner could reach it), and the artisan beside it — the half of that pipeline that earns
+the gold — has one for the first time. **The obvious one-line implementation is wrong, and it
+was measured rather than reasoned about**: `Agent.memory["death_episode"]` already counts
+alive→dead edges, but a Life owns TWO agents with separate memories and ticks one per
+orchestrator tick, so on a real `CarpenterLife` a `sum` reports **2** for one death and a
+`max` reports **1** for two. Both are pinned as mutants failing 4 of 18 tests each, each on
+the assertion written for it. **Offline only** — the shard was still down, and no forge log
+has ever contained a death. 1495 → **1500 tests**, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §9, `docs/MONITORING.md`.
 
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",

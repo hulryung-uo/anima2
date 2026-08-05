@@ -160,16 +160,26 @@ added bound 3. So the standing count is bounds 2 and 3 live-proven, bound 1 not.
   line immediately before it instead (audit §7.6).
 
 Full evidence: `docs/AUDIT-2026-07-29.md`, 2026-08-03 §5 (the fix), §6 (the three ordinary
-live runs) and §7 (the bound-3 gate), follow-ups 12, 15, 16, 17. **Two separate, non-hold defects those runs found are still
-open.** (1) A stale vendor BUY window that would not clear ate the last 556 ticks of the
-1800-tick run (follow-up 16) — the `+2528g/h` final-sample rate is an average over a run
-whose last third earned nothing. (2) **The miner stopped producing at t=765 and nothing
-flagged it** (follow-up 17): the flagship miner→tinker chain did bank 503g (+585g net) over
-1800 ticks, but Grimm's cumulative reward froze at `out+176.9` and never moved again, and he
-never smelted or delivered on any of the 126 remaining samples — five of the six deposits,
-and everything above the first 23g, were the tinker working through ONE 69-ingot delivery
-that landed at t≈756. The chain's supply side stopped at 43% of the run, which the headline
-numbers do not show.
+live runs) and §7 (the bound-3 gate), follow-ups 12, 15, 16, 17. **Two separate, non-hold
+defects those runs found are now REDUCED, not closed — and this paragraph called them "still
+open" for a day after they were fixed, which is the staleness this file has already been
+burned by once.** (1) A stale vendor BUY window that would not clear ate the last 556 ticks
+of the 1800-tick run (follow-up 16) — the `+2528g/h` final-sample rate is an average over a
+run whose last third earned nothing. A trip now cancels the window it opened and the
+per-trip re-roll counter is cleaned up, and a 1200-tick run cut `ui=shopbuy` from 75/208
+samples to 2/136 — but a buy still stalled to 176/180 and expired on its deadline, so the
+wedge is reduced and not gone. (2) **The miner stopped producing at t=765 and nothing flagged
+it** (follow-up 17): the flagship miner→tinker chain did bank 503g (+585g net) over 1800
+ticks, but Grimm's cumulative reward froze at `out+176.9` and never moved again, and he never
+smelted or delivered on any of the 126 remaining samples — five of the six deposits, and
+everything above the first 23g, were the tinker working through ONE 69-ingot delivery that
+landed at t≈756. The chain's supply side stopped at 43% of the run, which the headline
+numbers do not show. **Both halves of the missing readout now exist**: a work-liveness alarm
+(`eps=`/`NO OUTPUT`/`!stalled`, live-fired twice and truly on a 1200-tick run) says an agent
+STOPPED, and as of 2026-08-05 `hp=`/`deaths=`/`DIED`/`BACK ALIVE` on every agent of every
+runner says whether it DIED — the distinction between a corpse, a lost pickaxe and a dead
+vein, which no log before could make. The death half is OFFLINE ONLY; no forge log has ever
+contained a death. Audit §9, `docs/MONITORING.md`.
 
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
