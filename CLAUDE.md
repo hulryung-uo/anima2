@@ -63,11 +63,19 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
 
 - **(b) MET.** The miner→tinker tongs pair is live-proven at positive margin (audit
   proposal 6; forge8/forge14 banked deposits), so gold-per-life measures something.
-- **(a) STILL PARTIAL — do not read it as done.** Two of seven Life-construction sites
-  are now steerable END TO END: `village.run_carpenter_life(knobs={...})` and
-  `run_woodsman_life(knobs={...})` take a caller-side dict and forward it
-  `LifeSpec.knobs` → `LifeRunner.build_life` → the Life's own memory/attributes, every
-  reader clamped in `anima2/knobs.py`. Before 2026-08-02 the whole channel was WIRELESS:
+- **(a) STILL PARTIAL — and the partial half MOVED on 2026-08-05, so read the split
+  carefully.** **All SEVEN Life-construction sites are now steerable end to end**, up
+  from two: the two `LifeSpec` runners (`village.run_carpenter_life(knobs={...})`,
+  `run_woodsman_life(knobs={...})`) forward `LifeSpec.knobs` → `LifeRunner.build_life`,
+  and the five inline ones (`run_forge_pair`'s tinker — the FLAGSHIP positive-margin
+  chain — `run_supply_pair`'s woodsman AND carpenter, `run_warrior_village`'s roster,
+  `run_artisan_mage_village`'s mage) go through `life_runner.build_tuned_life`, which
+  reads the allowlist off the class it builds. Every reader clamped in `anima2/knobs.py`;
+  every runner validates BEFORE its first packet (mutation-tested — with a late check the
+  forge pair swallows the typo as two login failures and prints "the pair needs both;
+  aborting"). `--knob [ROLE:]KEY=VALUE` reaches all six Life-bearing runners, and
+  `--supply-pair` REQUIRES the role prefix because both its Lives have a `bank_reserve`.
+  Before 2026-08-02 the whole channel was WIRELESS:
   proposal 5's constructor parameters existed but no production site could pass one.
   **The channel is LIVE-PROVEN end to end as of 2026-08-03.** `python -m anima2.village
   --carpenter --knob bank_reserve=400 --ticks 300` against a real ServUO shard printed
@@ -81,19 +89,23 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
   400, so no banking decision could differ), so the CHANNEL is proven and STEERING is
   not. Run recorded in `docs/AUDIT-2026-07-29.md` (2026-08-03 entry).
   **What is still missing is the half §E's criterion is actually about — a SEARCHER on
-  the other end.** `foundry/archive.py::Genome`'s four axes (`profession`, `sociability`,
-  `deliver_threshold`, `cognition_tier`) map onto no `LifeSpec.knobs` entry at all, so no
-  genome yet steers any Life; the four inline runners (`run_supply_pair`,
-  `run_forge_pair`, `run_warrior_village`, `run_artisan_mage_village` — five of the seven
-  sites, and the flagship positive-margin miner→tinker pair is among them) build their
-  Lives with no factory and have no seam to forward through; only four thresholds ride
-  the channel at all (`bank_reserve`, `econ_grace`, `disagreement_ticks`, the tinker's
+  the other end, and closing the construction sites did NOT touch it.** The channel is
+  now complete and there is still nothing at the far end pushing values into it:
+  `foundry/archive.py::Genome`'s four axes (`profession`, `sociability`,
+  `deliver_threshold`, `cognition_tier`) map onto no knob at all, so no genome steers any
+  Life — and three of those four are not knob-shaped even in principle (`profession` is
+  identity and is REFUSED by the allowlist by design, `sociability` is a `Persona` field,
+  `cognition_tier` builds an LLM client), so the bridge is a design question and not a
+  wiring one. `foundry/eval.py::_build_agent` builds a bare `Agent` with one work skill,
+  never a Life, so the fitness harness has never measured a Life at all. Only four
+  thresholds are knobs (`bank_reserve`, `econ_grace`, `disagreement_ticks`, the tinker's
   `bank_trip_surplus`); §E's retreat thresholds and rest timing cannot become knobs while
   the capability manifest validator forbids per-instance survival state; and the one live
-  run to use a tuned knob used ONE, on the cheapest of the two wired runners, where it
-  changed nothing it could have changed.
+  run to use a tuned knob used ONE, on the cheapest runner, where it
+  changed nothing it could have changed — **no tuned knob has ever changed a live
+  trajectory, which is §E's criterion word for word.**
   Detail and follow-ups: `docs/AUDIT-2026-07-29.md` (2026-08-02 entry, follow-ups 2-4;
-  2026-08-03 entry for the live proof).
+  2026-08-03 entry for the live proof; §10 for the seven-site wiring).
 
 Do NOT burn a multi-hour single-GM live budget on the rerun before that; a
 stale "Next:" pointer here almost caused exactly that (`docs/AUDIT-2026-07-29.md`).

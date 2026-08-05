@@ -804,6 +804,39 @@ the assertion written for it. **Offline only** — the shard was still down, and
 has ever contained a death. 1495 → **1500 tests**, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §9, `docs/MONITORING.md`.
 
+**All seven Life-construction sites can be tuned, and the searcher still cannot tune them
+(2026-08-05).** Audit follow-up 2, closed. Two of seven sites had the channel; the other
+five were hand-written `XLife(...)` calls inside `run_forge_pair` (the FLAGSHIP
+positive-margin tinker), `run_supply_pair` (a woodsman AND a carpenter),
+`run_warrior_village` and `run_artisan_mage_village`. The hazard the follow-up named was
+never the missing argument — it was *"threading a dict through hand-written construction
+per runner (no single point that stays true)"*, i.e. five copies of a check whose only
+value is that everyone runs it identically. So the change is three shared pieces and four
+thin call sites: `validate_knobs` (the check and its refusal text, lifted out of
+`LifeSpec.__post_init__`, which delegates now), `build_tuned_life` (`LifeRunner.build_life`
+for runners with no spec, reading the allowlist off the CLASS so no site can declare the
+wrong one — which `LifeSpec`, whose factory is a lambda, structurally cannot do), and
+`_route_knobs` (CLI role routing, replacing a blanket guard that was an allowlist of the
+two wired runners rather than a property). **The PLACEMENT is the part a shared helper
+cannot choose for you**, and the mutation test found the mutant is worse than a late
+traceback: with the pre-flight check removed, `run_forge_pair`'s login loop catches the
+resulting exception per role and a one-character typo prints *"the pair needs both;
+aborting"* — two spawned accounts and a message blaming the shard. `--knob
+[ROLE:]KEY=VALUE` now reaches all six Life-bearing runners; `--supply-pair` REQUIRES the
+prefix, because both its Lives have a `bank_reserve` and picking one silently is the same
+misreporting the roster refusal exists to stop. Two single-source repairs fell out of it:
+`tinker_life.bank_trip_surplus` became a named read point when the staged banner became
+its second reader, and `run_supply_pair` prints reserves at all for the first time.
+**What this does NOT do is the half §E's criterion is about.** The channel is complete and
+nothing is pushing values into it: `Genome`'s four axes map onto no knob, and three of them
+are not knob-shaped even in principle (`profession` is identity and the allowlist REFUSES
+it by design, `sociability` is a `Persona` field, `cognition_tier` builds an LLM client),
+so a genome→Life bridge is a design question and not wiring. `foundry/eval.py::_build_agent`
+builds a bare `Agent` and has never measured a Life at all. **Offline only** — the shard is
+still down, and no tuned knob has ever changed a live trajectory on any site, which is §E's
+criterion word for word and why precondition (a) is still not met. 1500 → **1506 tests**,
+ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §10.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
