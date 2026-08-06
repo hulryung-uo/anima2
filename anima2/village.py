@@ -1934,7 +1934,15 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
                       for v in c_routes.values()), default=1)
     sten_leash = min(max(1, shop_reach), PICKUP_RADIUS - 1)
     sten.set_leash(drop, sten_leash)
-    print(f"  Sten leashed to the drop at {sten_leash} tiles "
+    # Report what is IN FORCE, not what was asked for. `sten_leash` is the DERIVED
+    # default and a `wander_leash` knob outranks it (see `WarriorLife.set_leash`), so
+    # printing the local would start lying the moment anyone tuned this runner — the
+    # same defect `run_carpenter_life`'s banner had before it read the built Life, and
+    # the reason `run_forge_pair`'s survived becoming tunable unchanged.
+    from .skills.movement import wander_leash
+    effective = wander_leash(sten.econ_agent.memory)
+    tuned = "" if effective == sten_leash else f", TUNED from a derived {sten_leash}"
+    print(f"  Sten leashed to the drop at {effective} tiles{tuned} "
           f"(shops reach {shop_reach}, pickup radius {PICKUP_RADIUS})")
     # Both reserves read off the BUILT Lives through `market._bank_reserve` — the clamp
     # the decide rule, the `bank_gold` gate and `BankGold`'s FSM all share. This runner
@@ -2168,10 +2176,12 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     # (2026-08-03, `reserve 400` against a module default of 129) is what this now makes
     # available on the flagship pair. Both of the tinker's knobs are here: a channel whose
     # value an operator cannot see is one they will read the run as if it had not carried.
+    from .skills.movement import wander_leash
     from .tinker_life import bank_trip_surplus
     print(f"staged: Grimm@({mgx},{mgy}) -> drop {TRADE_SMITH_SPOT} -> Pim@({tgx},{tgy}) "
           f"(reserve {_bank_reserve(pim.econ_agent.memory)}, "
-          f"trip surplus {bank_trip_surplus(pim.econ_agent.memory)}, both broke)\n")
+          f"trip surplus {bank_trip_surplus(pim.econ_agent.memory)}, "
+          f"leash {wander_leash(pim.econ_agent.memory)}, both broke)\n")
 
     status: dict[int, str] = {}
     lock = threading.Lock()

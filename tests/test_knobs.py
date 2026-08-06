@@ -680,3 +680,76 @@ def test_the_forge_pairs_banner_would_report_a_tuned_value_not_the_module_defaul
     bad = build_tuned_life(TinkerLife, {"bank_trip_surplus": -5}, body=_MockBody(),
                            persona=Persona(name="Pim"), routes={})
     assert bank_trip_surplus(bad.econ_agent.memory) == 0
+
+
+# --- wander_leash: the axis that arrived through a second channel ---------------------
+#
+# Audit follow-up 4: "`wander_leash` is the cheapest remaining axis (§E's 'exploration
+# radius') and needs no Life work — but it arrives through `Staged.leash`, a DIFFERENT
+# channel, and `skills/movement.py::Wander._homeward` clamps it its own way." That
+# divergence was carved out in `knobs.py`'s own opening paragraph, which is how a
+# single-source module quietly stops being one.
+
+
+def test_the_leash_is_a_life_knob_like_every_other_threshold():
+    """It travels as a MEMORY KEY, not an instance attribute: `Wander` is a skill and
+    reads `ctx.memory`, so an attribute would be invisible to the only thing that uses
+    it. Same split as `bank_reserve` — written raw, clamped by its one reader."""
+    from anima2.life_runner import build_tuned_life
+    from anima2.skills.movement import wander_leash
+    from anima2.tinker_life import TinkerLife
+    from anima2.warrior_life import WarriorLife
+
+    assert "wander_leash" in WarriorLife.KNOBS
+    life = build_tuned_life(TinkerLife, {"wander_leash": 3}, body=_MockBody(),
+                            persona=Persona(name="Pim"), routes={})
+    for memory in (life.hunt_agent.memory, life.econ_agent.memory):
+        assert wander_leash(memory) == 3
+    # Unset changes nothing, byte for byte: the key is simply absent and `Wander`'s own
+    # class default stands.
+    plain = build_tuned_life(TinkerLife, None, body=_MockBody(),
+                             persona=Persona(name="Pim"), routes={})
+    assert "wander_leash" not in plain.econ_agent.memory
+
+
+def test_a_tuned_leash_outranks_the_runners_derived_one():
+    """The only knob with a precedence question, because it is the only one something
+    else already writes: every runner calls `set_leash(home, derived)` AFTER
+    construction. If that write won, the channel would report success and change nothing
+    — which is the wireless-channel defect this whole thread has been closing, wearing a
+    knob that looks wired."""
+    from anima2.carpenter_life import CarpenterLife
+    from anima2.life_runner import build_tuned_life
+    from anima2.skills.movement import wander_leash
+
+    tuned = build_tuned_life(CarpenterLife, {"wander_leash": 3}, body=_MockBody(),
+                             persona=Persona(name="Sten"), routes={})
+    tuned.set_leash((10, 20), 9)         # the derived value a runner would pass
+    for memory in (tuned.hunt_agent.memory, tuned.econ_agent.memory):
+        assert wander_leash(memory) == 3, "the derived write clobbered the tuned value"
+        # ...and the HOME still lands. It is not a knob and has no contest.
+        assert memory["wander_home"] == (10, 20)
+
+    # Untuned, the derived value is exactly as authoritative as it has always been —
+    # Sten's leash is live-caught (he drifted three tiles off his own supply drop) and
+    # this must not weaken it.
+    plain = build_tuned_life(CarpenterLife, None, body=_MockBody(),
+                             persona=Persona(name="Sten"), routes={})
+    plain.set_leash((10, 20), 9)
+    assert wander_leash(plain.econ_agent.memory) == 9
+
+
+def test_an_exploring_leash_axis_is_clamped_like_every_other_knob():
+    """A genome axis explores; it does not stop at the shipped value. The floor is 1
+    rather than `knob_int`'s natural 0 because 0 is catastrophic for THIS threshold: the
+    only tile inside a 0-leash is `wander_home` itself, so the agent steers home on every
+    tick it is not standing on it and never wanders at all."""
+    from anima2.life_runner import build_tuned_life
+    from anima2.skills.movement import LEASH_FLOOR, wander_leash
+    from anima2.warrior_life import WarriorLife
+
+    for bad in (-40, 0, True, 2.5, "6"):
+        life = build_tuned_life(WarriorLife, {"wander_leash": bad}, body=_MockBody(),
+                                persona=Persona(name="Bram"), routes={})
+        assert wander_leash(life.econ_agent.memory) == LEASH_FLOOR, repr(bad)
+    assert LEASH_FLOOR == 1

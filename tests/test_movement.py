@@ -300,9 +300,40 @@ def test_the_leash_length_is_overridable_per_agent():
     assert worst < Wander.leash, "the override must actually bind tighter than the default"
 
 
-def test_a_malformed_leash_falls_back_to_the_default():
+def test_a_malformed_leash_lands_on_the_floor_every_other_knob_uses():
+    """This used to fall back to the CLASS DEFAULT, and that was `anima2/knobs.py`'s one
+    standing exception — a second tuning channel with a second clamp, carved out in that
+    module's own opening paragraph (audit follow-up 4).
+
+    The unification went toward the floor rather than toward the fallback because the
+    fallback is the wrong rule for a SEARCHED axis: it makes the mapping discontinuous
+    (2 -> 2, 1 -> 1, -1 -> 8), so a mutation stepping one below the floor leaps to the
+    shipped default instead of resting on the boundary. See
+    `skills/movement.py::wander_leash`."""
+    from anima2.skills.movement import LEASH_FLOOR, wander_leash
+
     home = (100, 100)
-    for bad in (None, -1, "3", 2.5, True):
+    for bad in (None, -1, "3", 2.5, True, 0):
+        assert wander_leash({"wander_leash": bad}) == LEASH_FLOOR, repr(bad)
         seen = _walk_until_settled(home, {"wander_home": home, "wander_leash": bad}, ticks=40)
         worst = max(chebyshev(Position(px, py), Position(*home)) for px, py in seen)
-        assert worst <= Wander.leash + 2, f"leash={bad!r} let it reach {worst} tiles"
+        # Tighter than the old class-default fallback, and that is the point: it must
+        # not silently behave as if the malformed value had been the shipped 8.
+        assert worst < Wander.leash, f"leash={bad!r} let it reach {worst} tiles"
+    # ABSENT is still the caller's default — the one absence convention `knob_int` keeps
+    # distinct from a present-but-malformed write.
+    assert wander_leash({}) == Wander.leash
+    assert wander_leash({}, 3) == 3
+
+
+def test_the_leash_is_read_through_the_one_clamp_and_not_a_copy_of_it():
+    """`knobs.py` exists because a threshold read raw by one side and clamped by the
+    other is the rule-vs-gate drift class. It claimed to be the ONE read point while this
+    knob rode a second one; now `_homeward` and every reporter call the same function."""
+    from anima2.knobs import knob_int
+    from anima2.skills.movement import LEASH_FLOOR, wander_leash
+
+    for stored in (None, -1, "3", 2.5, True, 0, 1, 2, 40):
+        memory = {"wander_leash": stored}
+        assert wander_leash(memory) == knob_int(memory, "wander_leash", Wander.leash,
+                                                floor=LEASH_FLOOR), repr(stored)

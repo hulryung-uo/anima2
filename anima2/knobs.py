@@ -1,13 +1,20 @@
-"""The ONE clamped read every LIFE tuning knob goes through (audit proposal 5, generalized).
+"""The ONE clamped read every tuning knob goes through (audit proposal 5, generalized).
 
-"Life" is the honest scope, not a hedge. `wander_leash` is a tunable threshold too, and it
-does NOT come through here: it arrives via `Staged.leash`, is written to both agent
-memories by `WarriorLife.set_leash`, and `skills/movement.py::Wander._homeward` clamps it
-its own way — a malformed value falls back to the CLASS DEFAULT rather than to a floor,
-which is a different rule from `_clamped`'s. Unifying the two is audit follow-up 4 and is
-small; claiming "every knob" while that one rides a second channel with a second clamp is
-how a single-source module quietly stops being one.
+**The scope used to be narrower than the name, and this paragraph used to say so.** Until
+2026-08-05 it read: *"'Life' is the honest scope, not a hedge. `wander_leash` is a tunable
+threshold too, and it does NOT come through here ... a malformed value falls back to the
+CLASS DEFAULT rather than to a floor, which is a different rule from `_clamped`'s ...
+claiming 'every knob' while that one rides a second channel with a second clamp is how a
+single-source module quietly stops being one."* Audit follow-up 4 closed it:
+`skills/movement.py::wander_leash` is that key's single read point and it delegates here,
+so the carve-out is gone and the word "every" is now load-bearing rather than aspirational.
 
+Which direction the unification went is the interesting part, and it is recorded in that
+function: toward the FLOOR, not toward the class-default fallback. The fallback makes the
+mapping discontinuous (2 -> 2, 1 -> 1, -1 -> 8), so a searcher stepping one below the floor
+leaps to the shipped default instead of resting on the boundary. Floor-clamping is the
+monotone shape every other knob already had, and a monotone boundary is what makes an axis
+searchable at all.
 
 A knob is a threshold a genome axis / bandit / slow-loop steering write may set. The
 lesson this module exists to make structural was paid for twice, and both payments are

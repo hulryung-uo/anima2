@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from ..contract import Position, Walk, WalkTo
 from ..geometry import chebyshev, direction_toward
+from ..knobs import knob_int
 from .base import Skill, SkillContext, SkillResult, Status
+
+#: The leash's own floor, and it is 1 rather than 0 for the reason `knobs.py` gives for
+#: `disagreement_ticks`: 0 is a catastrophic value for THIS threshold. At 0 the only tile
+#: inside the leash is `wander_home` itself, so a leashed agent steers home on every tick
+#: it is not standing on it and never wanders at all — the skill's whole job, disabled by
+#: a malformed write. Every production and gate caller already passes >= 1.
+LEASH_FLOOR = 1
 
 
 class Wander(Skill):
@@ -35,9 +43,7 @@ class Wander(Skill):
         if not (isinstance(home, (tuple, list)) and len(home) == 2
                 and all(isinstance(v, int) and not isinstance(v, bool) for v in home)):
             return None
-        leash = ctx.memory.get("wander_leash", self.leash)
-        if not isinstance(leash, int) or isinstance(leash, bool) or leash < 0:
-            leash = self.leash
+        leash = wander_leash(ctx.memory, self.leash)
         here = ctx.obs.player.pos
         target = Position(home[0], home[1], here.z)
         if chebyshev(here, target) <= leash:
@@ -64,6 +70,34 @@ class Wander(Skill):
         ctx.memory["wander_stuck"] = stuck
         ctx.memory["wander_last_pos"] = cur
         return SkillResult(Status.RUNNING, Walk(dir=d, run=False))
+
+
+def wander_leash(memory, default: int | None = None) -> int:
+    """The ONE clamped read of the leash — `market._bank_reserve`'s shape, for the knob
+    that used to be `anima2/knobs.py`'s standing exception.
+
+    That module's docstring carried the carve-out in its own opening paragraph: the leash
+    "does NOT come through here ... a malformed value falls back to the CLASS DEFAULT
+    rather than to a floor, which is a different rule from `_clamped`'s ... claiming
+    'every knob' while that one rides a second channel with a second clamp is how a
+    single-source module quietly stops being one" (audit follow-up 4).
+
+    **The class-default fallback is the wrong rule for a SEARCHED axis, which is why the
+    unification went this way and not the other.** Under it the mapping is
+    discontinuous — `wander_leash=2` gives 2, `1` gives 1, and `-1` jumps to 8 — so a
+    mutation stepping an axis one below its floor would leap the behaviour to the shipped
+    default rather than resting on the boundary. Floor-clamping makes every value at or
+    below the floor collapse to the floor, which is the monotone shape every other knob
+    already has and the one a search can reason about. §E calls this axis "exploration
+    radius"; it is the cheapest one on the list.
+
+    One behaviour change and it is stated rather than hidden: a stored `0` used to be
+    HONOURED (a leash of zero) and now clamps to `LEASH_FLOOR`. Nothing passes 0 — every
+    production and gate caller passes >= 1 — and a 0-tile leash pins the agent to a single
+    tile, which is the skill disabled rather than tuned.
+    """
+    return knob_int(memory, "wander_leash",
+                    Wander.leash if default is None else default, floor=LEASH_FLOOR)
 
 
 class GoTo(Skill):

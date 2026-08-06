@@ -22,6 +22,7 @@ from anima2.life_runner import (
 from anima2.skills.harvest import BACKPACK_LAYER
 from anima2.skills.hunt import GOLD_GRAPHIC
 from anima2.skills.market import BANKBOX_LAYER, SELL_REACH
+from anima2.skills.movement import Wander
 
 PLAYER = 1
 BP = 0x50
@@ -379,10 +380,19 @@ def test_the_staged_line_reports_the_reserve_the_life_actually_keeps():
 
     plain = LifeRunner(_carpenter_spec())
     line = plain.staged_line(plain.build_life(_MockBody(), {}), staged)
-    assert line == f"staged: Sten@(10, 20) and 99g seed  (reserve {BANK_RESERVE})  with a saw"
+    assert line == (f"staged: Sten@(10, 20) and 99g seed  "
+                    f"(reserve {BANK_RESERVE}, leash {Wander.leash})  with a saw")
 
     tuned = LifeRunner(_carpenter_spec(bank_reserve=4242))
-    assert "(reserve 4242)" in tuned.staged_line(tuned.build_life(_MockBody(), {}), staged)
+    assert "(reserve 4242," in tuned.staged_line(tuned.build_life(_MockBody(), {}), staged)
+
+    # The leash is the same fact for the knob that has a SECOND writer: `set_leash` is
+    # called from `run()` with `Staged.leash` after construction, so neither input alone
+    # tells an operator what the Life will actually wander under.
+    leashed = LifeRunner(_carpenter_spec(wander_leash=3))
+    life = leashed.build_life(_MockBody(), {})
+    life.set_leash((10, 20), 9)          # the derived value `run()` would pass
+    assert "leash 3)" in leashed.staged_line(life, staged)
     assert f"reserve {BANK_RESERVE}" not in tuned.staged_line(
         tuned.build_life(_MockBody(), {}), staged)
 
@@ -397,7 +407,8 @@ def test_a_specs_own_econ_memory_reserve_is_what_the_line_reports():
     life = runner.build_life(_MockBody(), {})
     staged = Staged(routes={}, home=(1, 2), econ_memory={"bank_reserve": 77})
     life.econ_agent.memory.update(staged.econ_memory)   # the ordering `run()` uses
-    assert runner.staged_line(life, staged) == "staged: Sten@(1, 2), broke  (reserve 77)"
+    assert runner.staged_line(life, staged) == (
+        "staged: Sten@(1, 2), broke  (reserve 77, leash 8)")
 
 
 def test_a_malformed_reserve_is_reported_at_the_floor_every_reader_sees():
@@ -408,4 +419,4 @@ def test_a_malformed_reserve_is_reported_at_the_floor_every_reader_sees():
 
     runner = LifeRunner(_carpenter_spec(bank_reserve=-500))
     life = runner.build_life(_MockBody(), {})
-    assert "(reserve 0)" in runner.staged_line(life, Staged(routes={}, home=(0, 0)))
+    assert "(reserve 0," in runner.staged_line(life, Staged(routes={}, home=(0, 0)))

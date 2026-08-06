@@ -310,13 +310,15 @@ class WarriorLife:
     #: channel is being built for. `steering` is excluded for the milder version of the
     #: same reason: it is a cognition-tier switch that builds a real LLM client at
     #: construction time, and it is clamped by nothing.
-    KNOBS: frozenset[str] = frozenset({"bank_reserve", "econ_grace", "disagreement_ticks"})
+    KNOBS: frozenset[str] = frozenset({"bank_reserve", "econ_grace", "disagreement_ticks",
+                                       "wander_leash"})
 
     def __init__(self, body, persona: Persona, profession: str = "swordsman",
                  routes: dict | None = None, *,
                  bank_reserve: int | None = None,
                  econ_grace: int | None = None,
                  disagreement_ticks: int | None = None,
+                 wander_leash: int | None = None,
                  steering: str = "scripted") -> None:
         prof = PROFESSIONS[profession]
         #: Steering evidence: every LLM consult as (candidates, chosen, used_llm).
@@ -384,6 +386,25 @@ class WarriorLife:
         #: Ticks a want-vs-refuse standoff must persist before it is reported+repaired.
         self.disagreement_ticks = knob_param(disagreement_ticks, DISAGREEMENT_TICKS,
                                              floor=1)
+        #: §E's "exploration radius", and the cheapest axis on audit follow-up 4's list.
+        #: A MEMORY KEY like `bank_reserve` — `Wander` is a skill and reads `ctx.memory`,
+        #: so an instance attribute would be invisible to it — written RAW here and
+        #: clamped by its one reader (`skills/movement.py::wander_leash`), the same split
+        #: `bank_reserve` uses.
+        #:
+        #: It is the only knob with a PRECEDENCE question, because it is the only one
+        #: something else already writes: every runner calls `set_leash(home, derived)`
+        #: after construction with a value derived from the world (Sten's is
+        #: `min(max(1, shop_reach), PICKUP_RADIUS - 1)`, live-caught after he drifted off
+        #: his own supply drop). A tuned knob that a later derived write silently
+        #: overwrote would be a channel that reports success and changes nothing — the
+        #: exact defect this whole thread has been closing. So the TUNED value wins, and
+        #: `_leash_tuned` is how `set_leash` knows the difference between "nobody has set
+        #: this yet" and "a caller chose it".
+        self._leash_tuned = wander_leash is not None
+        if self._leash_tuned:
+            for memory in (self.hunt_agent.memory, self.econ_agent.memory):
+                memory["wander_leash"] = wander_leash
         self.mode = "hunt"
         self.target_cap: str | None = None
         #: True while the orchestrator is finishing a transaction the rule stopped
@@ -422,10 +443,15 @@ class WarriorLife:
         memory, the economy agent wandered free, and it drifted three tiles off its
         supply drop onto ground it could not walk back from. Its `fetch_boards` goal
         stayed correctly admitted and ready the whole time, walking into a wall.
+
+        `home` is ALWAYS written; `leash` is the runner's DERIVED default and yields to a
+        value tuned at construction. See the `_leash_tuned` comment there — a tuning
+        channel whose value the next line silently overwrites is worse than no channel,
+        because it reports success. The home is not a knob and has no such contest.
         """
         for memory in (self.hunt_agent.memory, self.econ_agent.memory):
             memory["wander_home"] = home
-            if leash is not None:
+            if leash is not None and not self._leash_tuned:
                 memory["wander_leash"] = leash
 
     def set_route(self, key: str, value) -> None:
