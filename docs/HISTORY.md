@@ -862,6 +862,33 @@ banners had to move off a local or a module constant onto a read of the built Li
 searches: `Genome` has no leash field, and adding one is the same design question §10.5
 names. 1506 → **1510 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §11.
 
+**The headline defect class in constant form, merged — and the pair the audit ranked last
+was the dangerous one (2026-08-07).** Audit follow-up 6, closed. The concordance lattice
+catches a rule and a gate disagreeing about a VALUE and structurally cannot catch them
+disagreeing about a DEFINITION, because a constant written twice is numerically locked
+until somebody edits one copy — and the edit IS the failure. Two of the three pairs were
+one DECISION recorded twice (`capabilities._UPGRADE_RESERVE`'s comment was near word-for-word
+`warrior_life.UPGRADE_RESERVE`'s; the fetch gate's said it read the class attribute "so it
+stays in lockstep with the craft gate that consumes it", a property no comment can hold).
+Both moved into the skills layer, the only place both readers can import from — `capabilities`
+importing a Life would be a cycle. **The third was ranked last and described only as
+"`0x0E21` restated as a literal", and it was the one that mattered:** `skills/warrior.
+BANDAGE_GRAPHIC` sat three lines below an import of the frozenset holding the same number,
+and the two were read by OPPOSITE SIDES of one decision — `WarriorLife.decide` counted the
+single art while `buy_bandage`'s gate counts the whole family. Measured on one constructed
+observation with the family grown by one graphic: the rule counts 3 and wants `buy_bandage`,
+the gate counts 23 and refuses — a permanent want-vs-refuse standoff one added graphic away,
+invisible to the concordance suite because a singleton family agrees at every lattice point.
+The rule reads the family now, so both names are bound to the same frozenset object and the
+disagreement is unrepresentable rather than merely absent. `BANDAGE_GRAPHIC` survives, because
+a vendor OFFER is placed against one art and not a family — as `min(BANDAGE_GRAPHICS)`, not
+`next(iter(...))`, since a frozenset has no order and a buy offer that changes identity
+between runs is the worst available failure. The three tests assert `is` rather than `==`
+(equality passes again the moment a second definition computes the same number) and walk the
+AST to reject a bare literal; both mutants fail exactly one test each. **Nothing behavioural
+changed** — every number is identical today and no live evidence is claimed. 1510 →
+**1513 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §12.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
