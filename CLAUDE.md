@@ -97,9 +97,12 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
   identity and is REFUSED by the allowlist by design, `sociability` is a `Persona` field,
   `cognition_tier` builds an LLM client), so the bridge is a design question and not a
   wiring one. `foundry/eval.py::_build_agent` builds a bare `Agent` with one work skill,
-  never a Life, so the fitness harness has never measured a Life at all. Only four
+  never a Life, so the fitness harness has never measured a Life at all. Only FIVE
   thresholds are knobs (`bank_reserve`, `econ_grace`, `disagreement_ticks`, the tinker's
-  `bank_trip_surplus`); §E's retreat thresholds and rest timing cannot become knobs while
+  `bank_trip_surplus`, and `wander_leash` as of 2026-08-05 — §E's "exploration radius",
+  audit follow-up 4 / §11: it used to ride a second channel with a second clamp, and it is
+  the only knob a runner ALSO writes, so a tuned value now outranks `set_leash`'s derived
+  one); §E's retreat thresholds and rest timing cannot become knobs while
   the capability manifest validator forbids per-instance survival state; and the one live
   run to use a tuned knob used ONE, on the cheapest runner, where it
   changed nothing it could have changed — **no tuned knob has ever changed a live

@@ -837,6 +837,31 @@ still down, and no tuned knob has ever changed a live trajectory on any site, wh
 criterion word for word and why precondition (a) is still not met. 1500 → **1506 tests**,
 ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §10.
 
+**The knob that rode a second channel, and §E's first named axis (2026-08-05).** Audit
+follow-up 4, closed. `knobs.py` calls itself "the ONE clamped read every tuning knob goes
+through" and its own opening paragraph had to carve out `wander_leash`, which arrived via
+`Staged.leash` and was clamped a second way inside `Wander._homeward`. The unification went
+toward the FLOOR and not toward the class-default fallback, and that direction is the
+finding: the fallback is DISCONTINUOUS (`-1` → 8 while `1` → 1 and `2` → 2), so a searcher
+stepping one below the floor would leap to the shipped default instead of resting on the
+boundary — disqualifying for a knob whose whole purpose is to be searched. The floor is 1
+rather than `knob_int`'s natural 0 for `disagreement_ticks`' reason: the only tile inside a
+0-leash is `wander_home` itself, so the skill would be disabled rather than tuned. One
+stated behaviour change — a stored `0` used to be honoured and now clamps; nothing passes 0.
+**"Needs no Life work" was the follow-up's one wrong word.** `wander_leash` is the only knob
+something ELSE already writes: every runner calls `set_leash(home, derived)` after
+construction, including Sten's live-caught `min(max(1, shop_reach), PICKUP_RADIUS - 1)`.
+Left alone that write would silently overwrite a tuned value — a channel that reports
+success and changes nothing, which is the exact defect the previous two entries have been
+closing, wearing a knob that LOOKS wired. So the tuned value wins, `_leash_tuned` records
+the difference between "unset" and "chosen", and the derived value keeps every bit of its
+old authority when untuned (mutation-tested: the unconditional write fails 2 tests). Three
+banners had to move off a local or a module constant onto a read of the built Life —
+`LifeRunner.staged_line`, `run_supply_pair` (which now says `TUNED from a derived N`) and
+`run_forge_pair` — the third time in three days. **Offline only**, and it is an axis nothing
+searches: `Genome` has no leash field, and adding one is the same design question §10.5
+names. 1506 → **1510 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §11.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
