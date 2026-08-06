@@ -22,9 +22,12 @@ from anima2.contract import (
     Use,
     Walk,
 )
+import pytest
+
 from anima2.persona import Persona
 from anima2.skills import Blacksmith
 from anima2.skills.base import SkillContext
+from anima2.skills.tinkering import BuyIron, BuyTinkerTool
 from anima2.skills.craft import DAGGER_GRAPHIC
 from anima2.skills.harvest import BACKPACK_LAYER
 from anima2.skills.market import (
@@ -2276,3 +2279,131 @@ def test_the_gate_counting_rule_passes_a_correct_trip_that_re_rolled_and_cancell
         assert orders[0].items == [(IRON_SERIAL, BUY_AMOUNT)], label
         # ...and the old rule, kept here as the reason this test exists.
         assert (len(buys) == 1) is (label == "first opening, window already gone")
+
+
+# --- follow-up 20: the entry edge the tool buy never got -----------------------------
+#
+# `8cdd2f0` gave `_buy_step` an already-open-window branch: the server ignores a fresh
+# popup request while a window is up, so a window left behind by anything else runs the
+# popup counter to its timeout and throws the whole trip away. It was never mirrored into
+# `_toolbuy_step` — "a real asymmetry between two copies of the same FSM", and two copies
+# of one FSM with one fix applied to one of them is this project's headline defect class.
+#
+# The stage is now ONE method (`_buy_popup_stage`) with a namespace argument, so the two
+# cannot diverge again by construction. These tests drive it through BOTH FSMs.
+
+def _popup_trip_mem(ns, *, vendor=VENDOR_SERIAL):
+    return {"vendor_spot": VENDOR, "bs_stand": (0, 0), "mkt_phase": "buy",
+            f"{ns}_stage": "popup", f"{ns}_vendor": vendor}
+
+
+@pytest.mark.parametrize("ns,skill", [("buy", BuyIron()), ("toolbuy", BuyTinkerTool())])
+def test_a_window_already_open_is_adopted_by_BOTH_buy_fsms(ns, skill):
+    """OUR window, already up when the trip reaches the popup stage: use it instead of
+    requesting a menu the server will ignore."""
+    mem = _popup_trip_mem(ns)
+    step = skill._buy_step if ns == "buy" else skill._toolbuy_step
+    ctx = _ctx([_backpack(), _gold(0x900, amount=500)], memory=mem,
+               pos=Position(*VENDOR, 0), mobiles=[_mobile(VENDOR_SERIAL, *VENDOR)],
+               shop_buy=_shieldy_window(), goal_id=7)
+    step(ctx, [VENDOR])
+    assert mem[f"{ns}_stage"] in ("popup", "window"), mem[f"{ns}_stage"]
+    # It reached the `window` stage this very tick rather than emitting a PopupRequest.
+    assert mem.get(f"{ns}_popup_wait") is None
+
+
+@pytest.mark.parametrize("ns,skill", [("buy", BuyIron()), ("toolbuy", BuyTinkerTool())])
+def test_a_FOREIGN_window_is_cancelled_once_and_then_waited_on(ns, skill):
+    """Someone else's window blocks us just as completely, so cancel it — but ONCE. The
+    branch used to re-send the cancel every tick while the observation lag lasted, and
+    (because it returned before the stage's own counter was touched) a window that never
+    closed produced a cancel every tick FOREVER: bounded only by the frame deadline
+    outside this FSM, never by the POPUP_TIMEOUT that exists to bound it."""
+    from anima2.skills.market import POPUP_TIMEOUT
+
+    mem = _popup_trip_mem(ns)
+    step = skill._buy_step if ns == "buy" else skill._toolbuy_step
+    items = [_backpack(), _gold(0x900, amount=500)]
+    foreign = _shieldy_window(vendor=0xDEAD)
+
+    def tick():
+        return step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                         mobiles=[_mobile(VENDOR_SERIAL, *VENDOR)],
+                         shop_buy=foreign, goal_id=7), [VENDOR])
+
+    first = tick()
+    assert first.action == BuyItems(vendor=0xDEAD, items=[]), "cancel the foreign window"
+    # ...and the SECOND tick waits for it to go rather than re-sending the cancel.
+    assert tick().action is None
+
+    # The whole stage is bounded now: a window that never closes ends the trip.
+    for _ in range(POPUP_TIMEOUT + 5):
+        if tick() is None:
+            break
+    else:
+        raise AssertionError("a foreign window that never closes never ends the trip")
+
+
+@pytest.mark.parametrize("ns,skill", [("buy", BuyIron()), ("toolbuy", BuyTinkerTool())])
+def test_the_reroll_budget_survives_the_close_s_own_observation_lag(ns, skill):
+    """The marker follow-up 20 names, and mirroring the branch WITHOUT it would have made
+    the tool buy worse rather than better.
+
+    A window is a SNAPSHOT, so re-reading one that is still visible cannot show a
+    different subset. Without a marker the pre-check re-adopts the window this trip just
+    cancelled and the re-roll budget burns on one snapshot. Driving the real FSMs against
+    a simulated shard, counting FRESH window openings per trip (1 initial + 4 re-rolls):
+
+        lag ticks | 0 | 1 | 2 | 3 | 5
+        no marker | 3 | 3 | 2 | 2 | 1
+        with      | 5 | 5 | 5 | 5 | 5
+
+    identical on both FSMs. The lag costs ticks now, and no attempts.
+    """
+    mem = _popup_trip_mem(ns)
+    mem[f"{ns}_stage"] = "window"
+    step = skill._buy_step if ns == "buy" else skill._toolbuy_step
+    items = [_backpack(), _gold(0x900, amount=500)]
+    window = _shieldy_window()
+
+    # The re-roll fires and marks the window it just cancelled.
+    res = step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                    mobiles=[_mobile(VENDOR_SERIAL, *VENDOR)],
+                    shop_buy=window, goal_id=7), [VENDOR])
+    assert res.action == BuyItems(vendor=VENDOR_SERIAL, items=[])
+    assert mem[f"{ns}_stage"] == "popup"
+    assert mem[f"{ns}_closing_window"] is True
+    assert mem[f"{ns}_offer_reopens"] == 1
+
+    # Lag: the cancelled window is still visible. The pre-check must NOT re-adopt it,
+    # and must not spend another attempt on the same snapshot.
+    for _ in range(3):
+        res = step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                        mobiles=[_mobile(VENDOR_SERIAL, *VENDOR)],
+                        shop_buy=window, goal_id=7), [VENDOR])
+        assert res.action is None, "it re-adopted the window it just cancelled"
+        assert mem[f"{ns}_stage"] == "popup"
+        assert mem[f"{ns}_offer_reopens"] == 1
+
+    # The close lands: the marker clears and the popup cycle resumes.
+    res = step(_ctx(items, memory=mem, pos=Position(*VENDOR, 0),
+                    mobiles=[_mobile(VENDOR_SERIAL, *VENDOR)],
+                    shop_buy=None, goal_id=7), [VENDOR])
+    assert f"{ns}_closing_window" not in mem
+    assert type(res.action).__name__ == "PopupRequest"
+
+
+@pytest.mark.parametrize("ns", ["buy", "toolbuy"])
+def test_the_closing_marker_is_scoped_to_ONE_trip(ns):
+    """`buy_offer_reopens` is in `_CLEANUP_KEYS` because it was NOT, and one unlucky trip
+    poisoned every later one for the life of the process. Left behind, this key would
+    make the next trip's popup stage wait for a window nobody is closing until
+    POPUP_TIMEOUT. Added to the tuple in the same change that introduced it."""
+    from anima2.skills.market import BuyMaterialCapability, BuyToolCapability
+
+    owner = BuyMaterialCapability if ns == "buy" else BuyToolCapability
+    assert f"{ns}_closing_window" in owner._CLEANUP_KEYS
+    # ...and the whole namespace really is cleaned up together, so a key added to the
+    # FSM without a line here is visible as an asymmetry rather than as a live defect
+    # three weeks later.
+    assert f"{ns}_offer_reopens" in owner._CLEANUP_KEYS

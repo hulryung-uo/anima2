@@ -804,45 +804,10 @@ class BlacksmithMarket(Blacksmith):
         vendor_serial = ctx.memory.get("buy_vendor")
 
         if stage == "popup":
-            # A vendor window ALREADY open blocks this stage completely: the server
-            # ignores a fresh popup request while one is up, so the popup counter
-            # just runs to its timeout and throws the trip away. forge15-18 live:
-            # a window left behind by an earlier trip refused every capability
-            # (all sixteen gates share the idle-UI clause) and cost a full goal
-            # lifetime per recurrence, because only the Life's own stale-UI repair
-            # could clear it — and that deliberately waits while a goal owns the
-            # surface. Handle it HERE, where the trip can act immediately: if the
-            # open window is the one we came for, use it; if it belongs to some
-            # other vendor, cancel it (an empty list is ServUO's EndVendorBuy).
-            open_window = obs.shop_buy
-            if open_window is not None:
-                if open_window.vendor == vendor_serial:
-                    stage = ctx.memory["buy_stage"] = "window"
-                else:
-                    return SkillResult(
-                        Status.RUNNING,
-                        BuyItems(vendor=open_window.vendor, items=[]), reward)
-
-        if stage == "popup":
-            # See `_sell_step`'s matching popup block — `_popup_click` re-requests
-            # forever on its own; this bounds the *total* time spent in this
-            # stage across every re-request cycle, giving up on a window that may
-            # simply never arrive (dead/wiped vendor, or a menu-less mobile).
-            total = ctx.memory.get("buy_popup_total", 0) + 1
-            ctx.memory["buy_popup_total"] = total
-            if total > POPUP_TIMEOUT:
-                self._stash_reward(ctx, reward)
-                return None  # the menu never arrived at all — give up this trip
-            action = self._popup_click(ctx, vendor_serial, BUY_CLILOC, "buy_popup_wait")
-            if action is _NO_ENTRY:
-                self._stash_reward(ctx, reward)
-                return None  # this vendor has no Buy entry (not a seller)
-            # Only a `PopupSelect` means the menu was actually open and the entry
-            # chosen — a fresh/re `PopupRequest` (or the quiet `None` wait) must
-            # NOT advance the stage; it's still waiting on the menu.
-            if isinstance(action, PopupSelect):
-                ctx.memory["buy_stage"] = "window"
-            return SkillResult(Status.RUNNING, action, reward)
+            gate = self._buy_popup_stage(ctx, "buy", vendor_serial, reward)
+            if gate is not _ADOPT_WINDOW:
+                return gate  # a SkillResult to emit, or None to give the trip up
+            stage = ctx.memory["buy_stage"] = "window"
 
         if stage == "window":
             buy = obs.shop_buy
@@ -863,6 +828,11 @@ class BlacksmithMarket(Blacksmith):
                 if tries < OFFER_REOPEN_ATTEMPTS:
                     ctx.memory["buy_offer_reopens"] = tries + 1
                     ctx.memory["buy_stage"] = "popup"
+                    # THIS trip cancelled THIS window — see `_buy_popup_stage`. Without
+                    # the marker the pre-check re-adopts it on the next tick, still
+                    # visible through the observation lag, and the whole re-roll budget
+                    # burns on one snapshot (the 4/2/1/1 measurement below).
+                    ctx.memory["buy_closing_window"] = True
                     ctx.memory.pop("buy_popup_wait", None)
                     ctx.memory.pop("buy_ask_wait", None)
                     # CLOSE the window, which is what makes this a re-roll at all.
@@ -1052,18 +1022,15 @@ class BlacksmithMarket(Blacksmith):
         vendor_serial = ctx.memory.get("toolbuy_vendor")
 
         if stage == "popup":
-            total = ctx.memory.get("toolbuy_popup_total", 0) + 1
-            ctx.memory["toolbuy_popup_total"] = total
-            if total > POPUP_TIMEOUT:
-                self._stash_reward(ctx, reward)
-                return None  # the menu never arrived at all — give up this trip
-            action = self._popup_click(ctx, vendor_serial, BUY_CLILOC, "toolbuy_popup_wait")
-            if action is _NO_ENTRY:
-                self._stash_reward(ctx, reward)
-                return None  # this vendor has no Buy entry (not a seller)
-            if isinstance(action, PopupSelect):
-                ctx.memory["toolbuy_stage"] = "window"
-            return SkillResult(Status.RUNNING, action, reward)
+            # THE SAME stage as `_buy_step`'s, and now literally the same code: the
+            # already-open-window branch was written for the material buy (8cdd2f0) and
+            # never mirrored here, which is audit follow-up 20. Two copies of one FSM
+            # with one fix applied to one of them is this project's headline defect
+            # class, so the stage moved into a shared method rather than being pasted.
+            gate = self._buy_popup_stage(ctx, "toolbuy", vendor_serial, reward)
+            if gate is not _ADOPT_WINDOW:
+                return gate
+            stage = ctx.memory["toolbuy_stage"] = "window"
 
         if stage == "window":
             buy = obs.shop_buy
@@ -1083,6 +1050,7 @@ class BlacksmithMarket(Blacksmith):
                 if tries < OFFER_REOPEN_ATTEMPTS:
                     ctx.memory["toolbuy_offer_reopens"] = tries + 1
                     ctx.memory["toolbuy_stage"] = "popup"
+                    ctx.memory["toolbuy_closing_window"] = True
                     ctx.memory.pop("toolbuy_popup_wait", None)
                     ctx.memory.pop("toolbuy_ask_wait", None)
                     # CLOSE the window to re-roll it — see the material buy's matching
@@ -1151,6 +1119,73 @@ class BlacksmithMarket(Blacksmith):
             return None
         nearest = min(cands, key=lambda m: chebyshev(m.pos, Position(sx, sy, m.pos.z)))
         return nearest.serial
+
+    def _buy_popup_stage(self, ctx: SkillContext, ns: str, vendor_serial: int,
+                         reward: float):
+        """The whole `popup` stage of a vendor BUY trip, shared by `_buy_step` (material)
+        and `_toolbuy_step` (tool). Returns `_ADOPT_WINDOW` when the caller should advance
+        to `window`, `None` to give the trip up, or a `SkillResult` to emit this tick.
+
+        **Why it is shared rather than mirrored.** The already-open-window branch was
+        written for the material buy in 8cdd2f0 and never copied here, which is audit
+        follow-up 20 — *"a real asymmetry between two copies of the same FSM"*. Copying it
+        would have produced a third thing to keep in step; this is one thing with a
+        namespace argument.
+
+        A vendor window ALREADY open blocks this stage completely: the server ignores a
+        fresh popup request while one is up, so the popup counter just runs to its timeout
+        and throws the trip away. forge15-18 live: a window left behind by an earlier trip
+        refused every capability (all sixteen gates share the idle-UI clause) and cost a
+        full goal lifetime per recurrence, because only the Life's own stale-UI repair
+        could clear it — and that deliberately waits while a goal owns the surface. It is
+        handled HERE, where the trip can act immediately: our own window is used, anyone
+        else's is cancelled (an empty item list is ServUO's EndVendorBuy).
+
+        **`{ns}_closing_window` is the marker follow-up 20 names**, and mirroring the
+        branch without it would have made the tool buy WORSE, not better. Today's
+        `_toolbuy_step` has no pre-check, so after its own re-roll cancel the popup stage
+        just waits and re-requests — each attempt gets a genuinely FRESH window. Add the
+        pre-check alone and it re-adopts the window it just cancelled (still visible
+        through the observation lag), re-reads the identical snapshot and burns every
+        attempt in as many ticks — precisely the 4/2/1/1-fresh-openings-by-lag measurement
+        the material buy already carries in its own re-roll comment. The marker says THIS
+        trip just cancelled THIS window, so the pre-check waits for it to go instead of
+        adopting it, and the lag costs no attempt on either FSM.
+
+        **The `POPUP_TIMEOUT` count moved ABOVE the window branch, and that fixes an
+        unbounded loop.** In `_buy_step` the entry-edge branch returned its cancel BEFORE
+        the counter was touched, so a foreign window that never closed produced a cancel
+        every tick forever — bounded only by the frame deadline outside this FSM, never by
+        the stage's own timeout, which is the thing that timeout exists to do.
+        """
+        total = ctx.memory.get(f"{ns}_popup_total", 0) + 1
+        ctx.memory[f"{ns}_popup_total"] = total
+        if total > POPUP_TIMEOUT:
+            self._stash_reward(ctx, reward)
+            return None  # the menu never arrived at all — give up this trip
+        window = ctx.obs.shop_buy
+        closing = f"{ns}_closing_window"
+        if window is None:
+            ctx.memory.pop(closing, None)  # our cancel landed; the next window is fresh
+        elif ctx.memory.get(closing):
+            return SkillResult(Status.RUNNING, None, reward)  # wait for it to actually go
+        elif window.vendor == vendor_serial:
+            return _ADOPT_WINDOW
+        else:
+            # Someone else's window. Cancel it ONCE and wait, rather than re-sending the
+            # cancel every tick until the lag resolves.
+            ctx.memory[closing] = True
+            return SkillResult(Status.RUNNING,
+                               BuyItems(vendor=window.vendor, items=[]), reward)
+        action = self._popup_click(ctx, vendor_serial, BUY_CLILOC, f"{ns}_popup_wait")
+        if action is _NO_ENTRY:
+            self._stash_reward(ctx, reward)
+            return None  # this vendor has no Buy entry (not a seller)
+        # Only a `PopupSelect` means the menu was actually open and the entry chosen — a
+        # fresh/re `PopupRequest` (or the quiet `None` wait) must NOT advance the stage.
+        if isinstance(action, PopupSelect):
+            ctx.memory[f"{ns}_stage"] = "window"
+        return SkillResult(Status.RUNNING, action, reward)
 
     @staticmethod
     def _popup_click(ctx: SkillContext, serial: int, cliloc: int, wait_key: str):
@@ -2070,6 +2105,11 @@ class BuyMaterialCapability(BlacksmithMarket):
         # alone: trip 1 gave up at tick 7 with the counter at OFFER_REOPEN_ATTEMPTS,
         # trips 2 and 3 (fresh goal ids, same memory) gave up on tick 1.
         "buy_offer_reopens",
+        # Per-trip for the same reason and with the same failure mode: left behind, the
+        # next trip's popup stage would wait for a window nobody is closing until
+        # POPUP_TIMEOUT. Added to this tuple in the SAME commit that introduced it —
+        # `buy_offer_reopens` is here because it was not.
+        "buy_closing_window",
     )
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
@@ -2238,6 +2278,7 @@ class BuyToolCapability(BlacksmithMarket):
         # Same per-trip scope, same defect, same fix as `buy_offer_reopens` — see
         # `BuyMaterialCapability._CLEANUP_KEYS` for the measurement.
         "toolbuy_offer_reopens",
+        "toolbuy_closing_window",
     )
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
@@ -2367,3 +2408,8 @@ class BuyTool(BuyToolCapability):
 #: the requested cliloc — module-level (not `BlacksmithMarket._NO_ENTRY`) so a
 #: plain `is` check works the same as `Blacksmith._ARRIVED`'s own comparison.
 _NO_ENTRY = object()
+
+#: Sentinel `_buy_popup_stage` returns when the vendor window already open is OURS and
+#: the caller should advance straight to its `window` stage. Distinct from `None`, which
+#: in both buy FSMs means "give this trip up".
+_ADOPT_WINDOW = object()
