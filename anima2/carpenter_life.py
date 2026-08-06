@@ -38,6 +38,7 @@ from .capabilities import _valid_spot, craft_spot_within
 from .contract import Observation
 from .obsview import on_ground, owns, pack_amount
 from .skills.carpentry import (
+    BOARDS_PER_ITEM,
     BuyBoards,
     BuySaw,
     CarpenterCraft,
@@ -48,8 +49,11 @@ from .skills.hunt import GOLD_GRAPHIC
 from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
 from .warrior_life import WarriorLife
 
-#: Boards consumed per piece of furniture — the craft capability's own recipe.
-BOARDS_PER_ITEM = CarpenterCraft.craft_material_per_item
+#: Boards consumed per piece of furniture — RE-EXPORTED from `skills/carpentry.py`, which
+#: is where the one definition lives so the `fetch_boards` gate can import the same name
+#: (audit follow-up 6). Kept as a name here because six test modules and this module's own
+#: rule read it, and because a Life reading its recipe off the skills layer is the shape
+#: every other derived constant in this file already has.
 #: What one restock of boards costs, from the buy capability's own config.
 BOARD_BATCH_COST = BuyBoards.buy_amount * BuyBoards.buy_price_estimate
 #: What replacing a lost saw costs.

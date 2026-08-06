@@ -17,6 +17,7 @@ from .goals import GoalAdmission, GoalSource
 from .skills import Skill
 from .skills.base import Goal, SkillContext
 from .skills.carpentry import (
+    BOARDS_PER_ITEM,
     BuyBoards,
     BuySaw,
     CarpenterCraft,
@@ -57,6 +58,7 @@ from .skills.tinkering import DeliverGold
 from .skills.warrior import (
     PLATE_ARMOR_LAYERS,
     SWORD_RANK,
+    UPGRADE_RESERVE,
     WEAPON_LAYER,
     BuyArmor,
     BuyBandage,
@@ -1578,11 +1580,6 @@ _BUY_SAW = CapabilityBinding(
 # into the pack, to feed `craft_carpentry` (the board-typed, goal-scoped analog
 # of the blacksmith's `craft.py::Blacksmith._fetch_step` dropped-ingot pickup).
 
-# The fetch gate: only when the pack can't already craft a throne (below one
-# throne's boards). Reads `CarpenterCraft`'s own per-item board cost (19) so it
-# stays in lockstep with the craft gate that consumes it.
-_FETCH_BOARDS_THRESHOLD = CarpenterCraft.craft_material_per_item
-
 
 def _nearby_ground_boards(ctx: SkillContext):
     """The nearest board pile ON THE GROUND within `PICKUP_RADIUS` (a world item,
@@ -1625,7 +1622,7 @@ def _fetch_ready(ctx: SkillContext) -> bool:
         # craft a throne (below one throne's boards) — so it only fetches when it
         # genuinely needs boards, never on top of a craftable stock.
         and _nearby_ground_boards(ctx) is not None
-        and _pack_graphic(ctx, BOARD_GRAPHIC) < _FETCH_BOARDS_THRESHOLD
+        and _pack_graphic(ctx, BOARD_GRAPHIC) < BOARDS_PER_ITEM
         and ctx.memory.get("mkt_phase", "craft") == "craft"
         and obs.pending_target is None
         and not obs.gumps
@@ -1788,10 +1785,6 @@ _BUY_WEAPON = CapabilityBinding(
     default_deadline_ticks=180,
 )
 
-#: Gold an upgrade must leave behind — enough to still replace a lost chest plate, so a
-#: nice-to-have blade never spends the coin a life-critical re-arm would need.
-_UPGRADE_RESERVE = BuyArmor.tool_price_estimate
-
 _UPGRADE_WEAPON = CapabilityBinding(
     capability_id="upgrade_weapon",
     profession="swordsman",
@@ -1800,7 +1793,7 @@ _UPGRADE_WEAPON = CapabilityBinding(
     ready=_make_weapon_upgrade_ready(
         UpgradeWeapon.owned_tool_graphics, UpgradeWeapon.offer_graphic,
         UpgradeWeapon.tool_price_estimate, UpgradeWeapon.vendor_spot_key,
-        _UPGRADE_RESERVE,
+        UPGRADE_RESERVE,
     ),
     achieved=_make_toolbuy_achieved(UpgradeWeapon.owned_tool_graphics),
     progress=_toolbuy_progress,

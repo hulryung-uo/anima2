@@ -629,3 +629,83 @@ def test_no_life_wants_anything_the_gate_refuses_with_our_pack_out_of_view():
             f"{cap!r} but the gate refuses (ready={sorted(ready)}). Every fetch gate "
             f"requires a backpack; the rule side must ask the same question."
         )
+
+
+# --- the same class in CONSTANT form (audit follow-up 6) -----------------------------
+#
+# The lattice above catches a rule and a gate disagreeing about a VALUE. It cannot catch
+# them disagreeing about a DEFINITION, because a constant written twice is numerically
+# locked until somebody edits one copy — and the edit is the failure. Follow-up 6 named
+# three such pairs and called them "the audit's own headline defect class, in constant
+# form". These pin the merge, and they are identity assertions on purpose: equality would
+# pass again the moment a second definition happened to compute the same number.
+
+
+def test_the_upgrade_reserve_is_ONE_decision_not_two_that_agree():
+    """`warrior_life.UPGRADE_RESERVE` (the decide rule) and `capabilities._UPGRADE_RESERVE`
+    (the `upgrade_weapon` gate) were separate module constants with near-identical
+    comments and the same right-hand side. They could not diverge numerically — both read
+    `BuyArmor.tool_price_estimate` — but "the reserve is one chest plate's worth" is a
+    DECISION, and it was recorded in two places. A rule and a gate disagreeing about a
+    threshold does not care whether the disagreement arrived through a bad value or an
+    edit."""
+    import anima2.capabilities as caps
+    import anima2.warrior_life as wl
+    from anima2.skills.warrior import UPGRADE_RESERVE
+
+    assert wl.UPGRADE_RESERVE is UPGRADE_RESERVE
+    assert caps.UPGRADE_RESERVE is UPGRADE_RESERVE
+    # The gate-private second name is gone, not merely equal to the first.
+    assert not hasattr(caps, "_UPGRADE_RESERVE")
+
+
+def test_boards_per_item_is_ONE_name_not_two():
+    """`carpenter_life.BOARDS_PER_ITEM` and `capabilities._FETCH_BOARDS_THRESHOLD`: two
+    names for one fact. The gate's own comment claimed it read the class attribute "so it
+    stays in lockstep with the craft gate that consumes it" — which is a property no
+    comment can hold."""
+    import anima2.capabilities as caps
+    import anima2.carpenter_life as cl
+    from anima2.skills.carpentry import BOARDS_PER_ITEM
+
+    assert cl.BOARDS_PER_ITEM is BOARDS_PER_ITEM
+    assert caps.BOARDS_PER_ITEM is BOARDS_PER_ITEM
+    assert not hasattr(caps, "_FETCH_BOARDS_THRESHOLD")
+
+
+def test_the_bandage_family_is_never_restated_as_a_literal():
+    """The third pair, and the ONLY one of the three that could actually drift: the other
+    two derive from a shared class attribute, while `skills/warrior.BANDAGE_GRAPHIC` was
+    the literal `0x0E21` typed out again three lines below an import of the frozenset that
+    already held it.
+
+    It had already produced a live-shaped hazard. `WarriorLife.decide` counted the SINGLE
+    graphic while `buy_bandage`'s gate counts `BuyBandage.buy_material_graphics` — the
+    whole FAMILY. Identical today because the family is a singleton; the moment it grew,
+    the rule would undercount, want `buy_bandage`, and the gate would refuse: the exact
+    want-vs-refuse standoff this suite exists for, reachable by adding one graphic."""
+    import ast
+    from pathlib import Path
+
+    import anima2.warrior_life as wl
+    from anima2.skills.survival import BANDAGE_GRAPHICS
+    from anima2.skills.warrior import BANDAGE_GRAPHIC, BuyBandage
+
+    # The rule and the gate now read the SAME OBJECT, so they cannot disagree at all.
+    assert BuyBandage.buy_material_graphics is BANDAGE_GRAPHICS
+    assert wl.BANDAGE_GRAPHICS is BANDAGE_GRAPHICS
+    # ...and the rule can no longer reach the single-graphic name even by accident.
+    assert not hasattr(wl, "BANDAGE_GRAPHIC")
+    # The one offer graphic is a MEMBER of the family, derived and not restated. The AST
+    # check is the part that bites: `BANDAGE_GRAPHIC = 0x0E21` satisfies `in` too.
+    assert BANDAGE_GRAPHIC in BANDAGE_GRAPHICS
+    tree = ast.parse((Path(__file__).resolve().parent.parent
+                      / "anima2" / "skills" / "warrior.py").read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "BANDAGE_GRAPHIC" for t in node.targets):
+            assert not isinstance(node.value, ast.Constant), (
+                "BANDAGE_GRAPHIC is a literal again; derive it from BANDAGE_GRAPHICS")
+            break
+    else:
+        raise AssertionError("BANDAGE_GRAPHIC is no longer assigned at module level")

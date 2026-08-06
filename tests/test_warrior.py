@@ -152,12 +152,12 @@ def test_upgrade_weapon_buys_the_same_katana_as_buy_weapon():
 
 
 def test_upgrade_readiness_fires_only_for_a_weaker_worn_blade_with_surplus():
-    from anima2.capabilities import CAPABILITIES, _UPGRADE_RESERVE
+    from anima2.capabilities import CAPABILITIES
     from anima2.skills.market import GOLD_GRAPHIC
-    from anima2.skills.warrior import UpgradeWeapon
+    from anima2.skills.warrior import UPGRADE_RESERVE, UpgradeWeapon
 
     ready = CAPABILITIES[("swordsman", "upgrade_weapon")].ready
-    rich = UpgradeWeapon.tool_price_estimate + _UPGRADE_RESERVE  # afford it AND keep a reserve
+    rich = UpgradeWeapon.tool_price_estimate + UPGRADE_RESERVE  # afford it AND keep a reserve
 
     def _gold(amount):
         return ItemView(serial=0xA00, graphic=GOLD_GRAPHIC, amount=amount, pos=Position(),

@@ -40,8 +40,9 @@ from .profession import PROFESSIONS
 from .skills.market import _bank_reserve
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.warrior import (
-    BANDAGE_GRAPHIC,
+    BANDAGE_GRAPHICS,
     PLATE_ARMOR_LAYERS,
+    UPGRADE_RESERVE,
     PLATE_CHEST_GRAPHIC,
     SWORD_GRAPHICS,
     SWORD_RANK,
@@ -61,9 +62,10 @@ BANDAGE_BATCH_COST = BuyBandage.buy_amount * BuyBandage.buy_price_estimate
 #: A replacement plate chest — the biggest slice of armor rating, and the piece a death
 #: most needs replaced when the corpse can't be reclaimed.
 ARMOR_PRICE = BuyArmor.tool_price_estimate
-#: Gold an optional blade upgrade must leave behind (a chest plate's worth), so growth
-#: never spends the coin a life-critical re-arm would need.
-UPGRADE_RESERVE = ARMOR_PRICE
+#: RE-EXPORTED from `skills/warrior.py`, where the equation "an upgrade must leave a chest
+#: plate's worth behind" is now stated ONCE — the `upgrade_weapon` gate reads the same name
+#: (audit follow-up 6). It was written here AND in `capabilities.py`, with near-identical
+#: comments: numerically locked, but the DECISION was recorded twice.
 #: The rank of the blade the vendor offers — a worn sword below this can be traded up.
 UPGRADE_TARGET_RANK = SWORD_RANK.get(UpgradeWeapon.offer_graphic, 0)
 #: Bank looted gold once the pack holds more than this, keeping a working reserve
@@ -156,7 +158,7 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     if (not owns(obs, SWORD_GRAPHICS, layer=WEAPON_LAYER) and gold >= WEAPON_PRICE
             and _valid_spot(memory.get("weapon_vendor_spot"))):
         return "economy", "buy_weapon"
-    if pack_amount(obs, BANDAGE_GRAPHIC) < LOW_BANDAGES and gold >= BANDAGE_BATCH_COST \
+    if pack_amount(obs, BANDAGE_GRAPHICS) < LOW_BANDAGES and gold >= BANDAGE_BATCH_COST \
             and _valid_spot(memory.get("healer_spot")):
         return "economy", "buy_bandage"
     if (not owns(obs, PLATE_CHEST_GRAPHIC, layer=PLATE_ARMOR_LAYERS[PLATE_CHEST_GRAPHIC])

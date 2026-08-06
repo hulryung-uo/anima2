@@ -42,8 +42,10 @@ def _ctx(items, *, memory, goal_id=71, pos=Position(5, 5, 0)):
 
 def test_deliver_config_and_fetch_gate():
     assert DeliverBoards.deliver_threshold == 19  # one throne's worth per haul
-    from anima2.capabilities import _FETCH_BOARDS_THRESHOLD
-    assert _FETCH_BOARDS_THRESHOLD == 19          # fetch only below a craftable stock
+    # The gate reads the ONE definition now (`skills/carpentry.BOARDS_PER_ITEM`); it used
+    # to read a `capabilities`-private second name for the same fact (follow-up 6).
+    from anima2.skills.carpentry import BOARDS_PER_ITEM
+    assert BOARDS_PER_ITEM == 19                  # fetch only below a craftable stock
 
 
 def test_carpenter_prefers_free_fetch_over_paid_buy():

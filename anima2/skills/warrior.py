@@ -30,8 +30,19 @@ from .harvest import BACKPACK_LAYER
 from .market import BuyMaterialCapability, BuyToolCapability
 from .survival import BANDAGE_GRAPHICS, Survive
 
-#: The healing bandage art (ServUO `Bandage`, 0x0E21) — sold by a Healer @5g.
-BANDAGE_GRAPHIC = 0x0E21
+#: The ONE bandage art a vendor offer is placed against — the entry you click in a shop
+#: list, which is necessarily a single graphic and not a family.
+#:
+#: DERIVED from `survival.BANDAGE_GRAPHICS`, never restated. It was the literal `0x0E21`,
+#: which is the same number `BANDAGE_GRAPHICS = frozenset({0x0E21})` already holds three
+#: lines above the import — audit follow-up 6's third pair, and the only one of the three
+#: that could actually drift, because the other two derive from a shared class attribute
+#: while this one was typed out twice.
+#:
+#: `min` rather than `next(iter(...))`: a frozenset has no order, so the iterator form
+#: would pick a DIFFERENT graphic between runs the moment the family grew past one, and a
+#: buy offer that changes identity between runs is the worst possible failure here.
+BANDAGE_GRAPHIC = min(BANDAGE_GRAPHICS)
 
 
 class WarriorSurvive(Survive):
@@ -399,6 +410,26 @@ class BuyArmor(BuyToolCapability):
     tool_price_estimate = 243
     #: The warrior's armorer — a SEPARATE key from the weapon vendor and healer.
     vendor_spot_key = "armorer_spot"
+
+
+#: Gold an optional blade upgrade must leave behind — enough to still replace a lost
+#: chest plate, so a nice-to-have blade never spends the coin a life-critical re-arm
+#: would need.
+#:
+#: **One statement of the equation, here, below both readers.** It was written twice —
+#: `warrior_life.UPGRADE_RESERVE` for the decide RULE and `capabilities._UPGRADE_RESERVE`
+#: for the `upgrade_weapon` GATE — with near-identical comments and the same right-hand
+#: side (audit follow-up 6's first pair). Both could not diverge NUMERICALLY, since both
+#: read `BuyArmor.tool_price_estimate`; what they could diverge on is the equation itself,
+#: because "the reserve is one chest plate's worth" is a DECISION and it was recorded in
+#: two places. A rule and a gate disagreeing about a threshold is this project's headline
+#: defect class, and it does not care that the disagreement arrived through an edit rather
+#: than a bad value.
+#:
+#: It lives in the skills layer because that is the only place both readers can import
+#: from: `warrior_life` and `capabilities` both import from here, and `capabilities`
+#: importing `warrior_life` would be a cycle (the Lives import `CapabilityPolicy`).
+UPGRADE_RESERVE = BuyArmor.tool_price_estimate
 
 
 class BuyBandage(BuyMaterialCapability):

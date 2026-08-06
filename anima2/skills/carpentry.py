@@ -111,6 +111,20 @@ class CarpenterCraft(CraftItemCapability):
     craft_batch = 1
 
 
+#: Boards one crafted item eats — the number the carpenter's decide RULE and the
+#: `fetch_boards` GATE must both use, since one decides "I need boards" and the other
+#: decides "you may go get them".
+#:
+#: **One name, here, below both readers** (audit follow-up 6's second pair). It was
+#: `carpenter_life.BOARDS_PER_ITEM` and `capabilities._FETCH_BOARDS_THRESHOLD`: two names
+#: for one fact, both reading `CarpenterCraft.craft_material_per_item`, so numerically
+#: locked but individually editable — and the gate's own comment already said it read the
+#: class attribute "so it stays in lockstep with the craft gate that consumes it", which
+#: is a property no comment can hold. `carpenter_life` re-exports this name; nothing
+#: defines a second one.
+BOARDS_PER_ITEM = CarpenterCraft.craft_material_per_item
+
+
 # --- BarrelStaves: the low-skill alt/smoke carpentry recipe -------------------
 # For a quick live gump-navigation shakeout that avoids the Throne's 73.6
 # Carpentry floor. Live-calibrated: category "Other" (`_button(0, 0)` == 1) ->
