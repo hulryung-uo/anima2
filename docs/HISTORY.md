@@ -889,6 +889,34 @@ AST to reject a bare literal; both mutants fail exactly one test each. **Nothing
 changed** — every number is identical today and no live evidence is claimed. 1510 →
 **1513 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §12.
 
+**The buy FSM's missing half — and measuring it changed the fix (2026-08-07).** Audit
+follow-up 20, closed. `8cdd2f0` gave `_buy_step` an already-open-window branch (the server
+ignores a popup request while a window is up, so a leftover window throws the whole trip
+away) and never mirrored it into `_toolbuy_step`. The follow-up called that "a real
+asymmetry between two copies of the same FSM, and it is unmeasured, so it was not guessed
+at" — and it was right to say unmeasured, because **the asymmetry was not one-sided**.
+Having no pre-check, `_toolbuy_step` got a genuinely FRESH window per re-roll: after its own
+cancel it simply waited and re-requested. `_buy_step`, with the branch, re-adopted the window
+it had just cancelled while the observation lag lasted and re-read an identical snapshot — a
+window IS a snapshot — spending an attempt on it. So each FSM had one half, and mirroring
+the branch alone would have taken the tool buy's good half away. The follow-up's own
+CONDITIONAL remedy ("the fix, if one or two ever proves too few, is a marker saying THIS trip
+just cancelled this window") is therefore mandatory rather than optional: it is what stops
+the mirror being a regression. Driving the real FSMs against a simulated shard and counting
+FRESH window openings per trip (5 is the whole budget): without the marker 3/3/2/2/1 by lag
+0/1/2/3/5, with it **5 at every lag**, identical on both FSMs. The stage is ONE method with a
+namespace argument now, because copying the branch would have produced a third thing to keep
+in step. **An unbounded loop fell out of moving one line**: the `POPUP_TIMEOUT` count used to
+run BELOW the window branch, and the foreign-window branch returned its cancel before
+reaching it — so a foreign window that never closed produced a cancel every tick forever,
+bounded only by the frame deadline outside the FSM, never by the stage timeout that exists to
+bound it. Whether it ever fired live is unknown; no log distinguishes "cancelled repeatedly"
+from "waiting". Both mutants implemented: mirroring without the marker fails 4 tests,
+reverting the tool path fails 3 — all on the `toolbuy` parametrization and none on `buy`,
+which is the asymmetry itself visible as a test signature. **Offline only**; the lag table is
+a simulation and neither FSM has run on a shard since. 1513 → **1521 tests**, ruff clean.
+Detail: `docs/AUDIT-2026-07-29.md` §13.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
