@@ -917,6 +917,32 @@ which is the asymmetry itself visible as a test signature. **Offline only**; the
 a simulation and neither FSM has run on a shard since. 1513 → **1521 tests**, ruff clean.
 Detail: `docs/AUDIT-2026-07-29.md` §13.
 
+**Reading the week's own work, and finding the fix's own defect (2026-08-07).** Five commits
+of hot-path change had landed offline with no live budget to validate any of them, so the
+next step was to read them rather than write more. The finding worth the entry:
+`wander_leash` went into `WarriorLife.KNOBS` two days earlier, and `KNOBS` is INHERITED — so
+all five Lives and all six runners accept it. **`run_warrior_village` never calls
+`set_leash`**, deliberately (a warrior roams while hunting), and `Wander._homeward` returns
+on a missing `wander_home` *before it ever reads the leash*. So `--warriors 5 --knob
+wander_leash=3` accepted the knob, stored it, read it back as 3, and steered nothing — a
+channel reporting a success that cannot happen, which is the exact defect the previous three
+entries are all instances of, reintroduced BY the fix for it, through the one property
+nobody checked: that adding a knob to a base class adds it to runners that cannot use it.
+The repair is `leash_readout`, the single read of what the leash will ACTUALLY do rather than
+what it is set to (`3` vs `3 (inert: no wander_home)`), used by every banner; `wander_home`
+became a named read at the same time so `_homeward`'s shape check and the readout's cannot
+drift. Not fixed by giving warriors a home — the absence is the design and the banner was
+the thing lying. Two smaller findings: `run_artisan_mage_village`, the sixth and last runner,
+printed neither of its mage's tunable numbers; and the popup-stage merge tightened
+`POPUP_TIMEOUT` (the wait ticks now count), measured as degrading only at lag >= 12 and never
+falling below what it replaced. **Five occurrences of the lying-banner class is enough, so it
+is a test now**: an AST walk asserting every inline runner READS one of the four clamped read
+points and the two `LifeSpec` runners still reach `staged_line`. It asserts reading, not
+printing, because a printed module constant is accurate exactly until somebody tunes that
+runner. Also verified: all 100 modules import clean, including the untested `live_*` gates.
+**Nothing live** — the shard is down and the whole week remains unvalidated on a shard.
+1521 → **1523 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §14.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion

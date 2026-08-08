@@ -1939,10 +1939,11 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     # printing the local would start lying the moment anyone tuned this runner — the
     # same defect `run_carpenter_life`'s banner had before it read the built Life, and
     # the reason `run_forge_pair`'s survived becoming tunable unchanged.
-    from .skills.movement import wander_leash
+    from .skills.movement import leash_readout, wander_leash
     effective = wander_leash(sten.econ_agent.memory)
     tuned = "" if effective == sten_leash else f", TUNED from a derived {sten_leash}"
-    print(f"  Sten leashed to the drop at {effective} tiles{tuned} "
+    print(f"  Sten leashed to the drop at {leash_readout(sten.econ_agent.memory)} "
+          f"tiles{tuned} "
           f"(shops reach {shop_reach}, pickup radius {PICKUP_RADIUS})")
     # Both reserves read off the BUILT Lives through `market._bank_reserve` — the clamp
     # the decide rule, the `bank_gold` gate and `BankGold`'s FSM all share. This runner
@@ -2176,12 +2177,12 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     # (2026-08-03, `reserve 400` against a module default of 129) is what this now makes
     # available on the flagship pair. Both of the tinker's knobs are here: a channel whose
     # value an operator cannot see is one they will read the run as if it had not carried.
-    from .skills.movement import wander_leash
+    from .skills.movement import leash_readout
     from .tinker_life import bank_trip_surplus
     print(f"staged: Grimm@({mgx},{mgy}) -> drop {TRADE_SMITH_SPOT} -> Pim@({tgx},{tgy}) "
           f"(reserve {_bank_reserve(pim.econ_agent.memory)}, "
           f"trip surplus {bank_trip_surplus(pim.econ_agent.memory)}, "
-          f"leash {wander_leash(pim.econ_agent.memory)}, both broke)\n")
+          f"leash {leash_readout(pim.econ_agent.memory)}, both broke)\n")
 
     status: dict[int, str] = {}
     lock = threading.Lock()
@@ -2598,7 +2599,17 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             for _ in range(2):
                 body.observe()
             print(f"  Bram{w['i']}: connected={body.connected}")
-        print(f"staged {len(warriors)} warrior(s). the hunt begins.\n")
+        # The knobs this roster will actually run under, read off a BUILT Life through
+        # the clamps its own readers use — the fifth banner in this file to need it, and
+        # the one that reported nothing tunable at all. `leash_readout` rather than the
+        # bare number because THIS runner never calls `set_leash`: a warrior roams while
+        # hunting, on purpose, so `wander_leash` is inert here and a banner printing it
+        # as a plain value would report a tuning that provably cannot happen.
+        from .skills.market import _bank_reserve
+        from .skills.movement import leash_readout
+        _m = warriors[0]["life"].econ_agent.memory
+        print(f"staged {len(warriors)} warrior(s). the hunt begins.  "
+              f"(reserve {_bank_reserve(_m)}, leash {leash_readout(_m)})\n")
 
         status: dict[int, str] = {}
         lock = threading.Lock()
@@ -3125,10 +3136,10 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # `wander_leash` outranks it, so printing the constant would be the same lie
         # `run_supply_pair`'s local `sten_leash` would have told.
         from .skills.market import _bank_reserve
-        from .skills.movement import wander_leash
+        from .skills.movement import leash_readout
         print(f"staged: artisan@({tx},{ty}) with iron | mage@({mx},{my}) broke, hunting"
               f"  (mage reserve {_bank_reserve(mage.econ_agent.memory)}, "
-              f"leash {wander_leash(mage.econ_agent.memory)})\n")
+              f"leash {leash_readout(mage.econ_agent.memory)})\n")
 
         status: dict[int, str] = {}
         lock = threading.Lock()

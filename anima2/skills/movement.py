@@ -39,9 +39,8 @@ class Wander(Skill):
 
     def _homeward(self, ctx: SkillContext, cur: tuple[int, int]) -> int | None:
         """The direction back to `wander_home`, or None when unleashed/inside it."""
-        home = ctx.memory.get("wander_home")
-        if not (isinstance(home, (tuple, list)) and len(home) == 2
-                and all(isinstance(v, int) and not isinstance(v, bool) for v in home)):
+        home = wander_home(ctx.memory)
+        if home is None:
             return None
         leash = wander_leash(ctx.memory, self.leash)
         here = ctx.obs.player.pos
@@ -98,6 +97,37 @@ def wander_leash(memory, default: int | None = None) -> int:
     """
     return knob_int(memory, "wander_leash",
                     Wander.leash if default is None else default, floor=LEASH_FLOOR)
+
+
+def wander_home(memory) -> tuple[int, int] | None:
+    """The validated `wander_home`, or `None` when there isn't one — the single read of
+    the fact that decides whether a leash BINDS AT ALL. Shape-checked, because a home is
+    written by orchestrators and gates rather than typed in: `bool` is excluded for
+    `knobs.py`'s reason, and a 3-tuple or a string is a malformed write, not a home."""
+    home = memory.get("wander_home")
+    if (isinstance(home, (tuple, list)) and len(home) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in home)):
+        return (home[0], home[1])
+    return None
+
+
+def leash_readout(memory) -> str:
+    """What the leash will ACTUALLY do, for an operator's banner — not just its value.
+
+    `wander_leash` is a knob on every Life (§E's "exploration radius"), and it is inert
+    without a `wander_home`, because `Wander._homeward` returns `None` before it ever
+    reads the leash. That is not hypothetical: `run_warrior_village` builds five
+    `WarriorLife`s and never calls `set_leash`, ON PURPOSE — a warrior should roam while
+    hunting — so a tuned leash there reads back as the tuned number and steers nothing.
+
+    A banner printing the bare number would report a tuning success that cannot happen,
+    which is the defect this whole thread has been closing, arriving through a knob that
+    LOOKS wired on every runner because `WarriorLife.KNOBS` is inherited by all five
+    Lives. So the readout names the missing half instead.
+    """
+    leash = wander_leash(memory)
+    home = wander_home(memory)
+    return f"{leash}" if home is not None else f"{leash} (inert: no wander_home)"
 
 
 class GoTo(Skill):

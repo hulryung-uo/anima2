@@ -753,3 +753,71 @@ def test_an_exploring_leash_axis_is_clamped_like_every_other_knob():
                                 persona=Persona(name="Bram"), routes={})
         assert wander_leash(life.econ_agent.memory) == LEASH_FLOOR, repr(bad)
     assert LEASH_FLOOR == 1
+
+
+# --- the banner that lies: five occurrences, now an assertion -------------------------
+#
+# A runner that accepts a knob and prints a MODULE CONSTANT (or nothing) reports a tuning
+# that may not have happened. It has been fixed five times: `run_carpenter_life`'s baked
+# `BANK_RESERVE` (which is why `LifeRunner.staged_line` reads the built Life at all),
+# then `run_supply_pair` (no reserve printed), `run_forge_pair` (needed the leash and the
+# trip surplus), `run_artisan_mage_village` (printed neither), and `run_warrior_village`
+# (printed nothing tunable at all). Five is enough; this is the class as a test.
+
+
+def test_every_life_bearing_runner_reports_what_it_will_actually_run_under():
+    """Each runner must READ a clamped knob value off the Life it built. Reading is the
+    property that matters — a printed module constant is accurate exactly until somebody
+    tunes that runner, which is the moment the number starts mattering."""
+    import ast
+    import inspect
+
+    from anima2 import village
+
+    #: The clamped single read points. A banner going through one of these cannot drift
+    #: from what the rule, the gate and the FSM will do, because it IS their read.
+    CLAMPED = {"_bank_reserve", "wander_leash", "leash_readout", "bank_trip_surplus"}
+    #: These two build a `LifeSpec` and hand it to `LifeRunner`, whose `staged_line` does
+    #: the reading centrally — asserted separately below.
+    DELEGATES = {"run_carpenter_life", "run_woodsman_life"}
+    INLINE = {"run_forge_pair", "run_supply_pair", "run_warrior_village",
+              "run_artisan_mage_village"}
+
+    tree = ast.parse(inspect.getsource(village))
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for name in INLINE | DELEGATES:
+        assert name in funcs, f"{name} is gone or renamed; this test needs updating"
+
+    for name in INLINE:
+        called = {n.func.id for n in ast.walk(funcs[name])
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert called & CLAMPED, (
+            f"{name} takes knobs and never reads one back off the Life it built, so a "
+            f"tuned run would print — or omit — a number that is not the one it uses. "
+            f"Read through one of {sorted(CLAMPED)}.")
+
+    for name in DELEGATES:
+        src = ast.dump(funcs[name])
+        assert "LifeRunner" in src, (
+            f"{name} no longer goes through LifeRunner, so it no longer inherits "
+            f"`staged_line`'s reading and needs its own.")
+
+    # ...and the central one really does read both knobs it prints.
+    staged = inspect.getsource(LifeRunner.staged_line)
+    assert "_bank_reserve(" in staged and "wander_leash(" in staged
+
+
+def test_an_inert_leash_is_reported_as_inert():
+    """`wander_leash` is on `WarriorLife.KNOBS`, so all five Lives and all six runners
+    accept it — but it is inert without a `wander_home`, because `Wander._homeward`
+    returns before it ever reads the leash. `run_warrior_village` never calls
+    `set_leash` ON PURPOSE (a warrior roams while hunting), so a tuned leash there reads
+    back as the tuned number and steers nothing. A banner printing the bare value would
+    report a tuning that provably cannot happen."""
+    from anima2.skills.movement import leash_readout
+
+    assert leash_readout({"wander_leash": 3, "wander_home": (5, 5)}) == "3"
+    assert "inert" in leash_readout({"wander_leash": 3})
+    # A malformed home is no home — same shape check `_homeward` applies, one definition.
+    for bad in (None, (1, 2, 3), "5,5", (True, False), 5):
+        assert "inert" in leash_readout({"wander_leash": 3, "wander_home": bad}), repr(bad)
