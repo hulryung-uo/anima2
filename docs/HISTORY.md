@@ -1002,6 +1002,36 @@ printed on a shard; and these are minutes-long staged gates, not the 1800-tick d
 project actually learns from. 1527 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §16.
 
+**A tuned knob changed a live trajectory — §E's criterion, met (2026-08-07).**
+`--forge-pair --knob bank_trip_surplus=10 --ticks 1200`, on the flagship miner->tinker
+chain, with the predictions written down BEFORE the run so it could be refuted rather than
+narrated. The urgent bank branch is `gold > bank_reserve + bank_trip_surplus`: 82+75=157 by
+default, 82+10=92 tuned, so any admission in **93..157** is a decision the default rule
+could not make. Tuning DOWN was deliberate — 2026-08-03's live knob run was behaviourally
+INERT because the carpenter's gold never reached the tuned value, and a lower bar cannot
+fail that way. All three predictions held: the banner printed `trip surplus 10` (the first
+of §10's five newly-wired sites to carry a value on a shard); **six of nine `bank_gold`
+admissions landed at 105/112/112/117/117/117**, every one inside the band; and the run
+banked **293g against the untuned baseline's 193g**, net +410g. Three other things printed
+live for the first time: the death readout (`hp=83/83 deaths=0` — exercised, NOT tested,
+since a field that has only printed 0 proves only that it prints), `leash_readout` (bare and
+correctly so, both its branches silent), and the work-liveness alarm firing TRULY on the
+flagship pair, naming its culprit skill (`eps=41 unchanged since t=452, skill=buy_iron`).
+**And the run measured follow-up 19, whose only stated blocker was that nobody had measured
+it.** `retired=44:41a/3x` — all three expiries are `buy_iron` at exactly `180/180`, with 55
+samples showing the frame ADMITTED, the gate READY, `mkt_phase=craft`, and no `+hold`,
+`!frozen` or `!overdue`: the rule wants it, the gate allows it, and nothing executes. The
+give-up sets `cap_buy_finished_goal_id` and NOT `cap_run_finished_goal_id`, the marker
+`CapabilityGoalComplete`'s give-up branch reads — a marker `market.py` sets on the sell and
+bank paths and on neither buy path. Cost: **540 dead economy ticks, 45% of the run**, on the
+one positive-margin chain here. **What the run does NOT establish**: one axis at one value
+with no controlled A/B; no evidence the steer was GOOD rather than real (the same run
+starved working capital to 77 gold against a 75-gold iron batch, and whether the knob CAUSED
+the stalls is unproven — the trips died in the popup stage, not on affordability); the
+re-roll path and the closing-window marker still never fired; and bound 1 is STILL
+unexercised, since all three give-ups retired through bound 2 instead. 1527 tests, ruff
+clean. Detail: `docs/AUDIT-2026-07-29.md` §17.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion

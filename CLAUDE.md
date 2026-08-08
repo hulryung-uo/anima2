@@ -103,10 +103,15 @@ gold-per-life fitness means something. The two are at DIFFERENT stages (2026-08-
   audit follow-up 4 / §11: it used to ride a second channel with a second clamp, and it is
   the only knob a runner ALSO writes, so a tuned value now outranks `set_leash`'s derived
   one); §E's retreat thresholds and rest timing cannot become knobs while
-  the capability manifest validator forbids per-instance survival state; and the one live
-  run to use a tuned knob used ONE, on the cheapest runner, where it
-  changed nothing it could have changed — **no tuned knob has ever changed a live
-  trajectory, which is §E's criterion word for word.**
+  the capability manifest validator forbids per-instance survival state.
+  **The "no tuned knob has ever changed a live trajectory" clause that stood here is
+  RETIRED as of 2026-08-07** (audit §17): `--forge-pair --knob bank_trip_surplus=10`
+  banked at gold 105/112/112/117/117/117, every one of them inside the 93..157 band where
+  the DEFAULT rule says keep crafting — so §E's criterion is met on ONE axis, on the
+  flagship positive-margin chain, against a written-down-beforehand prediction. What is
+  still missing for precondition (a) is the rest: four other knobs unproven, no controlled
+  A/B (293g banked vs a 193g run from another day is indicative, not controlled), and no
+  evidence the steer was GOOD rather than merely real.
   Detail and follow-ups: `docs/AUDIT-2026-07-29.md` (2026-08-02 entry, follow-ups 2-4;
   2026-08-03 entry for the live proof; §10 for the seven-site wiring).
 
