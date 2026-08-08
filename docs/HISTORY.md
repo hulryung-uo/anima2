@@ -970,6 +970,38 @@ same knob — which is the one failure its own docstring says it exists to preve
 mutation-checked. **Offline only**, and two of the five were latent rather than live.
 1523 → **1527 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §15.
 
+**The shard came back, and the week met it (2026-08-07).** Everything from the death
+readout through the review fixes was written with `127.0.0.1:2594` down, and every entry
+ends in some form of "offline only". The shard answered. **The first live attempt would
+have died at the handshake**: anima-client had reached schema **26** while
+`SUPPORTED_SCHEMA_VERSION` sat at **18** — eight versions of drift, accumulated silently,
+invisible until somebody tries to run, and NOTHING was broken by it. The drift alone was
+the outage. Verified by diffing the serializer rather than the changelog (452 insertions,
+seven deletions, all seven being the changelog sentence, the constant, a version test and
+gump-element lines already discussed), then cross-checked mechanically because reading a
+diff is how a rename gets missed: all 19 action types `contract.py` emits are still
+accepted and all 57 observation keys it reads are still emitted. Proven rather than
+asserted — a handshake probe read back `schema_version=26 player=17563` and a real
+observation. **Then three gates, three passes.** `live_buy_goal` (`iron=0->15
+gold=200->125 opens=1 cancels=0`) and `live_toolbuy_goal` (`tools=0->1 gold=100->87`) are
+the two §8.5 recorded as NOT RUN: they had never executed with the empty-list-cancel
+filtering, let alone with the merged popup stage, and the tool-buy one is the FSM that
+GAINED the entry-edge branch. `live_frame_overdue_gate` passed all seven flags and
+reproduced 2026-08-03 almost tick for tick — overdue at economy tick **301** against
+`deadline_tick=300`, the repair closing the craft gump on that tick, the hold extended
+exactly ONE economy tick and released into `mode=hunt` with the frame still live, after
+**299** held ticks with the FSM provably starved. It also clears review finding 2 by
+construction, being the gate whose mid-run re-leash invariant that finding was about.
+**What three green gates do NOT establish, because the temptation is to read them as "the
+week is validated":** `cancels=0` on both buy gates means the re-roll path, the marker, the
+foreign-window branch and the cancel re-send — the actual subject of the last two entries —
+were never entered; bound 1 is still unexercised; the death readout has never fired, so a
+field that has only ever printed 0 is not a tested field; no tuned knob ran; the forge pair
+did not run, so the seven-site wiring, the leash axis and the banner work have still never
+printed on a shard; and these are minutes-long staged gates, not the 1800-tick days this
+project actually learns from. 1527 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §16.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
