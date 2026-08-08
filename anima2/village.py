@@ -3118,7 +3118,17 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         # Budget the one shard: the mage yields most ticks so the artisan's
         # round-trip-hungry craft FSM actually gets served (see _ThrottledAgent).
         agents = [("tinker", tinker), ("mage", _ThrottledAgent(mage, mage_tick_every))]
-        print(f"staged: artisan@({tx},{ty}) with iron | mage@({mx},{my}) broke, hunting\n")
+        # The mage's two tunable numbers, read off the BUILT Life through the clamps its
+        # own readers use — the fourth banner in this file to need it, and the last
+        # runner that could still have carried a tuned value an operator could not see.
+        # `MAGE_LEASH` is DERIVED (prey distance minus the kite radius) and a tuned
+        # `wander_leash` outranks it, so printing the constant would be the same lie
+        # `run_supply_pair`'s local `sten_leash` would have told.
+        from .skills.market import _bank_reserve
+        from .skills.movement import wander_leash
+        print(f"staged: artisan@({tx},{ty}) with iron | mage@({mx},{my}) broke, hunting"
+              f"  (mage reserve {_bank_reserve(mage.econ_agent.memory)}, "
+              f"leash {wander_leash(mage.econ_agent.memory)})\n")
 
         status: dict[int, str] = {}
         lock = threading.Lock()
