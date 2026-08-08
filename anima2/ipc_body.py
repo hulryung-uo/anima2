@@ -74,7 +74,35 @@ from .contract import Action, Observation
 # harmless here because `contract.GumpView` keeps elements as opaque dicts on
 # purpose. Worth knowing when reading a mismatch: the version proves no BREAK,
 # not that nothing moved.
-SUPPORTED_SCHEMA_VERSION = 18
+#
+# 18→26 verified the same way, and the EIGHT-version gap is itself the finding:
+# the bridge reached 26 (anima-client 7ca9662) while this constant sat at 18, so
+# every live target here would have aborted at the handshake with
+# `unsupported bridge schema 26; expected 18`. Nothing was broken — the DRIFT was
+# the outage, and it is invisible until someone tries to run.
+#
+# What the diff says (`git diff 59413bd..HEAD -- .../lib.rs`): 452 insertions
+# against SEVEN deletions, and all seven are the changelog sentence, the version
+# constant, a version test, and the `radio`/`entry` element lines already
+# discussed above. Not one JSON key this brain reads was renamed or removed.
+# Cross-checked mechanically rather than by eye: all 19 action `type` strings
+# `contract.py` can emit are still accepted by `action_from_json`, and all 57
+# observation keys it reads are still emitted.
+#
+# The additions, for the record — v19 `armed_ability`/`active_spell_icons`,
+# v22 `chat`/`chat_messages`, v26 `bulletin_board`/`bulletin_message`, and about
+# thirty new ACTIONS across v19-v26 (party, chat, map pins, book writing, boats,
+# bulletin boards). `Observation.from_dict` reads by `d.get(...)` and ignores
+# everything else, so all of them are inert here until something asks.
+#
+# `armed_ability` is the one worth more than a bump, the way `terrain` and
+# `display` were before it: this project runs five warriors whose entire economy
+# is re-arming, and the body's own note is that a brain sending `UseAbility` had
+# no way to learn the move had been spent — the server acknowledges an arm only
+# by revoking it. "Armed and waiting" vs "already used" is exactly the
+# want-vs-refuse blindness that costs this project live runs. A follow-up, not a
+# reason to hold the bump.
+SUPPORTED_SCHEMA_VERSION = 26
 
 
 def default_bridge_path() -> Path:
