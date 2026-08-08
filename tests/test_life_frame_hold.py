@@ -325,20 +325,13 @@ def test_a_held_frame_is_bounded_by_its_own_deadline():
     the mode is held, since `expire_due` runs solely inside `Agent.tick` and is compared
     against that agent's own counter. Frozen, the deadline is unreachable by
     construction: 180 econ ticks never arrive when the econ agent stops at 5."""
-    body = _body(_item(0x900, SAW), _item(GOLD, GOLD_GRAPHIC, BOARD_BATCH_COST + 5))
-    life = CarpenterLife(body=body, persona=Persona(name="Sten"),
-                         routes={"vendor_spot": ((10, 10),), "banker_spot": ((10, 10),)})
-    life.set_leash((5, 5), 3)
-    frame = _run_to_admission(life)
-    assert frame is not None and frame.goal.params.get("capability") == "buy_boards"
+    body, life, frame = _expiring_craft_life()
     budget = frame.deadline_tick - frame.created_tick
-
-    body.items.pop(GOLD)  # the coin moves: the rule wants nothing at all now
     for _ in range(budget * 3):
         life.tick()
         if life.econ_agent.goal_stack.current is None:
             break
-    assert _history(life) == [("buy_boards", "expired")], (
+    assert _history(life) == [("craft_tongs", "expired")], (
         "the deadline is the hold's backstop and it must actually be reached")
     assert life.econ_agent.ticks <= budget + 2, (
         f"the frame outlived its {budget}-tick budget in the clock that budget is "
@@ -356,10 +349,17 @@ def _wedged_buy_life():
 
     Why both bounds die at once: every `*_can_yield` in `capabilities.py` carries an
     unconditional "idle UI" clause, so one open gump makes `deadline_can_expire` False
-    forever (bound 2) and makes every readiness gate refuse (bound 1). And a BUY frame
-    has no give-up ladder at all — only `SellItemCapability` and `BankGoldCapability`
-    ever write `cap_run_finished_goal_id`, the marker `CapabilityGoalComplete` needs to
-    close an unachieved run.
+    forever (bound 2) and makes every readiness gate refuse (bound 1).
+
+    **The third leg used to be "a BUY frame has no give-up ladder at all", and audit
+    follow-up 19 made that false** by giving both buy families the neutral
+    `cap_run_finished_goal_id` the sell and bank wrappers had carried since forge1. This
+    world now closes its frame through BOUND 1, at age 17 instead of at the 180-tick
+    deadline — which is the improvement, measured live at 540 dead ticks (audit §17.4).
+
+    So this fixture proves bound 1 now, and the bound-2 tests that used to stand on the
+    missing marker moved to `_expiring_craft_life` below. Keeping them on a buy frame
+    would have meant preserving the defect to keep testing around it.
     """
     body = _body(_item(0x900, SAW), _item(GOLD, GOLD_GRAPHIC, BOARD_BATCH_COST + 5))
     life = CarpenterLife(body=body, persona=Persona(name="Sten"),
@@ -372,6 +372,37 @@ def _wedged_buy_life():
     return body, life, frame
 
 
+def _expiring_craft_life(*, surface: bool = False):
+    """A frame only `expire_due` can close — the bound-2 vehicle, after follow-up 19.
+
+    A CRAFT frame, because `CraftItemCapability` writes no `cap_run_finished_goal_id`
+    and so still has no give-up ladder: the buy families do now, which is the whole
+    point of that follow-up. The material vanishes mid-craft, so the FSM cannot achieve
+    and cannot self-close, and the frame rides its full budget to the deadline.
+
+    This is the same recipe the LIVE bound-3 gate stages (`live_frame_overdue_gate.py`:
+    a tinker on its craft spot with `craft_tongs` the only branch its rule can reach),
+    which is the reason to trust it: the shape is one a shard has actually produced.
+    `surface` injects the unowned gump the overdue repair is supposed to close.
+    """
+    from anima2.skills.tinkering import INGOT_GRAPHICS, TinkerTongs
+
+    body = _body(_item(0x900, sorted(TinkerTongs.craft_tool_graphics)[0]),
+                 _item(0x901, sorted(INGOT_GRAPHICS)[0],
+                       TinkerTongs.craft_material_per_item * TinkerTongs.craft_batch * 4))
+    life = TinkerLife(body=body, persona=Persona(name="Pim"), routes={})
+    for memory in (life.memory, life.econ_agent.memory):
+        memory["craft_spot"] = (5, 5)
+    life.set_leash((5, 5), 3)
+    frame = _run_to_admission(life)
+    assert frame is not None and frame.goal.params.get("capability") == "craft_tongs"
+    for serial in [s for s, i in body.items.items() if i.graphic in INGOT_GRAPHICS]:
+        body.items.pop(serial)                             # the craft can never finish
+    if surface:
+        body.gumps = [GumpView(serial=0xABCD, gump_id=0x1234)]
+    return body, life, frame
+
+
 def test_an_overdue_frame_is_reached_by_a_plain_world_and_never_pins_the_life():
     """The hold's THIRD bound, and the reason it has to exist.
 
@@ -381,7 +412,7 @@ def test_an_overdue_frame_is_reached_by_a_plain_world_and_never_pins_the_life():
     work agent never ticked again, and the Life emitting nothing at all — which is
     strictly worse than the zombie frame the hold was written to fix.
     """
-    body, life, frame = _wedged_buy_life()
+    body, life, frame = _expiring_craft_life(surface=True)
     budget = frame.deadline_tick - frame.created_tick
     overdue_at = released_at = None
     for tick in range(1, budget * 3):
@@ -414,7 +445,7 @@ def test_an_overdue_frame_gets_the_stale_ui_repair_pointed_at_it_and_then_retire
     forever: the gump closes, `deadline_can_expire` comes back, and the frame expires on
     the economy agent's very next tick, leaving a clean stack.
     """
-    body, life, frame = _wedged_buy_life()
+    body, life, frame = _expiring_craft_life(surface=True)
     budget = frame.deadline_tick - frame.created_tick
     for _ in range(budget * 3):
         life.tick()
@@ -422,7 +453,7 @@ def test_an_overdue_frame_gets_the_stale_ui_repair_pointed_at_it_and_then_retire
             break
     assert not body.gumps, "the surface that blocked every yield was never closed"
     assert getattr(life, "_stale_ui_closes", 0) == 1, "and closed exactly once"
-    assert _history(life) == [("buy_boards", "expired")], (
+    assert _history(life) == [("craft_tongs", "expired")], (
         "with the surface gone the frame must actually retire, not sit stale forever")
     assert life.frame_overdue is False and life.holding_frame is False
 
@@ -604,9 +635,9 @@ def test_telemetry_names_an_overdue_frame_instead_of_leaving_it_to_arithmetic():
     two numbers on the line, and review-caught nobody makes that comparison. `!overdue`
     rides ALONGSIDE the other two markers, so the released stale frame reads
     `!frozen!overdue` — nobody is ticking it, and it is past its budget."""
-    body, life, frame = _wedged_buy_life()
+    body, life, frame = _expiring_craft_life(surface=True)
     budget = frame.deadline_tick - frame.created_tick
-    line = telemetry_line(life, "carpenter", body.observe())
+    line = telemetry_line(life, "tinker", body.observe())
     assert "!overdue" not in line, f"a frame inside its budget is not overdue: {line}"
 
     for _ in range(budget + 2):
@@ -614,8 +645,8 @@ def test_telemetry_names_an_overdue_frame_instead_of_leaving_it_to_arithmetic():
         if life.frame_overdue:
             break
     assert life.frame_overdue is True
-    line = telemetry_line(life, "carpenter", body.observe())
-    assert "admitted=buy_boards@" in line and "!overdue" in line, line
+    line = telemetry_line(life, "tinker", body.observe())
+    assert "admitted=craft_tongs@" in line and "!overdue" in line, line
 
 
 def test_the_runner_prints_the_overdue_report_and_throttles_it(capsys):
@@ -710,14 +741,14 @@ def test_a_deadline_retirement_is_reported_as_bound_2_not_bound_1():
     `expire_due` can close it."""
     from anima2.life_runner import frame_retirements, retirement_tally
 
-    body, life, frame = _wedged_buy_life()
+    body, life, frame = _expiring_craft_life()
     budget = frame.deadline_tick - frame.created_tick
     for _ in range(budget * 3):
         life.tick()
         if life.econ_agent.goal_stack.current is None:
             break
     rows = frame_retirements(life)
-    assert len(rows) == 1 and rows[0][1] == "buy_boards"
+    assert len(rows) == 1 and rows[0][1] == "craft_tongs"
     assert rows[0][4] == "expired", rows
     assert rows[0][2] >= budget, f"bound 2 closes AT the deadline, not before: {rows}"
     assert retirement_tally(life) == "retired=1:1x"
@@ -854,3 +885,35 @@ def test_the_tally_rides_the_status_line_because_the_alarm_scrolls_away():
         if life.econ_agent.goal_stack.current is None:
             break
     assert "retired=1:1g" in telemetry_line(life, "carpenter", body.observe())
+
+
+def test_a_given_up_buy_frame_retires_through_bound_1_instead_of_its_deadline():
+    """Audit follow-up 19, and the reason it stopped being a guess.
+
+    `market.py` has written the neutral `cap_run_finished_goal_id` on the SELL (:1681)
+    and BANK (:2072) give-up paths since forge1/forge13, and on NEITHER buy path. So a
+    buy trip that gave up and walked home left a frame nothing could close except
+    `expire_due` — bound 2 doing bound 1's job at ~40x the cost.
+
+    MEASURED live before the fix, which is why the deferral ("a behaviour change nobody
+    has measured") no longer applies: a 1200-tick forge run retired THREE `buy_iron`
+    frames at exactly `180/180`, with 55 samples showing the frame admitted, the gate
+    ready, `mkt_phase=craft` and no hold/frozen/overdue marker — 540 dead economy ticks,
+    45% of the run, on the one positive-margin chain this project has (audit §17.4).
+
+    This is the same `_wedged_buy_life` world that used to prove bound 2. It proves
+    bound 1 now, and the age is the whole point."""
+    from anima2.life_runner import frame_retirements
+
+    body, life, frame = _wedged_buy_life()
+    budget = frame.deadline_tick - frame.created_tick
+    for _ in range(budget * 3):
+        life.tick()
+        if life.econ_agent.goal_stack.current is None:
+            break
+    rows = frame_retirements(life)
+    assert len(rows) == 1 and rows[0][1] == "buy_boards", rows
+    assert rows[0][4] == "giveup", f"the give-up ladder must close it, not the clock: {rows}"
+    assert rows[0][2] < budget // 2, (
+        f"it must close EARLY — the whole point is not paying the {budget}-tick "
+        f"deadline for a decision the FSM already made: {rows}")

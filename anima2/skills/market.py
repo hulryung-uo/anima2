@@ -2244,6 +2244,26 @@ class BuyMaterialCapability(BlacksmithMarket):
             ctx.memory.pop("buy_return_leg", None)
             ctx.memory["mkt_phase"] = "craft"
             ctx.memory["cap_buy_finished_goal_id"] = goal_id
+            # Neutral run-finished marker for `CapabilityGoalComplete` — the SAME line
+            # the sell and bank wrappers have carried since forge1/forge13, and the one
+            # the two buy families were missing (audit follow-up 19). A run that ended
+            # WITHOUT achievement (the FSM gave up and walked home) must still CLOSE its
+            # frame; without it the frame sits admitted until its DEADLINE while every
+            # step no-ops on the family-specific finished id, which is bound 2 doing
+            # bound 1's job at ~40x the cost.
+            #
+            # MEASURED live before this was written, which is why it is no longer a
+            # guess: a 1200-tick forge run (2026-08-07, audit §17.4) retired THREE
+            # `buy_iron` frames at exactly `180/180`, with 55 samples showing the frame
+            # admitted, the gate ready, `mkt_phase=craft` and no hold/frozen/overdue
+            # marker — 540 dead economy ticks, 45% of the run, on the one
+            # positive-margin chain this project has.
+            #
+            # Set UNCONDITIONALLY, exactly as sell and bank set it: `CapabilityGoalComplete`
+            # tests `_achieved` FIRST and returns SUCCESS there, so a run that DID achieve
+            # never consults this marker. It is the give-up branch's key, not a
+            # give-up flag.
+            ctx.memory["cap_run_finished_goal_id"] = goal_id
             stand = ctx.memory.get("bs_stand")
             if (
                 isinstance(stand, (tuple, list))
@@ -2428,6 +2448,26 @@ class BuyToolCapability(BlacksmithMarket):
             ctx.memory.pop("toolbuy_return_leg", None)
             ctx.memory["mkt_phase"] = "craft"
             ctx.memory["cap_toolbuy_finished_goal_id"] = goal_id
+            # Neutral run-finished marker for `CapabilityGoalComplete` — the SAME line
+            # the sell and bank wrappers have carried since forge1/forge13, and the one
+            # the two buy families were missing (audit follow-up 19). A run that ended
+            # WITHOUT achievement (the FSM gave up and walked home) must still CLOSE its
+            # frame; without it the frame sits admitted until its DEADLINE while every
+            # step no-ops on the family-specific finished id, which is bound 2 doing
+            # bound 1's job at ~40x the cost.
+            #
+            # MEASURED live before this was written, which is why it is no longer a
+            # guess: a 1200-tick forge run (2026-08-07, audit §17.4) retired THREE
+            # `buy_iron` frames at exactly `180/180`, with 55 samples showing the frame
+            # admitted, the gate ready, `mkt_phase=craft` and no hold/frozen/overdue
+            # marker — 540 dead economy ticks, 45% of the run, on the one
+            # positive-margin chain this project has.
+            #
+            # Set UNCONDITIONALLY, exactly as sell and bank set it: `CapabilityGoalComplete`
+            # tests `_achieved` FIRST and returns SUCCESS there, so a run that DID achieve
+            # never consults this marker. It is the give-up branch's key, not a
+            # give-up flag.
+            ctx.memory["cap_run_finished_goal_id"] = goal_id
             stand = ctx.memory.get("bs_stand")
             if (
                 isinstance(stand, (tuple, list))
