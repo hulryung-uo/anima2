@@ -597,14 +597,14 @@ class LifeRunner:
         grew its `knobs` argument. Call it AFTER `econ_memory` lands — a spec's own
         `econ_memory` may carry `bank_reserve`, and that write is the last one.
         """
-        from .skills.movement import wander_leash
+        from .skills.movement import leash_readout
 
         seed = f" and {staged.seed_gold}g seed" if staged.seed_gold else ", broke"
         reserve = _bank_reserve(life.econ_agent.memory)
         # The leash for the same reason as the reserve, and with one extra: it is the one
         # knob something ELSE writes (`set_leash`, from `Staged.leash`), so the number a
         # tuned run actually wanders under is not derivable from either input alone.
-        leash = wander_leash(life.econ_agent.memory)
+        leash = leash_readout(life.econ_agent.memory, life)
         return (f"staged: {self.spec.persona_name}@{staged.home}{seed}"
                 f"  (reserve {reserve}, leash {leash})"
                 + (f"  {staged.banner}" if staged.banner else ""))

@@ -1939,11 +1939,9 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     # printing the local would start lying the moment anyone tuned this runner — the
     # same defect `run_carpenter_life`'s banner had before it read the built Life, and
     # the reason `run_forge_pair`'s survived becoming tunable unchanged.
-    from .skills.movement import leash_readout, wander_leash
-    effective = wander_leash(sten.econ_agent.memory)
-    tuned = "" if effective == sten_leash else f", TUNED from a derived {sten_leash}"
-    print(f"  Sten leashed to the drop at {leash_readout(sten.econ_agent.memory)} "
-          f"tiles{tuned} "
+    from .skills.movement import leash_readout
+    print(f"  Sten leashed to the drop at "
+          f"{leash_readout(sten.econ_agent.memory, sten)} tiles "
           f"(shops reach {shop_reach}, pickup radius {PICKUP_RADIUS})")
     # Both reserves read off the BUILT Lives through `market._bank_reserve` — the clamp
     # the decide rule, the `bank_gold` gate and `BankGold`'s FSM all share. This runner
@@ -2182,7 +2180,7 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     print(f"staged: Grimm@({mgx},{mgy}) -> drop {TRADE_SMITH_SPOT} -> Pim@({tgx},{tgy}) "
           f"(reserve {_bank_reserve(pim.econ_agent.memory)}, "
           f"trip surplus {bank_trip_surplus(pim.econ_agent.memory)}, "
-          f"leash {leash_readout(pim.econ_agent.memory)}, both broke)\n")
+          f"leash {leash_readout(pim.econ_agent.memory, pim)}, both broke)\n")
 
     status: dict[int, str] = {}
     lock = threading.Lock()
@@ -2609,7 +2607,8 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         from .skills.movement import leash_readout
         _m = warriors[0]["life"].econ_agent.memory
         print(f"staged {len(warriors)} warrior(s). the hunt begins.  "
-              f"(reserve {_bank_reserve(_m)}, leash {leash_readout(_m)})\n")
+              f"(reserve {_bank_reserve(_m)}, "
+              f"leash {leash_readout(_m, warriors[0]['life'])})\n")
 
         status: dict[int, str] = {}
         lock = threading.Lock()
@@ -3139,7 +3138,7 @@ def run_artisan_mage_village(*, host: str = "127.0.0.1", port: int = 2594,
         from .skills.movement import leash_readout
         print(f"staged: artisan@({tx},{ty}) with iron | mage@({mx},{my}) broke, hunting"
               f"  (mage reserve {_bank_reserve(mage.econ_agent.memory)}, "
-              f"leash {leash_readout(mage.econ_agent.memory)})\n")
+              f"leash {leash_readout(mage.econ_agent.memory, mage)})\n")
 
         status: dict[int, str] = {}
         lock = threading.Lock()
@@ -3289,6 +3288,15 @@ def _route_knobs(parsed: dict[str, int], roles: tuple[str, ...], *, runner: str,
             raise SystemExit(
                 f"--knob {key}={value}: {runner} has no {role!r}. "
                 f"Roles here: {', '.join(roles)}")
+        # `bank_reserve=1` and `carpenter:bank_reserve=2` are DIFFERENT parser keys that
+        # land on the same role and knob, so without this the second silently overwrote
+        # the first — a knob the run ignores, which is the one thing this function exists
+        # to refuse. Review-caught.
+        if name in by_role[role]:
+            raise SystemExit(
+                f"--knob {name} was given twice for {role!r} on {runner} "
+                f"({by_role[role][name]} and {value}). A bare KEY=VALUE and a "
+                f"{role}:KEY=VALUE are the same knob; pass one.")
         by_role[role][name] = value
     return by_role
 

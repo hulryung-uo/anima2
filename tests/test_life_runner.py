@@ -379,9 +379,18 @@ def test_the_staged_line_reports_the_reserve_the_life_actually_keeps():
     staged = Staged(routes={}, home=(10, 20), seed_gold=99, banner="with a saw")
 
     plain = LifeRunner(_carpenter_spec())
-    line = plain.staged_line(plain.build_life(_MockBody(), {}), staged)
+    life = plain.build_life(_MockBody(), {})
+    # `run()` calls `set_leash(staged.home, staged.leash)` BEFORE `staged_line`; without
+    # it the leash is genuinely inert and the line says so, which is asserted below.
+    life.set_leash(staged.home)
+    line = plain.staged_line(life, staged)
     assert line == (f"staged: Sten@(10, 20) and 99g seed  "
                     f"(reserve {BANK_RESERVE}, leash {Wander.leash})  with a saw")
+
+    # No home yet — the readout must NOT print a bare number it cannot deliver.
+    unleashed = LifeRunner(_carpenter_spec())
+    assert "inert: no wander_home" in unleashed.staged_line(
+        unleashed.build_life(_MockBody(), {}), staged)
 
     tuned = LifeRunner(_carpenter_spec(bank_reserve=4242))
     assert "(reserve 4242," in tuned.staged_line(tuned.build_life(_MockBody(), {}), staged)
@@ -407,6 +416,7 @@ def test_a_specs_own_econ_memory_reserve_is_what_the_line_reports():
     life = runner.build_life(_MockBody(), {})
     staged = Staged(routes={}, home=(1, 2), econ_memory={"bank_reserve": 77})
     life.econ_agent.memory.update(staged.econ_memory)   # the ordering `run()` uses
+    life.set_leash(staged.home)
     assert runner.staged_line(life, staged) == (
         "staged: Sten@(1, 2), broke  (reserve 77, leash 8)")
 

@@ -2313,13 +2313,13 @@ def test_a_window_already_open_is_adopted_by_BOTH_buy_fsms(ns, skill):
 
 
 @pytest.mark.parametrize("ns,skill", [("buy", BuyIron()), ("toolbuy", BuyTinkerTool())])
-def test_a_FOREIGN_window_is_cancelled_once_and_then_waited_on(ns, skill):
+def test_a_FOREIGN_window_is_cancelled_and_the_cancel_is_re_sent_if_it_is_lost(ns, skill):
     """Someone else's window blocks us just as completely, so cancel it — but ONCE. The
     branch used to re-send the cancel every tick while the observation lag lasted, and
     (because it returned before the stage's own counter was touched) a window that never
     closed produced a cancel every tick FOREVER: bounded only by the frame deadline
     outside this FSM, never by the POPUP_TIMEOUT that exists to bound it."""
-    from anima2.skills.market import POPUP_TIMEOUT
+    from anima2.skills.market import ASK_RETRY, POPUP_TIMEOUT
 
     mem = _popup_trip_mem(ns)
     step = skill._buy_step if ns == "buy" else skill._toolbuy_step
@@ -2333,8 +2333,18 @@ def test_a_FOREIGN_window_is_cancelled_once_and_then_waited_on(ns, skill):
 
     first = tick()
     assert first.action == BuyItems(vendor=0xDEAD, items=[]), "cancel the foreign window"
-    # ...and the SECOND tick waits for it to go rather than re-sending the cancel.
-    assert tick().action is None
+    # ...and the following ticks wait rather than re-sending on every one of them.
+    # `closing_wait` reaches ASK_RETRY on the tick the cancel is re-sent, so the
+    # quiet stretch between two sends is ASK_RETRY-1 ticks long.
+    assert all(tick().action is None for _ in range(ASK_RETRY - 1))
+
+    # But a cancel is a PACKET and a packet can be dropped, so it is re-sent on
+    # `_popup_click`'s own cadence. Sending it exactly once was review-caught: a lost
+    # cancel ended the trip on POPUP_TIMEOUT with the blocking window still open, and
+    # `_close_own_vendor_window` deliberately refuses another vendor's window, so nothing
+    # else would have closed it either. Unbounded re-sending was self-healing; this is
+    # self-healing AND bounded.
+    assert tick().action == BuyItems(vendor=0xDEAD, items=[]), "the cancel is never retried"
 
     # The whole stage is bounded now: a window that never closes ends the trip.
     for _ in range(POPUP_TIMEOUT + 5):
@@ -2407,3 +2417,33 @@ def test_the_closing_marker_is_scoped_to_ONE_trip(ns):
     # FSM without a line here is visible as an asymmetry rather than as a live defect
     # three weeks later.
     assert f"{ns}_offer_reopens" in owner._CLEANUP_KEYS
+
+
+def test_a_torn_down_trip_leaves_no_per_trip_counter_for_the_next_one():
+    """`_CLEANUP_KEYS` is popped when a trip ends NORMALLY — the step function returns
+    `None` and the phase switches to the walk home. A frame torn down MID-trip never
+    reaches that line, and bound 2 (a frame expiring on its deadline) makes that a
+    measured shape rather than a hypothetical: audit §6.3 recorded `buy_iron` frames
+    closing exactly that way on a shard.
+
+    Left behind, a spent `offer_reopens` makes the next trip give up on its first
+    `window` tick (measured before the key was added to `_CLEANUP_KEYS` at all: trips 2
+    and 3 gave up on tick 1), and a stale `closing_window` makes its popup stage wait out
+    POPUP_TIMEOUT for a window nobody is closing. Review-caught."""
+    from anima2.skills.market import OFFER_REOPEN_ATTEMPTS
+
+    for ns, skill in (("buy", BuyIron()), ("toolbuy", BuyTinkerTool())):
+        # A trip's wreckage, exactly as a mid-trip teardown leaves it.
+        mem = {"vendor_spot": VENDOR, "bs_stand": (0, 0),
+               f"{ns}_offer_reopens": OFFER_REOPEN_ATTEMPTS,
+               f"{ns}_closing_window": True, f"{ns}_closing_wait": 3,
+               f"cap_{ns}_goal_id": 7}
+        skill._begin_goal(_ctx([_backpack()], memory=mem, goal_id=8))  # a NEW goal
+        for key in (f"{ns}_offer_reopens", f"{ns}_closing_window", f"{ns}_closing_wait"):
+            assert key not in mem, f"{key} survived into the next trip"
+
+    # ...and the SAME goal is not a new trip, so an in-flight one is left alone.
+    mem = {"vendor_spot": VENDOR, "bs_stand": (0, 0), "buy_offer_reopens": 2,
+           "cap_buy_goal_id": 7}
+    BuyIron()._begin_goal(_ctx([_backpack()], memory=mem, goal_id=7))
+    assert mem["buy_offer_reopens"] == 2, "a continuing trip lost its own counter"

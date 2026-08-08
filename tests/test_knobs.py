@@ -804,7 +804,8 @@ def test_every_life_bearing_runner_reports_what_it_will_actually_run_under():
 
     # ...and the central one really does read both knobs it prints.
     staged = inspect.getsource(LifeRunner.staged_line)
-    assert "_bank_reserve(" in staged and "wander_leash(" in staged
+    assert "_bank_reserve(" in staged
+    assert "leash_readout(" in staged or "wander_leash(" in staged
 
 
 def test_an_inert_leash_is_reported_as_inert():
@@ -821,3 +822,76 @@ def test_an_inert_leash_is_reported_as_inert():
     # A malformed home is no home — same shape check `_homeward` applies, one definition.
     for bad in (None, (1, 2, 3), "5,5", (True, False), 5):
         assert "inert" in leash_readout({"wander_leash": 3, "wander_home": bad}), repr(bad)
+
+
+# --- what an independent review of the above found (2026-08-07) -----------------------
+
+
+def test_a_bare_and_a_prefixed_copy_of_one_knob_is_refused_not_silently_merged():
+    """`bank_reserve=1` and `carpenter:bank_reserve=2` are DIFFERENT parser keys that
+    land on the same role and knob, so the second silently overwrote the first — a knob
+    the run ignores, which is the one thing `_route_knobs` exists to refuse. It was
+    refusing the ambiguous and the unknown while quietly dropping the duplicated."""
+    from anima2.village import _route_knobs
+
+    with pytest.raises(SystemExit, match="twice"):
+        _route_knobs({"bank_reserve": 1, "carpenter:bank_reserve": 2}, ("carpenter",),
+                     runner="--carpenter", default_role="carpenter")
+    # The same key for DIFFERENT roles is not a duplicate — that is the prefix's job.
+    out = _route_knobs({"woodsman:bank_reserve": 1, "carpenter:bank_reserve": 2},
+                       ("woodsman", "carpenter"), runner="--supply-pair",
+                       default_role=None)
+    assert out == {"woodsman": {"bank_reserve": 1}, "carpenter": {"bank_reserve": 2}}
+
+
+def test_a_tuned_leash_outranks_STAGING_only_and_a_later_re_leash_wins():
+    """The precedence was applied to every `set_leash` call for the Life's lifetime, and
+    that was review-caught as breaking a real caller: `live_frame_overdue_gate` teleports
+    the tinker and re-leashes it to the new spot, with a stated invariant that `Wander`
+    must not walk it back. Against a tuned Life that re-leash became a no-op and the gate
+    could report a bogus pass. Nothing tunes that gate today, so it was latent.
+
+    The split: a runner's STAGING call passes a value derived from the world as a
+    default and yields to tuning; a LATER call is a runtime decision and wins."""
+    from anima2.carpenter_life import CarpenterLife
+    from anima2.life_runner import build_tuned_life
+    from anima2.skills.movement import wander_leash
+
+    life = build_tuned_life(CarpenterLife, {"wander_leash": 3}, body=_MockBody(),
+                            persona=Persona(name="Sten"), routes={})
+    life.set_leash((10, 20), 9)                 # staging: the derived default yields
+    assert wander_leash(life.econ_agent.memory) == 3
+    life.set_leash((30, 40), 2)                 # a runtime decision: it wins
+    for memory in (life.hunt_agent.memory, life.econ_agent.memory):
+        assert wander_leash(memory) == 2
+        assert memory["wander_home"] == (30, 40)
+
+
+def test_a_leash_tuned_past_its_runners_derived_reach_says_so():
+    """`wander_leash` is clamped downward only, on purpose — §E calls it "exploration
+    radius" and an axis that cannot explore upward is not one. But `run_forge_pair` and
+    `run_supply_pair` DERIVE `min(max(1, shop_reach), PICKUP_RADIUS - 1)` so the agent
+    stays inside pickup range of its own ground drop, which is the live-caught defect
+    Sten's leash exists to prevent. A tuned 40 is a legitimate thing for a search to try
+    and a silent way for the flagship chain to stop closing, so the BANNER says so rather
+    than the clamp refusing it. Review-caught."""
+    from anima2.life_runner import build_tuned_life
+    from anima2.skills.movement import leash_readout
+    from anima2.tinker_life import TinkerLife
+
+    life = build_tuned_life(TinkerLife, {"wander_leash": 40}, body=_MockBody(),
+                            persona=Persona(name="Pim"), routes={})
+    life.set_leash((10, 10), 5)                 # the derived, correctness-bearing value
+    out = leash_readout(life.econ_agent.memory, life)
+    assert "40" in out and "TUNED over a derived 5" in out and "unfetched" in out
+
+    # Tuned BELOW the derived reach is not a hazard and must not be shouted about.
+    tight = build_tuned_life(TinkerLife, {"wander_leash": 2}, body=_MockBody(),
+                             persona=Persona(name="Pim"), routes={})
+    tight.set_leash((10, 10), 5)
+    assert leash_readout(tight.econ_agent.memory, tight) == "2"
+    # ...and an untuned Life reports the derived value plainly.
+    plain = build_tuned_life(TinkerLife, None, body=_MockBody(),
+                             persona=Persona(name="Pim"), routes={})
+    plain.set_leash((10, 10), 5)
+    assert leash_readout(plain.econ_agent.memory, plain) == "5"

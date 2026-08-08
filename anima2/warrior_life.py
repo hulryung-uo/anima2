@@ -404,6 +404,12 @@ class WarriorLife:
         #: `_leash_tuned` is how `set_leash` knows the difference between "nobody has set
         #: this yet" and "a caller chose it".
         self._leash_tuned = wander_leash is not None
+        #: The staging leash a tuned value overrode, once `set_leash` has been called —
+        #: `None` until then. Kept so a banner can report the override rather than only
+        #: the winner, because several runners DERIVE their leash from a correctness
+        #: constraint (`PICKUP_RADIUS - 1`, so a delivery stays fetchable) rather than
+        #: from taste, and a tuned value above it silently stops the chain closing.
+        self._leash_derived: int | None = None
         if self._leash_tuned:
             for memory in (self.hunt_agent.memory, self.econ_agent.memory):
                 memory["wander_leash"] = wander_leash
@@ -446,15 +452,38 @@ class WarriorLife:
         supply drop onto ground it could not walk back from. Its `fetch_boards` goal
         stayed correctly admitted and ready the whole time, walking into a wall.
 
-        `home` is ALWAYS written; `leash` is the runner's DERIVED default and yields to a
-        value tuned at construction. See the `_leash_tuned` comment there — a tuning
-        channel whose value the next line silently overwrites is worse than no channel,
-        because it reports success. The home is not a knob and has no such contest.
+        `home` is ALWAYS written; it is not a knob and has no contest.
+
+        **A tuned `wander_leash` outranks the STAGING leash only — the FIRST explicit
+        `leash` this Life is given — and every later call wins outright.** The first
+        version made the tuned value outrank every call for the Life's lifetime, which
+        was review-caught as breaking a real caller: `live_frame_overdue_gate.py`
+        teleports the tinker and then re-leashes it to the new spot, with a stated
+        invariant ("if `Survive` ever let go, `Wander` would walk the tinker back onto
+        its craft spot and the rule would want the economy again on its OWN account,
+        silently un-engaging the hold"). Against a tuned Life that re-leash became a
+        no-op and the gate could report a bogus pass. Nothing tunes that gate today, so
+        this was latent, not live.
+
+        The split is the honest one: a runner's staging call passes a value DERIVED from
+        the world (`min(max(1, shop_reach), PICKUP_RADIUS - 1)`) as a default, and a
+        tuning channel whose value the next line overwrites is worse than no channel
+        because it reports success. A LATER call is a decision somebody made at runtime,
+        and a knob set before the run began has no business overriding one.
         """
         for memory in (self.hunt_agent.memory, self.econ_agent.memory):
             memory["wander_home"] = home
             if leash is not None and not self._leash_tuned:
                 memory["wander_leash"] = leash
+        if leash is not None:
+            #: What the staging call ASKED for, kept so a banner can say that a tuned
+            #: value overrode it and by how much (see `village`'s staged lines): several
+            #: derived leashes are correctness constraints, not preferences.
+            if self._leash_derived is None:
+                self._leash_derived = leash
+            # Consumed: the tuned value has now outranked the staging default once, and
+            # anything after this is a runtime decision.
+            self._leash_tuned = False
 
     def set_route(self, key: str, value) -> None:
         """Configure a vendor route on both the decision inputs and the economy agent."""

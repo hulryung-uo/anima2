@@ -833,6 +833,7 @@ class BlacksmithMarket(Blacksmith):
                     # visible through the observation lag, and the whole re-roll budget
                     # burns on one snapshot (the 4/2/1/1 measurement below).
                     ctx.memory["buy_closing_window"] = True
+                    ctx.memory["buy_closing_wait"] = 0
                     ctx.memory.pop("buy_popup_wait", None)
                     ctx.memory.pop("buy_ask_wait", None)
                     # CLOSE the window, which is what makes this a re-roll at all.
@@ -1051,6 +1052,7 @@ class BlacksmithMarket(Blacksmith):
                     ctx.memory["toolbuy_offer_reopens"] = tries + 1
                     ctx.memory["toolbuy_stage"] = "popup"
                     ctx.memory["toolbuy_closing_window"] = True
+                    ctx.memory["toolbuy_closing_wait"] = 0
                     ctx.memory.pop("toolbuy_popup_wait", None)
                     ctx.memory.pop("toolbuy_ask_wait", None)
                     # CLOSE the window to re-roll it — see the material buy's matching
@@ -1166,15 +1168,31 @@ class BlacksmithMarket(Blacksmith):
         window = ctx.obs.shop_buy
         closing = f"{ns}_closing_window"
         if window is None:
-            ctx.memory.pop(closing, None)  # our cancel landed; the next window is fresh
+            # Our cancel landed; the next window is a fresh subset.
+            ctx.memory.pop(closing, None)
+            ctx.memory.pop(f"{ns}_closing_wait", None)
         elif ctx.memory.get(closing):
-            return SkillResult(Status.RUNNING, None, reward)  # wait for it to actually go
+            # Waiting for a cancel we already sent. RE-SEND on the same cadence
+            # `_popup_click` re-requests a menu on, because a cancel is a packet and a
+            # packet can be dropped: the first version sent it exactly once and then
+            # waited out `POPUP_TIMEOUT`, so a lost cancel ended the trip with the
+            # blocking window still open — and `_close_own_vendor_window`, the exit-edge
+            # repair, deliberately refuses a window belonging to another vendor, so
+            # nothing else would have closed it either. The code this replaced re-sent
+            # every tick: unbounded, but self-healing. This is both. Review-caught.
+            wait = ctx.memory.get(f"{ns}_closing_wait", 0) + 1
+            ctx.memory[f"{ns}_closing_wait"] = wait
+            if wait % ASK_RETRY:
+                return SkillResult(Status.RUNNING, None, reward)
+            return SkillResult(Status.RUNNING,
+                               BuyItems(vendor=window.vendor, items=[]), reward)
         elif window.vendor == vendor_serial:
             return _ADOPT_WINDOW
         else:
-            # Someone else's window. Cancel it ONCE and wait, rather than re-sending the
+            # Someone else's window. Cancel it and wait, rather than re-sending the
             # cancel every tick until the lag resolves.
             ctx.memory[closing] = True
+            ctx.memory[f"{ns}_closing_wait"] = 0
             return SkillResult(Status.RUNNING,
                                BuyItems(vendor=window.vendor, items=[]), reward)
         action = self._popup_click(ctx, vendor_serial, BUY_CLILOC, f"{ns}_popup_wait")
@@ -2110,6 +2128,7 @@ class BuyMaterialCapability(BlacksmithMarket):
         # POPUP_TIMEOUT. Added to this tuple in the SAME commit that introduced it —
         # `buy_offer_reopens` is here because it was not.
         "buy_closing_window",
+        "buy_closing_wait",
     )
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
@@ -2118,6 +2137,22 @@ class BuyMaterialCapability(BlacksmithMarket):
             return False
         if ctx.memory.get("cap_buy_goal_id") == goal_id:
             return True
+
+        # A NEW goal id is a NEW trip, and these two are per-TRIP counters. They are in
+        # `_CLEANUP_KEYS`, which is popped when a trip ends NORMALLY — and a frame torn
+        # down mid-trip never reaches that line, so they leaked into the next trip: a
+        # spent `buy_offer_reopens` made it give up on its first `window` tick, and a
+        # stale `buy_closing_window` made its popup stage wait out `POPUP_TIMEOUT` for a
+        # window nobody was closing. Bound 2 (a frame expiring on its deadline) makes
+        # that teardown a MEASURED shape rather than a hypothetical — audit §6.3 recorded
+        # `buy_iron` frames closing exactly that way on a shard. Review-caught.
+        #
+        # Deliberately NOT the whole of `_CLEANUP_KEYS`: the STAGE keys have the same
+        # exposure and clearing them is a wider behaviour change on the flagship path
+        # that nothing offline can validate. Named as a follow-up instead.
+        ctx.memory.pop("buy_offer_reopens", None)
+        ctx.memory.pop("buy_closing_window", None)
+        ctx.memory.pop("buy_closing_wait", None)
 
         vendor = ctx.memory.get(self.vendor_spot_key)
         try:
@@ -2279,6 +2314,7 @@ class BuyToolCapability(BlacksmithMarket):
         # `BuyMaterialCapability._CLEANUP_KEYS` for the measurement.
         "toolbuy_offer_reopens",
         "toolbuy_closing_window",
+        "toolbuy_closing_wait",
     )
 
     def _begin_goal(self, ctx: SkillContext) -> bool:
@@ -2287,6 +2323,22 @@ class BuyToolCapability(BlacksmithMarket):
             return False
         if ctx.memory.get("cap_toolbuy_goal_id") == goal_id:
             return True
+
+        # A NEW goal id is a NEW trip, and these two are per-TRIP counters. They are in
+        # `_CLEANUP_KEYS`, which is popped when a trip ends NORMALLY — and a frame torn
+        # down mid-trip never reaches that line, so they leaked into the next trip: a
+        # spent `toolbuy_offer_reopens` made it give up on its first `window` tick, and a
+        # stale `toolbuy_closing_window` made its popup stage wait out `POPUP_TIMEOUT` for a
+        # window nobody was closing. Bound 2 (a frame expiring on its deadline) makes
+        # that teardown a MEASURED shape rather than a hypothetical — audit §6.3 recorded
+        # `buy_iron` frames closing exactly that way on a shard. Review-caught.
+        #
+        # Deliberately NOT the whole of `_CLEANUP_KEYS`: the STAGE keys have the same
+        # exposure and clearing them is a wider behaviour change on the flagship path
+        # that nothing offline can validate. Named as a follow-up instead.
+        ctx.memory.pop("toolbuy_offer_reopens", None)
+        ctx.memory.pop("toolbuy_closing_window", None)
+        ctx.memory.pop("toolbuy_closing_wait", None)
 
         vendor = ctx.memory.get(self.vendor_spot_key)
         try:

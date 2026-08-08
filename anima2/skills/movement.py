@@ -111,7 +111,7 @@ def wander_home(memory) -> tuple[int, int] | None:
     return None
 
 
-def leash_readout(memory) -> str:
+def leash_readout(memory, life=None) -> str:
     """What the leash will ACTUALLY do, for an operator's banner — not just its value.
 
     `wander_leash` is a knob on every Life (§E's "exploration radius"), and it is inert
@@ -124,10 +124,26 @@ def leash_readout(memory) -> str:
     which is the defect this whole thread has been closing, arriving through a knob that
     LOOKS wired on every runner because `WarriorLife.KNOBS` is inherited by all five
     Lives. So the readout names the missing half instead.
+
+    **`life`, when given, adds the OTHER half: what the tuned value overrode.** The knob
+    is clamped downward only, on purpose — §E calls this axis "exploration radius" and an
+    axis that cannot explore upward is not one. But several runners DERIVE their leash
+    from a correctness constraint rather than from taste: `run_forge_pair` and
+    `run_supply_pair` both compute `min(max(1, shop_reach), PICKUP_RADIUS - 1)` so the
+    agent stays inside pickup range of its own ground drop, which is the live-caught
+    defect Sten's leash exists to prevent. A tuned 40 there is a legitimate thing for a
+    search to try and a silent way for the flagship chain to stop closing, so the readout
+    says so rather than the clamp refusing it. Review-caught.
     """
     leash = wander_leash(memory)
     home = wander_home(memory)
-    return f"{leash}" if home is not None else f"{leash} (inert: no wander_home)"
+    if home is None:
+        return f"{leash} (inert: no wander_home)"
+    derived = getattr(life, "_leash_derived", None) if life is not None else None
+    if type(derived) is int and leash > derived:
+        return (f"{leash} (TUNED over a derived {derived} — beyond the range this runner "
+                f"computed for reaching its own drop; deliveries may go unfetched)")
+    return f"{leash}"
 
 
 class GoTo(Skill):
