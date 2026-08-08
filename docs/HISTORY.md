@@ -943,6 +943,33 @@ runner. Also verified: all 100 modules import clean, including the untested `liv
 **Nothing live** — the shard is down and the whole week remains unvalidated on a shard.
 1521 → **1523 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §14.
 
+**An independent review of the week, and the five defects a self-review missed
+(2026-08-07).** The self-review above found three things; an independent high-effort pass
+over the same range found five more, all real and all reproduced before being fixed — which
+is the entry's point, since reading your own diff is worth doing and is not a substitute.
+(1) `wander_leash` is clamped downward only and OVERRIDES leashes that are correctness
+constraints: `run_forge_pair` and `run_supply_pair` both derive
+`min(max(1, shop_reach), PICKUP_RADIUS - 1)` so the agent stays in pickup range of its own
+drop, and `--knob wander_leash=40` silently stops the flagship chain closing. Not fixed
+with a ceiling — an exploration radius that cannot explore upward is not an axis — but by
+making the banner name the override. (2) The new `set_leash` precedence applied to EVERY
+call, so `live_frame_overdue_gate`'s deliberate mid-run re-leash became a no-op against a
+tuned Life and the gate could report a bogus pass; a tuned value now outranks the STAGING
+call only and a later one wins. (3) The foreign-window cancel was sent exactly once: a
+dropped packet ended the trip on POPUP_TIMEOUT with the blocking window still open, and the
+exit-edge repair deliberately refuses another vendor's window, so nothing else would close
+it. The code it replaced was unbounded but self-healing; it is now both. (4) The per-trip
+counters survive a frame torn down MID-trip, because `_CLEANUP_KEYS` is only popped when a
+trip ends normally — and bound 2 makes that teardown a measured shape, not a hypothetical.
+Cleared at the start of a new goal, NARROWLY: the first attempt popped all of
+`_CLEANUP_KEYS` for all four families, broke six bank tests and was reverted, because
+clearing the stage keys is a wider behaviour change on the flagship path that nothing
+offline can validate (follow-up 23). (5) `_route_knobs` silently dropped a duplicated knob
+— `bank_reserve=1` and `carpenter:bank_reserve=2` are different parser keys landing on the
+same knob — which is the one failure its own docstring says it exists to prevent. All five
+mutation-checked. **Offline only**, and two of the five were latent rather than live.
+1523 → **1527 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §15.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
