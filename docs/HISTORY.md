@@ -1032,6 +1032,34 @@ re-roll path and the closing-window marker still never fired; and bound 1 is STI
 unexercised, since all three give-ups retired through bound 2 instead. 1527 tests, ruff
 clean. Detail: `docs/AUDIT-2026-07-29.md` §17.
 
+**Follow-up 19 applied, and the re-run did NOT prove it (2026-08-09).** `market.py` now
+writes the neutral `cap_run_finished_goal_id` on both buy families' return phases, where
+the sell and bank wrappers have written it since forge1/forge13 — set UNCONDITIONALLY,
+because `CapabilityGoalComplete` tests achievement FIRST and returns SUCCESS there, so it
+is the give-up branch's KEY and not a give-up flag. Offline, a frame that used to ride to
+`180/180` retires `-> giveup` at **age 17**; mutation-checked precisely (removing only the
+two new markers) at 1 failing test; and `live_buy_goal` re-run after the change still
+reports `exact_goal_frame_succeeded_once`, so an achieved buy still retires as achieved.
+**Four bound-2 tests were standing on the defect** — `_wedged_buy_life` documented its own
+third leg as "a BUY frame has no give-up ladder at all" — and moved to a CRAFT vehicle,
+since `CraftItemCapability` still writes no marker; keeping them on a buy frame would have
+meant preserving the defect to keep testing around it. One discarded experiment worth
+knowing: starving the buy FSM by wounding to 12 HP does NOT give a bound-2 world, because
+it starves `expire_due` too (that runs inside `Agent.tick`) — bound 3's livelock, not
+bound 2's deadline. **The live re-run settles nothing about the fix, and the reason is one
+row of the table**: the tinker never needed to buy iron at all the second time (Grimm's
+delivery covered it), so `buy_iron` was admitted on **0 samples** against 60 before. The
+zero expiries are zero because there were no buy frames, not because the marker closed
+them, and **bound 1 remains unexercised live**. The economics differ (233g vs 293g) on
+supply variance, not on the fix — two runs on different mining luck are not an A/B, and
+nothing here should be attributed to follow-up 19 in either direction. What the re-run does
+show is no regression: 27 retirements, all achieved, zero expiries, zero deaths. **Bound 1
+needs a purpose-built gate, not patience** — the same conclusion §7.1 reached for bound 3,
+now recorded as follow-up 24: a `live_buy_giveup_gate.py` staging a vendor with no iron
+offer would print bound 1's first live signature AND exercise the re-roll path and the
+closing-window marker that four sections record as never having run on a shard. One gate,
+four gaps. 1528 tests, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §18.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
