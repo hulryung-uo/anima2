@@ -159,8 +159,20 @@ added bound 3. So the standing count is bounds 2 and 3 live-proven, bound 1 not.
   measured in `docs/AUDIT-2026-07-29.md` §5's first refutation as *"four of the five Lives
   were pinned in economy mode with `hunt_after = 0` for the whole 3000-tick window"*. That
   is why this bound matters: it is what stops the fix being WORSE than the defect.
-- **STILL NOT PROVEN. Bound 1 (the FSM give-up ladder) is unexercised as far as any log can
-  tell** — and the bound-3 gate does not touch it: every `sell_tongs` and `bank_gold` frame
+- **BOUND 1 IS NOW LIVE-PROVEN TOO (2026-08-09), by the purpose-built
+  `anima2/live_buy_giveup_gate.py` — first attempt, exit 0, all eleven flags** (audit §19).
+  A Healer staged where `live_buy_goal` stages a Blacksmith gives the buy FSM a real vendor
+  window that genuinely lacks its offer, so the trip re-rolls its full budget (`rerolls=4/4`),
+  cancels rather than buys (`cancels=5` — four re-rolls plus the exit-edge close,
+  `nothing_was_bought`), gives up, writes follow-up 19's marker and retires
+  `(1, 'buy_ingots', 21, 180, 'giveup')` — **age 21 against a 180-tick budget**, where
+  before the same shape burned all 180. That one run also gave the partial-subset re-roll
+  path and §15's `{ns}_closing_window` marker their first live exercise. **So all three
+  bounds are now live-proven.** What it does NOT prove: that an ordinary forge day retires a
+  buy frame this way (§18.3's re-run never entered the path), and there is no offline
+  reproduction because that needs a `MockBody` vendor (follow-up 22).
+  Historical note, kept because it stood for eleven days —
+  **bound 1 was unexercised as far as any log could tell** — and the bound-3 gate does not touch it: every `sell_tongs` and `bank_gold` frame
   closed on a SUCCESSFUL sale or deposit, which `CapabilityGoalComplete` also closes by its
   ACHIEVEMENT branch, and the status line cannot tell the branches apart — a ladderless
   `buy_iron` frame closed just as fast (last seen at age 4), so a low max age is no

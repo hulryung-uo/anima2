@@ -1060,6 +1060,30 @@ offer would print bound 1's first live signature AND exercise the re-roll path a
 closing-window marker that four sections record as never having run on a shard. One gate,
 four gaps. 1528 tests, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §18.
 
+**Bound 1, live — the last of the three, on a purpose-built gate (2026-08-09).**
+`anima2/live_buy_giveup_gate.py`, follow-up 24: first attempt, exit 0, all eleven flags.
+The principle is §7.1's, restated — **reaching a bound needs forced state, not patience** —
+after two 1200-tick forge runs failed to produce a failing buy by luck. The forced state is
+ONE substitution and nothing is injected: where `live_buy_goal` stages a Blacksmith whose
+stock includes iron, this stages a **Healer** at the same spot — a real vendor with a real
+Buy entry and a real shop window, stocking bandages and no iron — so the FSM meets a world
+where its offer genuinely does not exist, which is the condition `OFFER_REOPEN_ATTEMPTS`
+was written for. `rerolls=4/4 cancels=5 iron=0 retired=(1, 'buy_ingots', 21, 180,
+'giveup')`. **Age 21 against a 180-tick budget**, where the same shape burned all 180
+eleven days running. `cancels=5` is four re-roll closes plus the exit-edge close, and
+`nothing_was_bought` confirms every one was ServUO's EndVendorBuy rather than a purchase —
+the distinction two live gates once got wrong. **One run closed four recorded gaps**: bound
+1 (named as unexercised in six sections), the partial-subset re-roll path, §15's
+`{ns}_closing_window` marker, and follow-up 19's marker, none of which had ever run on a
+shard. All three bounds of the exit-edge hold are now live-proven. **What it does not
+prove**: that an ordinary forge day retires a buy frame this way (the 2026-08-09 re-run
+never entered the path); anything about contention, since it is a closed one-capability
+fixture; or that `OFFER_REOPEN_ATTEMPTS = 4` is the right NUMBER, since this vendor never
+had the offer at all. And it has no offline reproduction — the bound-3 gate has seven —
+because that needs a `MockBody` able to answer a vendor window, which is follow-up 22,
+now the blocker for two live artifacts rather than one. 1528 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §19.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
