@@ -168,3 +168,91 @@ def test_a_vendor_with_an_empty_window_is_a_give_up_not_a_crash(windows):
     memory = {"vendor_spot": (SPOT,), "bs_stand": SPOT, "mkt_phase": "buy",
               "cap_buy_goal_id": 7, "cap_buy_route": (SPOT,)}
     assert _drive(body, BuyIron(), memory) == "trip over"
+
+
+# --- the FRAME half of §19: bound 1 end to end, offline --------------------------------
+#
+# §20.4 named this as the piece still missing: the tests above drive `_buy_step`, and a
+# `-> giveup` RETIREMENT needs a Life with a goal stack. This is that, over the same
+# vendor — so the whole of the live gate's sequence, from "the window has no iron" to
+# "the frame retired through the give-up ladder", now exists offline.
+
+
+def _tinker_that_can_only_buy(windows):
+    """A tinker whose rule can reach exactly ONE branch: `buy_iron`.
+
+    Every other branch is closed by construction rather than by luck, which is the same
+    discipline the live gate stages with: a tool (so `buy_tinker_tool` is unready), no
+    tongs (no `sell_tongs`), no iron anywhere (no `craft_tongs`, no `fetch_iron`), and NO
+    `banker_spot` at all — which closes BOTH bank branches, the urgent one and the patient
+    one, without depending on a gold threshold that a knob could move.
+    """
+    from anima2.skills.tinkering import TINKERTOOLS_GRAPHICS
+    from anima2.tinker_life import TinkerLife
+
+    body = _world(windows, gold=500)
+    body.items[0x900] = ItemView(serial=0x900, graphic=sorted(TINKERTOOLS_GRAPHICS)[0],
+                                 amount=1, pos=Position(), container=BP, layer=0,
+                                 distance=0)
+    life = TinkerLife(body=body, persona=Persona(name="Pim"),
+                      routes={"vendor_spot": (SPOT,)})
+    life.set_leash(SPOT, 3)
+    return body, life
+
+
+def _retire(life, frame, limit=None):
+    from anima2.life_runner import frame_retirements
+
+    budget = frame.deadline_tick - frame.created_tick
+    for _ in range(limit or budget * 3):
+        life.tick()
+        rows = frame_retirements(life)
+        if rows:
+            return rows[0], budget
+    return None, budget
+
+
+def _admitted_buy(life, limit=40):
+    for _ in range(limit):
+        life.tick()
+        frame = life.econ_agent.goal_stack.current
+        if frame is not None and frame.goal.params.get("capability") == "buy_iron":
+            return frame
+    return None
+
+
+def test_a_LIFE_retires_its_buy_frame_through_bound_1_when_the_vendor_has_no_iron():
+    """§19's live verdict was `retired=(1, 'buy_ingots', 21, 180, 'giveup')` — age 21
+    against a 180-tick budget. This is that retirement offline, over a Life, against a
+    vendor stocking bandages and no iron.
+
+    It is the test follow-up 19 could not have: before that fix the same world rode the
+    frame to its DEADLINE, which is the 540 dead ticks §17.4 measured live."""
+    body, life = _tinker_that_can_only_buy([[_entry(0x22, BANDAGE, 5, name="bandage")]])
+    frame = _admitted_buy(life)
+    assert frame is not None, "the fixture must actually admit buy_iron"
+    row, budget = _retire(life, frame)
+    assert row is not None, "the frame must RETIRE, not ride to the deadline and beyond"
+    assert row[1] == "buy_iron" and row[4] == "giveup", row
+    assert row[2] < budget, (
+        f"bound 1 must close it EARLY — paying the full {budget}-tick deadline for a "
+        f"decision the FSM already made is the defect follow-up 19 removed: {row}")
+    assert sum(i.amount for i in body.observe().items
+               if i.graphic in INGOT_GRAPHICS) == 0, "and nothing was bought"
+
+
+def test_the_same_LIFE_retires_ACHIEVED_when_the_vendor_stocks_the_iron():
+    """The control, and the one that matters most for the marker's safety: follow-up 19
+    writes `cap_run_finished_goal_id` UNCONDITIONALLY, so if `CapabilityGoalComplete` ever
+    stopped testing achievement first, every successful buy would start reporting as a
+    give-up. Live, `live_buy_goal`'s `exact_goal_frame_succeeded_once` is this assertion;
+    offline, it is this test."""
+    body, life = _tinker_that_can_only_buy(
+        [[_entry(0x22, BANDAGE, 5), _entry(0x11, IRON, 5, amount=99, name="iron ingot")]])
+    frame = _admitted_buy(life)
+    assert frame is not None
+    row, _ = _retire(life, frame)
+    assert row is not None and row[1] == "buy_iron", row
+    assert row[4] == "achieved", f"a buy that got its iron is not a give-up: {row}"
+    assert sum(i.amount for i in body.observe().items
+               if i.graphic in INGOT_GRAPHICS) > 0

@@ -1104,8 +1104,18 @@ mutation test that does not assert it mutated something is a green light measuri
 And the control first failed with `bought=0`, which reads exactly like a broken FSM and was
 a FIXTURE bug — the vendor's for-sale graphic is not one of `INGOT_GRAPHICS`, those being
 the pack pile-size variants a bought stack merges into; the fixture reads
-`BuyIron.buy_offer_graphic` off the skill now so it cannot drift. **Still not done**: the
-FRAME half of §19 (the `-> giveup` retirement needs a Life, not just the FSM). Inert for
+`BuyIron.buy_offer_graphic` off the skill now so it cannot drift. **And the FRAME half followed the same day, landing within TWO TICKS of the
+shard**: a Life whose rule can reach exactly one branch — closed by construction, with no
+`banker_spot` at all so both bank branches go without depending on a gold threshold a knob
+could move — retires `(1, 'buy_iron', 19, 180, 'giveup')` against the live gate's
+`(1, 'buy_ingots', 21, 180, 'giveup')` on the same 180-tick budget, with five vendor
+openings matching the live `cancels=5`. That correspondence is the real result: it says the
+double models the exchange faithfully, which is the only thing that makes an offline
+reproduction worth having. The control retires `achieved` at age 7 and is the load-bearing
+half for follow-up 19's SAFETY rather than its benefit — the marker is written
+unconditionally, so if achievement ever stopped being tested first, every successful buy
+would report as a give-up. **Bound 1 is now covered at three levels — FSM, frame, and a
+shard — where eleven days ago it was covered at none.** Inert for
 every existing fixture — `vendors` defaults empty — which is why all 1528 prior tests pass
 unchanged. 1528 → **1534 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §20.
 
