@@ -1084,6 +1084,31 @@ because that needs a `MockBody` able to answer a vendor window, which is follow-
 now the blocker for two live artifacts rather than one. 1528 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §19.
 
+**A vendor in `MockBody`, and the bound-1 gate reproduced offline (2026-08-09).** Audit
+follow-up 22, deferred twice on the argument that "adding a vendor to `MockBody` is a
+production-code change for a test's benefit". What retired that argument is that two live
+artifacts ended up standing on the other side of it: §8.2's Life-level wedge reproduction
+ran from a scratch harness that no longer exists, and §19's bound-1 gate — the only live
+proof of the give-up ladder there is — shipped with NO offline reproduction, where the
+bound-3 gate has seven. `MockBody`'s own docstring calls it "a test double", so "production
+code" was always the weaker half of the framing. **The design decision worth defending is
+that `MockVendor.windows` is a list of OPENINGS, not a stock list**: ServUO shows goods in
+partial SUBSETS, which is the pairing bug `OFFER_REOPEN_ATTEMPTS` exists for, so one element
+means every opening is identical (§19's Healer) and several let a re-roll genuinely find
+what the first window lacked. A flat stock would have made the re-roll path untestable by
+construction. The gate is now reproduced against the real `_buy_step` with nothing injected,
+with a control that stocks the offer and requires the buy to still complete — without it the
+give-up test would pass against an FSM that could no longer buy anything. Mutation-checked.
+**Two process notes.** The first mutation run reported PASS with no mutant applied: a
+mutation test that does not assert it mutated something is a green light measuring nothing.
+And the control first failed with `bought=0`, which reads exactly like a broken FSM and was
+a FIXTURE bug — the vendor's for-sale graphic is not one of `INGOT_GRAPHICS`, those being
+the pack pile-size variants a bought stack merges into; the fixture reads
+`BuyIron.buy_offer_graphic` off the skill now so it cannot drift. **Still not done**: the
+FRAME half of §19 (the `-> giveup` retirement needs a Life, not just the FSM). Inert for
+every existing fixture — `vendors` defaults empty — which is why all 1528 prior tests pass
+unchanged. 1528 → **1534 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §20.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion

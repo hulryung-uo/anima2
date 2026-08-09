@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from .contract import (
     Action,
+    BuyItems,
     Drop,
     Equip,
     ItemView,
@@ -20,11 +21,46 @@ from .contract import (
     Observation,
     PickUp,
     PlayerView,
+    PopupEntry,
+    PopupMenu,
+    PopupRequest,
+    PopupSelect,
     Position,
     Say,
+    ShopBuy,
     Walk,
 )
 from .geometry import DIRECTION_DELTAS, chebyshev
+
+
+@dataclass
+class MockVendor:
+    """A vendor's shop — as much of one as the buy FSM actually asks for, and no more.
+
+    Audit follow-up 22, which was deferred twice on the argument that "adding a vendor to
+    `MockBody` is a production-code change for a test's benefit". That argument got weaker
+    every time a live artifact turned out to be unreproducible offline for want of one:
+    §8.2's Life-level wedge reproduction was run from a scratch harness instead, and §19's
+    bound-1 gate — the only live proof of the give-up ladder there is — has NO offline
+    reproduction at all where the bound-3 gate has seven. `MockBody`'s own docstring calls
+    it "a test double", so this is test infrastructure that happens to live in the package.
+
+    **`windows` is a LIST OF OPENINGS, not a stock list, and that is the whole design.**
+    ServUO shows a vendor's goods in partial subsets: one opening can lack an item the next
+    one carries, which is the ~15-of-45-entry pairing bug `OFFER_REOPEN_ATTEMPTS` exists
+    for. A single-element list means every opening is identical — the Healer of §19, which
+    never has our offer no matter how many times we re-roll. Several elements cycle, so a
+    test can prove a re-roll genuinely FINDS an offer the first window lacked. Modelling
+    this as a flat stock would make the re-roll path untestable by construction, which is
+    exactly the gap this class exists to close.
+    """
+
+    serial: int
+    windows: list[list] = field(default_factory=list)
+    container: int = 0x7000
+    #: Windows opened so far — the cycle cursor, and a test's evidence of how many
+    #: re-rolls actually reached the server.
+    opens: int = 0
 
 
 @dataclass
@@ -55,6 +91,13 @@ class MockBody:
     gumps: list = field(default_factory=list)
     #: An open vendor BUY window, same reason as `gumps` (forge16's wedge shape).
     shop_buy: object | None = None
+    #: An open context menu, surfaced in every observation. Needed at all because the buy
+    #: FSM's popup stage is a real two-packet exchange (`PopupRequest` then `PopupSelect`)
+    #: and a mock that answered neither could never reach the `window` stage.
+    popup: object | None = None
+    #: `{serial: MockVendor}` — the shops this world contains. Empty by default, so every
+    #: existing fixture behaves byte for byte as before.
+    vendors: dict = field(default_factory=dict)
     #: Every action the agent asked for, in order — the mock's only way to prove a
     #: repair was actually ATTEMPTED rather than merely decided.
     actions: list = field(default_factory=list)
@@ -79,12 +122,14 @@ class MockBody:
         self._journal_cursor = len(self._journal)
         return Observation(player=self.player, mobiles=mobiles, items=items,
                            new_journal=new, gumps=list(self.gumps),
-                           shop_buy=self.shop_buy)
+                           shop_buy=self.shop_buy, popup=self.popup)
 
     def act(self, action: Action) -> None:
         self.actions.append(action)
         if type(action).__name__ == "BuyItems" and not getattr(action, "items", None):
             self.shop_buy = None  # an empty buy list is the vendor-window cancel
+            return
+        if self.vendors and self._vendor_act(action):
             return
         if type(action).__name__ == "GumpResponse" and getattr(action, "button", None) == 0:
             # Button 0 is CLOSE, the same answer the craft FSM sends — model it, so a
@@ -106,6 +151,86 @@ class MockBody:
         elif isinstance(action, Equip):
             self._equip(action)
         # Other actions are accepted as no-ops in the mock.
+
+    # --- the vendor: the three packets a buy trip actually exchanges -----------------
+
+    def _vendor_act(self, action: Action) -> bool:
+        """Answer `PopupRequest` / `PopupSelect` / `BuyItems` for a staged vendor.
+
+        Returns True when the action was a vendor exchange this world handled, so `act`
+        can stop; False leaves every other action on its existing path. Deliberately
+        narrow — a body double owes the FSM the packets it sends and nothing else.
+        """
+        # Local import to keep this module's "imports nothing from `skills`" property at
+        # import time: `BUY_CLILOC` is a ServUO protocol constant that happens to live in
+        # `skills/market.py`, and taking it as a parameter would make every caller repeat
+        # a number the FSM already knows.
+        from .skills.market import BUY_CLILOC
+
+        if isinstance(action, PopupRequest):
+            vendor = self.vendors.get(action.serial)
+            if vendor is None:
+                return False
+            self.popup = PopupMenu(serial=vendor.serial,
+                                   entries=[PopupEntry(index=0, cliloc=BUY_CLILOC)])
+            return True
+
+        if isinstance(action, PopupSelect):
+            vendor = self.vendors.get(action.serial)
+            if vendor is None:
+                return False
+            self.popup = None
+            # THIS opening's subset, then advance the cursor. A one-element `windows`
+            # therefore shows the same entries forever, which is the point.
+            entries = (list(vendor.windows[vendor.opens % len(vendor.windows)])
+                       if vendor.windows else [])
+            vendor.opens += 1
+            self.shop_buy = ShopBuy(vendor=vendor.serial, container=vendor.container,
+                                    entries=entries)
+            return True
+
+        if isinstance(action, BuyItems) and action.items:
+            vendor = self.vendors.get(action.vendor)
+            if vendor is None or self.shop_buy is None:
+                return False
+            self._settle_purchase(action)
+            self.shop_buy = None       # ServUO closes the window on a completed order
+            return True
+        return False
+
+    def _settle_purchase(self, action: BuyItems) -> None:
+        """Move the goods in and the coin out — the only part of a shop that a brain can
+        actually observe. Under-payment is not modelled and neither is stock depletion:
+        both are server rules, and a double that enforced them would be asserting a
+        contract this project does not own."""
+        from .skills.harvest import BACKPACK_LAYER
+        from .skills.hunt import GOLD_GRAPHIC
+
+        pack = next((i.serial for i in self.items.values()
+                     if i.container == self.player.serial and i.layer == BACKPACK_LAYER),
+                    None)
+        if pack is None or self.shop_buy is None:
+            return
+        offers = {e.serial: e for e in self.shop_buy.entries}
+        for serial, amount in action.items:
+            entry = offers.get(serial)
+            if entry is None or amount <= 0:
+                continue
+            self._held_serial_seq += 1
+            self.items[self._held_serial_seq] = ItemView(
+                serial=self._held_serial_seq, graphic=entry.graphic, amount=amount,
+                pos=Position(), container=pack, layer=0, distance=0)
+            owed = entry.price * amount
+            for coin in [i for i in self.items.values()
+                         if i.graphic == GOLD_GRAPHIC and i.container == pack]:
+                if owed <= 0:
+                    break
+                spend = min(owed, coin.amount)
+                coin.amount -= spend
+                owed -= spend
+            for empty in [s for s, i in self.items.items()
+                          if i.graphic == GOLD_GRAPHIC and i.amount <= 0]:
+                self.items.pop(empty)
 
     # --- the two-packet UO move: PickUp lifts to the cursor, Drop places -------------
     #
