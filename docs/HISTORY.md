@@ -1119,6 +1119,28 @@ shard — where eleven days ago it was covered at none.** Inert for
 every existing fixture — `vendors` defaults empty — which is why all 1528 prior tests pass
 unchanged. 1528 → **1534 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §20.
 
+**Regression sweep: four live gates, four passes, and two of them byte-identical
+(2026-08-09).** `MockBody` cannot reach a shard, but `market.py` had changed the same day
+(follow-up 19) and the gates had not been re-run since. `live_buy_goal`, `live_toolbuy_goal`,
+`live_buy_giveup_gate` and `live_frame_overdue_gate` all passed, exit 0. **The finding is
+not the passes — it is that both FORCED-STATE gates reproduced their previous verdicts field
+for field**, across different accounts, different vendor serials and different shard
+sessions: bound 1 gave `rerolls=4/4 cancels=5 iron=0 retired=(1, 'buy_ingots', 21, 180,
+'giveup')` twice, and bound 3 gave `overdue=(299, 301) repair=(299, 301) released=(300, 302)
+extension=1 ... craft_steps_seen=[2]` twice. That determinism is what makes these gates
+regression DETECTORS rather than anecdotes: a forge run's numbers swing with mining luck
+(293g in one entry, 233g in the next on the same command), so a forge run can only say
+"something happened", while a gate with a fixed verdict string can say "this specific thing
+still happens" — and a change that shifts age 21 to age 180 will read as a diff, not as
+noise. It also retro-justifies §7.1's insistence on forced state over patience: the property
+that makes a bound reachable on demand is the same one that makes it comparable across runs.
+**Not covered**: no forge day (these are closed fixtures, minutes long, and the 1800-tick
+shapes this project learns from are untouched); the sell and bank families, which follow-up
+19 did not change and no gate here covers; and `MockBody`'s vendor itself, which is not
+live-verifiable by construction — the two-tick agreement in the previous entry is evidence
+about one exchange, not about the double. 1536 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §21.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
