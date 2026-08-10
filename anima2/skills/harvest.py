@@ -293,6 +293,31 @@ class Harvest(Skill):
                 sample = (1 if stuck_this_tick else 0) \
                     if obs.pending_target is None else None
             if sample is not None:
+                # The stuck-STREAK distribution, audit follow-up 28's open question.
+                #
+                # §28 measured that ~94% of a dead stand's cost is swinging, so the
+                # 24-reply window is the only lever on the miner's output. But the 24 is
+                # not arbitrary: `test_a_mostly_dead_vein_still_relocates_despite_trickle_
+                # successes` exists because a strict STREAK was defeated by rare
+                # trickle-through successes, and a shorter window risks walking away from
+                # a vein that would still have paid.
+                #
+                # So the thing to measure is not the window's average rate — it is how
+                # long a run of CONSECUTIVE stuck replies can get and still be broken by a
+                # productive one. `recoveries` counts, per streak length, the times a vein
+                # came back after looking that dead; the longest key is the shortest
+                # give-up that would have abandoned nothing. Pure telemetry: nothing reads
+                # these to decide anything, because deciding on them before they are
+                # measured is the mistake §25 made and §26 retracted.
+                streak = int(ctx.memory.get("harvest_stuck_streak", 0) or 0)
+                if sample:
+                    ctx.memory["harvest_stuck_streak"] = streak + 1
+                else:
+                    if streak:
+                        rec = dict(ctx.memory.get("harvest_recoveries") or {})
+                        rec[streak] = rec.get(streak, 0) + 1
+                        ctx.memory["harvest_recoveries"] = rec
+                    ctx.memory["harvest_stuck_streak"] = 0
                 ring = max(1, len(self.probe_offsets))
                 window = ring * self.stuck_window_rotations
                 recent = ctx.memory.get("harvest_recent_stuck")

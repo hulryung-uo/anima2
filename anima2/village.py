@@ -2303,6 +2303,12 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         swing = int(miner.memory.get("harvest_swing_ticks", 0) or 0)
         if walk or swing:
             grimm_flag += f" walk={walk} swing={swing}"
+        # The streak distribution the window's size has to respect (audit §28.3). Printed
+        # as longest-recovered(total): if no vein ever came back after N consecutive stuck
+        # replies, a give-up above N abandons nothing that would have paid.
+        rec = miner.memory.get("harvest_recoveries") or {}
+        if rec:
+            grimm_flag += f" recov={max(rec)}({sum(rec.values())})"
         print(f"— forge pair {bank_state} "
               f"grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}{grimm_flag}]  "
               f"drop[grimm_sees={_ground_iron(m_obs)} pim_sees={_ground_iron(p_obs)}]  "

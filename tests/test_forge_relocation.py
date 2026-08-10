@@ -757,3 +757,71 @@ def test_the_counters_are_cumulative_and_never_double_count_an_arrival():
         seen.append((after[0] - before[0], after[1] - before[1]))
     assert all(d in ((1, 0), (0, 1)) for d in seen), (
         f"a tick landed in both buckets or neither: {set(seen)}")
+
+
+def test_the_streak_histogram_records_how_dead_a_vein_looked_before_it_came_back():
+    """Follow-up 28's open question, instrumented. §28 measured that ~94% of a dead
+    stand's cost is swinging, so the 24-reply window is the only lever on output — but the
+    24 exists because a strict STREAK was defeated by trickle-through successes
+    (`test_a_mostly_dead_vein_still_relocates_despite_trickle_successes`).
+
+    So the measurement is not the window's average rate. It is: how long can a run of
+    CONSECUTIVE stuck replies get and still be broken by a productive one? The longest
+    recovered streak is the shortest give-up that would have abandoned nothing."""
+    memory = {"smithy_drop": (60, 50)}
+    skill = MineSmeltDeliver()
+
+    def reply(*, productive: bool):
+        """`Mine` is OUTCOME-ONLY (`productive_clilocs` is non-empty), so the absence of a
+        no-metal verdict is NOT a 'not stuck' sample — it is no sample at all. Only a real
+        success cliloc scores a 0. Getting that wrong makes a fixture that looks like a
+        recovering vein and records nothing."""
+        o = _obs(cursor=False, no_metal=not productive)
+        if productive:
+            o.new_journal = [JournalEntry(0, "", "", 0, 0, sorted(Mine.productive_clilocs)[0])]
+        return o
+
+    # A vein that goes stuck-stuck-stuck then PAYS, repeatedly: every recovery is from a
+    # streak of exactly 3.
+    for _ in range(6):
+        for productive in (False, False, False, True):
+            skill.step(SkillContext(obs=_obs(cursor=True, no_metal=False),
+                                    persona=Persona(name="Grimm"), memory=memory))
+            skill.step(SkillContext(obs=reply(productive=productive),
+                                    persona=Persona(name="Grimm"), memory=memory))
+    rec = memory.get("harvest_recoveries") or {}
+    assert rec, "no recovery was recorded at all"
+    assert max(rec) == 3, f"the longest recovered streak should be 3: {rec}"
+    assert sum(rec.values()) >= 5, rec
+
+
+def test_an_unbroken_streak_is_never_counted_as_a_recovery():
+    """The number's whole meaning is 'a vein came BACK after looking this dead'. A vein
+    that simply stays dead must contribute nothing — otherwise the longest key would grow
+    with the dead time and the threshold it implies would be unusable."""
+    memory = {"smithy_drop": (60, 50)}
+    skill = MineSmeltDeliver()
+    for _ in range(80):
+        skill.step(SkillContext(obs=_obs(cursor=True, no_metal=False),
+                                persona=Persona(name="Grimm"), memory=memory))
+        skill.step(SkillContext(obs=_obs(cursor=False, no_metal=True),
+                                persona=Persona(name="Grimm"), memory=memory))
+    assert not (memory.get("harvest_recoveries") or {}), (
+        f"a permanently dead vein recorded a recovery: {memory.get('harvest_recoveries')}")
+    assert memory.get("harvest_stuck_streak", 0) > 0, "the streak must still be counting"
+
+
+def test_the_histogram_reads_nothing_back_into_the_decision():
+    """Pure telemetry, deliberately. Deciding the give-up threshold on these numbers
+    before they have been measured live is the mistake §25 made with the pool and §26 had
+    to retract — so nothing in the harvest chain may consult them yet."""
+    import inspect
+
+    from anima2.skills import harvest
+
+    src = inspect.getsource(harvest)
+    # written in exactly one place, read in none
+    assert src.count('memory["harvest_recoveries"]') == 1, src.count('harvest_recoveries')
+    for guard in ("if ctx.memory.get(\"harvest_recoveries\")",
+                  "harvest_recoveries\") >", "harvest_recoveries\") <"):
+        assert guard not in src, f"the histogram is being used to decide something: {guard}"
