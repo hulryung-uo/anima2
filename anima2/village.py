@@ -57,10 +57,40 @@ from .uomap import find_mine_spots, find_tree_clusters
 # Each lumberjack gets a distinct grove (a stand spot + the trees in reach).
 FOREST_BASE = (2520, 450)
 LUMBER_MAP = 1
-#: Relocation stands pre-surveyed for the forge miner — each gets its own forge
-#: at staging, so six is a provisioning cap, not a wander limit (the blind
-#: compass walk remains the fallback when the pool runs dry).
-MINE_POOL_SPOTS = 6
+#: Relocation stands pre-surveyed for the forge miner — each gets its own forge at
+#: staging, so this is a provisioning cap, not a wander limit (the blind compass walk
+#: remains the fallback when the pool runs dry).
+#:
+#: **Twelve, because that is every stand the survey already finds** at the trade mine
+#: (`find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT)` returns exactly 12 at its default
+#: radius; 17 at radius 60). It was SIX, which threw half of them away — and the six were
+#: measured running out, twice.
+#:
+#: The measurement (audit §24.3, follow-up 27). `spacing=8` puts one stand per 8x8
+#: `HarvestBank`, and an ore bank holds 10-34 ore, so six stands plus home is ~7 banks of
+#: finite rock. On two consecutive 1800-tick days the miner stood on ALL SIX pool spots
+#: and then cycled dead tiles at `win=23/23` — every swing in the relocation window a
+#: no-metal verdict — from roughly sample 115 of 209 to the end. One of those days
+#: delivered a single 10-ingot pile all run and starved the flagship chain to `net=+35g`.
+#: Both ended parked on the same tile. The pool was not thin; it was EMPTY.
+#:
+#: The trade-off, stated: the furthest pooled stand is 36 tiles from home, so a delivery
+#: from it is a long walk. That is the wrong comparison. Relocation only reaches stand N
+#: once 1..N-1 are dead, so the choice at that moment is a far stand versus standing on
+#: exhausted rock — and the second produces nothing at any distance.
+#:
+#: "Nearest-first" here means nearest by WALK, not by straight line: `find_mine_spots`
+#: orders by BFS depth over walkable non-mine land, so the pooled stands measure
+#: 0,8,16,13,24,22,... in Chebyshev — non-monotone, and correctly so, because a face that
+#: bends makes a shorter walk look further as the crow flies. The BFS is also the
+#: same-flank filter forge12 needed, when the greedy walker wedged into the mountain and
+#: burned the whole pool without arriving anywhere.
+#:
+#: This is the lumberjack's lesson, arriving late for the miner: the note directly below
+#: records thin Minoc woods "the size that runs dry mid-session and leaves `Harvest`
+#: relocating instead of working", diagnosed for one profession and never connected to the
+#: other.
+MINE_POOL_SPOTS = 12
 
 #: Where a SOLO woodsman works. The multi-profession village keeps its lumberjacks in
 #: the Minoc woods above to stay compact, but those woods are thin — a live survey found

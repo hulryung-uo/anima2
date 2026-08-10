@@ -1223,6 +1223,32 @@ named: three of the last four forge days were decided by the miner, not by anyth
 tinker's economy (follow-up 27). 1542 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §24.
 
+**The miner's pool was EMPTY, not thin (2026-08-10).** Follow-up 27, the binding
+constraint the previous entry named: three of the last four forge days were decided by the
+miner rather than by anything in the tinker's economy. Diagnosed from the two logs before
+anything was changed, and they agree almost exactly — `eps` frozen from sample ~115 of 209,
+the stalled tail 100% `ph=mine` with no smelt and no deliver, the relocation window at
+`win=23/23` (every swing a no-metal verdict), **all SIX pool stands stood on**, and both
+runs ending parked on the same tile. He relocated, arrived, and the new rock was dead too —
+on every spot he had. `NO-TOOL` never fired and `deaths=0`, so neither a lost pickaxe nor a
+corpse. **The cause was a cap, and the survey had already found the fix**: `find_mine_spots`
+puts one stand per 8x8 `HarvestBank` (10-34 ore), the pool was capped at SIX, and the survey
+returns TWELVE at its default radius — half the rock the miner had already paid a survey for
+was being discarded. Raising the cap doubles the banks (11 + home against 5 + home, 94
+mineable tiles against 58) with no wider radius and no new machinery. **This is the
+lumberjack's lesson arriving late**: the constant three lines below in the same file already
+records thin Minoc woods as "the size that runs dry mid-session and leaves `Harvest`
+relocating instead of working", fixed there by moving to richer woods and never connected to
+the miner. **A correction to my own justification is recorded**: the first version called
+the survey "nearest-first" and a test asserted monotone distances, and they are not
+(0,8,16,13,24,...) — the ordering is BFS depth over walkable non-mine land, which is the
+metric a relocation hop actually pays and is also forge12's same-flank filter. Asserting the
+wrong metric would have pinned a property the code does not have and does not want; the test
+now asserts the distances are NOT monotone. **Untested live**, and it does not fix the
+deeper thing: nothing detects an EXHAUSTED POOL, so when all twelve are dead the miner will
+churn exactly as it did on six (follow-up 28), and ServUO's respawn timing remains
+unmeasured. 1542 → **1545 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §25.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion

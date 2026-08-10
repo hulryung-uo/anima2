@@ -641,3 +641,69 @@ def test_a_LIFE_counts_one_death_once_though_it_owns_two_death_markers(capsys):
     assert max(hunt, econ) == 1, "the max really does under-count two deaths"
     assert out.count("DIED") == 2, out
     assert "deaths=2" in status[0], status[0]
+
+
+# --- follow-up 27: the pool the miner actually mines out --------------------------------
+#
+# Three of the last four live forge days were decided by the MINER, not by anything in the
+# tinker's economy. Audit §24.3 measured why: `find_mine_spots` uses `spacing=8` so each
+# stand is one 8x8 `HarvestBank` (10-34 ore), the pool was capped at SIX, and on two
+# consecutive 1800-tick days the miner stood on all six and then cycled dead tiles at
+# `win=23/23` from about sample 115 of 209 to the end.
+
+
+def test_the_mine_pool_is_not_smaller_than_the_survey_it_draws_from():
+    """The cap threw away half the rock the survey had already found — 6 of 12 — and the
+    six were measured running out twice. A cap BELOW what the survey returns is free
+    starvation, and this is the assertion that keeps it from drifting back."""
+    from anima2.uomap import find_mine_spots
+    from anima2.village import LUMBER_MAP, MINE_POOL_SPOTS, TRADE_MINE_SPOT
+
+    found = find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT)
+    assert len(found) >= 12, (
+        f"the trade mine's survey used to return 12 stands; it now returns {len(found)}, "
+        f"so the pool size below needs re-deriving rather than assuming")
+    assert MINE_POOL_SPOTS >= len(found) - 1, (
+        f"the pool caps at {MINE_POOL_SPOTS} while the survey finds {len(found)} stands "
+        f"(one of which is HOME and excluded) — that discards rock the miner has already "
+        f"paid a survey for, which is what starved two live days")
+
+
+def test_every_pooled_stand_is_a_DISTINCT_harvest_bank():
+    """The pool's value is banks, not tiles. `find_mine_spots(spacing=8)` exists because
+    two stands inside one 8x8 bank share the same 10-34 ore: relocating between them is
+    'a walk to the same empty pool', in that function's own words. A larger cap only buys
+    more ore if the extra stands are genuinely different banks."""
+    from anima2.village import LUMBER_MAP, MINE_POOL_SPOTS, TRADE_MINE_SPOT
+    from anima2.uomap import find_mine_spots
+
+    pool = [s for s, _ in find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT)][:MINE_POOL_SPOTS + 1]
+    banks = {(x // 8, y // 8) for x, y in pool}
+    assert len(banks) == len(pool), (
+        f"{len(pool)} stands share only {len(banks)} harvest banks — the extra stands "
+        f"are the same ore twice: {sorted(pool)}")
+
+
+def test_the_pool_stays_within_a_days_walk_of_home():
+    """The trade-off the bigger pool accepts, pinned so it stays bounded. Relocation is
+    nearest-first, so a far stand is only ever reached once the near ones are dead — the
+    comparison is a long walk versus exhausted rock, not versus a short walk. But it is
+    still a walk, and a pool that reached across the map would spend the day travelling."""
+    from anima2.village import LUMBER_MAP, MINE_POOL_SPOTS, TRADE_MINE_SPOT
+    from anima2.uomap import find_mine_spots
+
+    mx, my = TRADE_MINE_SPOT
+    pool = [s for s, _ in find_mine_spots(LUMBER_MAP, mx, my)][:MINE_POOL_SPOTS + 1]
+    worst = max(max(abs(x - mx), abs(y - my)) for x, y in pool)
+    assert worst <= 45, f"the furthest pooled stand is {worst} tiles from home"
+
+    # NOT monotone in straight-line distance, and that is correct rather than a defect:
+    # `find_mine_spots` orders by BFS depth over walkable non-mine land, so a stand that
+    # is a shorter WALK can be further as the crow flies when the face bends around. The
+    # walk is the thing a relocation hop pays, so the walk is the right metric — measured
+    # here as 0,8,16,13,24,22,... which a straight-line ordering check would call broken.
+    dists = [max(abs(x - mx), abs(y - my)) for x, y in pool]
+    assert dists != sorted(dists), (
+        "straight-line distances are monotone, so the survey may have switched from BFS "
+        "ordering to a naive one — which would put far-flank stands in the pool, the "
+        "forge12 failure this file already records")
