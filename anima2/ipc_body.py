@@ -102,7 +102,27 @@ from .contract import Action, Observation
 # by revoking it. "Armed and waiting" vs "already used" is exactly the
 # want-vs-refuse blindness that costs this project live runs. A follow-up, not a
 # reason to hold the bump.
-SUPPORTED_SCHEMA_VERSION = 26
+#
+# 26→27 verified the same way, and this one is worth a line because the GUARD did its job
+# in the open: a forge-pair run aborted at the handshake with `unsupported bridge schema
+# 27; expected 26` — both logins refused, nothing staged, no half-contract run. That is
+# the lockstep working, not a failure, and it cost a retry rather than a misread day.
+#
+# FIVE deleted lines across `git diff 7ca9662..HEAD`, four of them the changelog sentence,
+# the constant and a version test. The fifth is the one that mattered and is why the diff
+# is read rather than the changelog: it is inside `player_json` — the object carrying
+# `dead`, which the death readout (§9) is built on. It reads
+#   -  "body": p.body, "poisoned": p.poisoned, "dead": p.dead,
+#   +  "body": p.body, "poisoned": p.poisoned, "dead": p.dead, "race": p.race,
+# i.e. purely additive on the same line; `body`, `poisoned` and `dead` are untouched.
+# v27 also adds the `ToggleFlying` action (0xBF/0x32).
+#
+# Cross-checked mechanically, as at the 18→26 bump: all 19 action `type` strings
+# `contract.py` emits are still accepted, and all 57 observation keys it reads are still
+# emitted. (`PlayerView.pos` reads as "missing" under a naive `"key": p.field` scan and is
+# not — the bridge emits it as `"pos": pos_json(&p.pos)`, a nested object. Checked, because
+# a false positive in a mechanical check is exactly as bad as a false negative.)
+SUPPORTED_SCHEMA_VERSION = 27
 
 
 def default_bridge_path() -> Path:
