@@ -1274,6 +1274,30 @@ notice the whole area is dead and wait — and measuring either needs ServUO's o
 interval, which nobody here has ever measured. 1545 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §26.
 
+**The ore respawn interval, measured — and it kills the fix I would have reached for
+(2026-08-10).** The previous entry said follow-up 28 needed ServUO's respawn interval and
+that it "is not currently known". It was knowable without a minute of shard time: the
+shard's source is in `../servuo`. `Scripts/Services/Harvest/Mining.cs` gives bank 8x8,
+`MinTotal=10 MaxTotal=34`, **`MinRespawn=10min MaxRespawn=20min`** — the 8x8 and the 10-34
+confirming what `find_mine_spots`' docstring already assumed. **The timer's START POINT is
+the finding**: `HarvestBank.Consume` starts the respawn clock on the FIRST bite out of a
+full bank, not when it empties, so a bank opened at tick T refills at T + respawn however
+fast it is drained. In this project's units, measured off the run's own wall clock (1800
+ticks over 206 samples at 4.0s = 13.7 minutes, 2.18 ticks/s), respawn is **1311-2621 ticks
+against an 1800-tick day** — comparable to or longer than the entire run. **That decides
+follow-up 28 and rules out the intuitive option**: "notice the area is dead and wait for
+respawn" is decisively WRONG, because the wait is most of a day and yields at best one bank
+back. The only lever is reaching MORE banks, since total ore is `banks reached x 10-34` and
+nothing refills inside a day. Which reprices the 24-sample window: measured on the same run,
+production stopped at t=1026 and in the 774 dead ticks that followed the miner reached 4
+more stands — about **193 ticks per stand proven dead**, walk included, so a day can prove
+~9 empty and this run reached 7. Halving that price roughly doubles the banks reached, and
+banks reached is the whole output. Still unknown: what a 100%-stuck window could safely
+give up at (picking it without measurement is the mistake made two entries ago), and how
+much of the 193 ticks is walking versus swinging — which decides whether the lever is the
+window or the route. 1545 tests, ruff clean, no shard time spent. Detail:
+`docs/AUDIT-2026-07-29.md` §27.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
