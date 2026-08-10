@@ -1141,6 +1141,35 @@ live-verifiable by construction — the two-tick agreement in the previous entry
 about one exchange, not about the double. 1536 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §21.
 
+**A real day: follow-up 19 in production, and the miner died silently a third time
+(2026-08-10).** `--forge-pair --knob bank_trip_surplus=10 --ticks 1800`, predictions written
+first, 1800 because the previous 1200-tick run never entered the buy path at all.
+**`retired=107:58a/49g` — 49 `buy_iron` frames retired through BOUND 1 at age 17/180, and
+ZERO reached bound 2**, against three-of-three at `180/180` before the fix. That is
+follow-up 19 doing in production exactly what the gate showed: 17 economy ticks to discover
+a failed buy instead of 180. *(An intermediate claim of "7987 ticks not burned" is dropped
+as a bad counterfactual — 49 frames at 180 ticks is 8820 economy ticks, which does not fit
+in the run, so the pre-fix world would have made FEWER attempts, not the same 49 slowly.)*
+**Why the buys failed was measured, not guessed**: the two successes are the FIRST two buy
+frames of the day, so it is the vendor running dry, not the partial-subset bug, which would
+scatter successes throughout. The give-ups are therefore CORRECT behaviour, and the fix's
+value is that discovering it got 10x cheaper. New follow-up 25: nothing tells the tinker the
+vendor is dry, so it re-admitted a hopeless buy 49 times — invisible before precisely
+because at 180 ticks apiece the run could not have made 49 of them. The knob steered again
+(eleven `bank_gold` admissions at gold 112/117, inside the band where the default rule keeps
+crafting) and the economics landed on `banked=503 net=+585`, identical to the 2026-08-03
+1800-tick baseline — plausible given fixed prices, but recorded as a coincidence of two
+samples rather than a demonstration. **And the miner stopped producing for the THIRD
+recorded time**, at t=1061 — 41% of the day — except this time the tape said so within 240
+ticks, named `skill=mine_smelt_deliver`, escalated 240/480/720, and carried the stall into
+the terminal line; `hp=83/83 deaths=0` throughout adds what the alarm alone could not, that
+he did not DIE. Two corrections to my own intermediate reading are recorded in §22.1 and
+§22.4, the second being that the 59 `!stalled` samples are GRIMM's worker line and not the
+tinker's — counting a string across a whole log and attributing it to whichever agent is
+under discussion is how a reading goes wrong. Clean otherwise: 0 deaths, 0 `!frozen`, 0
+`FRAME OVERDUE`, 0 rule-vs-gate. 1536 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §22.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
