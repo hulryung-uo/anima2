@@ -1197,6 +1197,32 @@ validated against a real restock interval, and the tool-buy family marks a dry v
 no rule yet reading it (named as follow-up 26 rather than half-wired). 1536 → **1542
 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §23.
 
+**Schema 27, and a day that proved nothing — reported as nothing (2026-08-10).** The
+forge run aborted at the handshake with `unsupported bridge schema 27; expected 26`: both
+logins refused, nothing staged, no half-contract day. **That is the lockstep guard working**
+— the previous entry paid for the same drift with an EIGHT-version gap; this cost a retry.
+26→27 verified by diffing as always: five deletions, four of them bookkeeping, and the fifth
+inside `player_json` — the object carrying `dead` that the death readout is built on —
+adding `"race"` to the same line with `body`/`poisoned`/`dead` untouched. Proven on the
+shard, not just diffed. **Then the day itself was NO DATA for the 49→9 check**, and the
+written-beforehand prediction had named that outcome: `buy_iron` was never admitted at all,
+because pack gold peaked at **35** against the 75 an iron batch costs, so the backoff was
+never exercised. Reporting "0 give-ups, down from 49" would be the single most dishonest
+reading available here, and it is the one the numbers invite. **The cause: the miner
+delivered ONE pile of ten ingots in 1800 ticks** (`grimm[iron=0]` on 209 of 209 samples,
+`!stalled` on 64), so Pim crafted once, sold once, earned 35 gold and wanted nothing for the
+remaining 204 samples. That is the silent-miner shape for the FOURTH recorded time, and for
+the second time the alarm caught it and named the skill. `NO-TOOL` never fired and
+`deaths=0`, so it is neither a lost pickaxe nor a corpse — leaving exactly the vein-versus-
+relocation distinction the death-readout entry says the tape still cannot make, now blocking
+a measurement rather than merely being untidy. **A schema-27 regression was ruled out rather
+than assumed**: all three buy gates re-run at 27 pass, and the give-up gate's verdict is
+byte-identical across schema 26 and 27. So follow-up 25 remains offline-only after two live
+attempts — one lost to schema drift, one to the miner — and the binding constraint is now
+named: three of the last four forge days were decided by the miner, not by anything in the
+tinker's economy (follow-up 27). 1542 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §24.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
