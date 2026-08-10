@@ -256,3 +256,152 @@ def test_the_same_LIFE_retires_ACHIEVED_when_the_vendor_stocks_the_iron():
     assert row[4] == "achieved", f"a buy that got its iron is not a give-up: {row}"
     assert sum(i.amount for i in body.observe().items
                if i.graphic in INGOT_GRAPHICS) > 0
+
+
+# --- follow-up 25: a vendor that just proved it is dry ---------------------------------
+#
+# §22.2, live: a tinker whose vendor sold out after two purchases re-admitted `buy_iron`
+# 49 MORE TIMES in one 1800-tick day. Every give-up was correct — there really was no
+# iron — and the world-fact "this vendor is dry" was one nothing carried from one trip to
+# the next. It was invisible until follow-up 19 made a failed buy cost 17 ticks instead of
+# 180: at the old price the run could not have fitted 49 of them.
+
+
+def test_the_fsm_marks_a_vendor_dry_only_when_the_OFFER_was_absent():
+    """The marker means "this vendor does not stock it", not "the trip failed". A menu
+    that never arrived, or a vendor that could not be found, are different world-facts
+    and must not stand the branch down — the rule would then skip a shop that is fine."""
+    from anima2.skills.market import VENDOR_DRY_BACKOFF, vendor_dry
+
+    # Offer absent from every window -> dry.
+    body = _world([[_entry(0x22, BANDAGE, 5, name="bandage")]])
+    memory = {"vendor_spot": (SPOT,), "bs_stand": SPOT, "mkt_phase": "buy",
+              "cap_buy_goal_id": 7, "cap_buy_route": (SPOT,)}
+    _drive(body, BuyIron(), memory)
+    until, now = memory.get("buy_dry_until"), int(memory.get("mkt_tick", 0))
+    assert type(until) is int and until > now, (until, now)
+    assert until - now <= VENDOR_DRY_BACKOFF, (
+        f"the stand-down is one backoff from the give-up, not from zero: {until} vs {now}")
+    assert vendor_dry(memory) is True
+
+    # No vendor near the route's end at all -> NOT dry; the shop was never seen.
+    lonely = _world([[_entry(0x11, IRON, 5, name="iron ingot")]])
+    lonely.mobiles.clear()
+    mem2 = {"vendor_spot": (SPOT,), "bs_stand": SPOT, "mkt_phase": "buy",
+            "cap_buy_goal_id": 8, "cap_buy_route": (SPOT,)}
+    _drive(lonely, BuyIron(), mem2)
+    assert "buy_dry_until" not in mem2, (
+        "a vendor that never appeared says nothing about its stock")
+    assert vendor_dry(mem2) is False
+
+
+def test_a_dry_vendor_stands_the_rule_down_and_the_backoff_expires():
+    """The rule stops ASKING — deliberately not a gate. A gate refusing here while the
+    rule still wanted the buy would be a manufactured rule-vs-gate disagreement, and the
+    detector built to catch those would fire every time a shop ran out."""
+    from anima2.skills.market import VENDOR_DRY_BACKOFF, vendor_dry
+
+    memory = {"mkt_tick": 100, "buy_dry_until": 100 + VENDOR_DRY_BACKOFF}
+    assert vendor_dry(memory) is True
+    memory["mkt_tick"] = 100 + VENDOR_DRY_BACKOFF - 1
+    assert vendor_dry(memory) is True
+    memory["mkt_tick"] = 100 + VENDOR_DRY_BACKOFF
+    assert vendor_dry(memory) is False, "the stand-down must EXPIRE, not be permanent"
+    # A malformed marker is not a stand-down: a Life must never be talked out of trading
+    # by a bad write.
+    for bad in (None, "soon", 12.5, True):
+        assert vendor_dry({"mkt_tick": 0, "buy_dry_until": bad}) is False, repr(bad)
+
+
+def test_every_material_buy_rule_consults_it_not_just_the_one_that_was_measured():
+    """The tinker is where the 49 trips were measured. Wiring only the tinker would leave
+    four copies of one rule with the fix in one of them, which is the defect class §12 and
+    §13 are both instances of."""
+    import ast
+    import inspect
+
+    import anima2.carpenter_life as cl
+    import anima2.mage_life as ml
+    import anima2.tinker_life as tl
+    import anima2.warrior_life as wl
+
+    for mod, cap in ((tl, "buy_iron"), (cl, "buy_boards"),
+                     (wl, "buy_bandage"), (ml, "buy_reagent")):
+        src = inspect.getsource(mod)
+        assert "vendor_dry(" in src, f"{mod.__name__} never consults it"
+        # ...and it guards the BUY branch, not something else in the file.
+        tree = ast.parse(src)
+        calls = {n.func.id for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "vendor_dry" in calls, mod.__name__
+        assert cap in src, mod.__name__
+
+
+def test_a_LIFE_stops_walking_back_to_a_vendor_that_has_nothing():
+    """The end-to-end shape the live day showed, offline: with the vendor dry the tinker
+    must not keep re-admitting `buy_iron` forever. Before follow-up 25 this world produced
+    one give-up per trip for as long as the run lasted."""
+    from anima2.life_runner import frame_retirements
+
+    body, life = _tinker_that_can_only_buy([[_entry(0x22, BANDAGE, 5, name="bandage")]])
+    frame = _admitted_buy(life)
+    assert frame is not None
+    for _ in range(600):
+        life.tick()
+    rows = [r for r in frame_retirements(life) if r[1] == "buy_iron"]
+    assert rows, "the first trip must still happen — the tinker cannot know in advance"
+    assert all(r[4] == "giveup" for r in rows), rows
+    assert len(rows) <= 4, (
+        f"after learning the vendor is dry the rule must stop asking; it made "
+        f"{len(rows)} trips in 600 ticks")
+
+
+def test_the_stand_down_is_counted_in_a_clock_its_own_decision_cannot_halt():
+    """The bug this fix was FIRST written with, kept as a test.
+
+    `vendor_dry` originally measured its backoff in `mkt_tick`, which only advances inside
+    a market skill's `step`. Standing the buy branch down sends the Life to hunt mode, which
+    stops ticking the economy agent, which stops advancing `mkt_tick` — so the expiry was
+    never reached. Measured on this exact fixture before the fix: `mkt_tick=18
+    dry_until=196` still frozen after 1200 ticks, i.e. a PERMANENT stand-down wearing a
+    timer.
+
+    It is the same shape §5 records for `expire_due` ("frozen, the deadline is unreachable
+    by construction") and the one §18 discarded a bound-2 experiment over. A threshold must
+    never be counted in a clock the decision it gates can halt."""
+    from anima2.life_runner import frame_retirements
+    from anima2.skills.market import VENDOR_DRY_BACKOFF, market_clock
+
+    body, life = _tinker_that_can_only_buy([[_entry(0x22, BANDAGE, 5, name="bandage")]])
+    assert _admitted_buy(life) is not None
+    for _ in range(1200):
+        life.tick()
+    mem = life.econ_agent.memory
+
+    # The clock kept moving even though the economy agent mostly did not.
+    assert market_clock(mem) > life.econ_agent.ticks, (
+        f"the clock must not be the one the stand-down halts: clock={market_clock(mem)} "
+        f"econ_ticks={life.econ_agent.ticks}")
+    assert market_clock(mem) > VENDOR_DRY_BACKOFF * 2
+
+    # ...so the branch was retried repeatedly, not silenced forever.
+    rows = [r for r in frame_retirements(life) if r[1] == "buy_iron"]
+    assert len(rows) >= 3, (
+        f"a stand-down that never expires is a permanent refusal, not a backoff: "
+        f"{len(rows)} trips in 1200 ticks")
+    # ...and still far below the 49 the live day made with no backoff at all.
+    assert len(rows) <= 1200 // VENDOR_DRY_BACKOFF + 2, len(rows)
+
+
+def test_a_bare_agent_with_no_life_still_gets_a_clock():
+    """`market_clock` falls back to `mkt_tick` for a capability villager with no
+    orchestrator. Its buy is chosen by the gate rather than by a rule that can stand down,
+    so nothing it decides can halt that clock — the fallback is safe for the same reason
+    the primary is."""
+    from anima2.skills.market import market_clock
+
+    assert market_clock({"life_tick": 40, "mkt_tick": 7}) == 40   # a Life wins
+    assert market_clock({"mkt_tick": 7}) == 7                     # bare Agent
+    assert market_clock({}) == 0
+    for bad in (None, "5", 2.5, True):                            # malformed -> fall on
+        assert market_clock({"life_tick": bad, "mkt_tick": 7}) == 7, repr(bad)

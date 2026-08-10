@@ -115,6 +115,8 @@ the same route in reverse back to `bs_stand`, for the identical reason.
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from ..contract import BuyItems, Drop, PickUp, PopupRequest, PopupSelect, Position, SellItems, Walk
 from ..geometry import chebyshev, direction_toward
 from ..knobs import knob_int
@@ -171,6 +173,60 @@ FIND_MOBILE_TIMEOUT = 10
 # miss into a dead transaction; reopening re-rolls the subset. The real fix belongs in
 # the BODY (anima-core's buy-window pairing) — this is the honest brain-side mitigation.
 OFFER_REOPEN_ATTEMPTS = 4
+
+
+#: Market ticks a buy branch stands down for after a trip found the vendor had none of
+#: what it came for. Audit follow-up 25.
+#:
+#: DERIVED, not picked: it is one buy frame's own deadline
+#: (`capabilities._BUY_INGOTS.default_deadline_ticks`), on the rule that a failed trip
+#: should get at least as long to become worth retrying as a trip is given to succeed.
+#:
+#: The measurement it exists for (§22.2, live, 1800 ticks): a tinker whose vendor sold out
+#: after two purchases re-admitted `buy_iron` **49 more times**, each trip walking to the
+#: shop, opening the window, re-rolling its full budget and coming back empty. Every one
+#: was CORRECT — there really was no iron — and the world-fact "this vendor is dry" was one
+#: nothing carried from one trip to the next.
+#:
+#: It was invisible until follow-up 19 made a failed buy cost 17 ticks instead of 180:
+#: at the old price the run could not have fitted 49 of them. Fixing one thing is what
+#: made the next thing measurable.
+VENDOR_DRY_BACKOFF = 180
+
+
+def market_clock(memory: Mapping[str, Any]) -> int:
+    """The tick a market stand-down is measured in — ONE definition, so the write and the
+    read cannot disagree about which clock they meant.
+
+    `life_tick` when a Life is driving (stamped by `WarriorLife.tick`, advancing every
+    orchestrator tick whatever the mode), else `mkt_tick` (advanced inside a market
+    skill's own `step`). The fallback covers a bare `Agent` — a capability villager with
+    no orchestrator — whose buy is selected by the gate rather than by a rule that can
+    stand down, so its clock cannot be halted by this decision.
+    """
+    for key in ("life_tick", "mkt_tick"):
+        value = memory.get(key)
+        if type(value) is int:
+            return value
+    return 0
+
+
+def vendor_dry(memory: Mapping[str, Any], ns: str = "buy") -> bool:
+    """Has a buy trip in namespace `ns` recently found the vendor with no stock?
+
+    The ONE read point, so the rule that decides to go and the FSM that learns not to
+    cannot drift — `market._bank_reserve`'s shape, for the same reason. Reads the shared
+    `mkt_tick` clock every market skill already advances, so it needs no new counter.
+
+    Deliberately NOT a capability GATE. A gate that refused here while the rule still
+    wanted the buy would be a manufactured rule-vs-gate disagreement, and the detector
+    that exists to catch those would fire every time a vendor ran out — the thing this
+    project spends most of its live budget chasing. The rule simply stops asking.
+    """
+    until = memory.get(f"{ns}_dry_until")
+    if type(until) is not int:
+        return False
+    return market_clock(memory) < until
 
 
 def is_vendor_cancel(action) -> bool:
@@ -864,6 +920,12 @@ class BlacksmithMarket(Blacksmith):
                     # cancelled, so the lag costs no attempt at all.
                     return SkillResult(Status.RUNNING,
                                        BuyItems(vendor=buy.vendor, items=[]), reward)
+                # The re-roll budget is spent and the offer was in NONE of the windows —
+                # the only give-up here that means "this vendor does not stock it" rather
+                # than "the menu never arrived". Stand the branch down so the rule stops
+                # walking back for it (`vendor_dry`, audit follow-up 25).
+                ctx.memory["buy_dry_until"] = (
+                    market_clock(ctx.memory) + VENDOR_DRY_BACKOFF)
                 self._stash_reward(ctx, reward)
                 return None
             # Buy the fixed batch, clamped to what the vendor actually stocks
@@ -1061,6 +1123,12 @@ class BlacksmithMarket(Blacksmith):
                     # same fix rather than waiting to be caught on its own run.
                     return SkillResult(Status.RUNNING,
                                        BuyItems(vendor=buy.vendor, items=[]), reward)
+                # The re-roll budget is spent and the offer was in NONE of the windows —
+                # the only give-up here that means "this vendor does not stock it" rather
+                # than "the menu never arrived". Stand the branch down so the rule stops
+                # walking back for it (`vendor_dry`, audit follow-up 25).
+                ctx.memory["toolbuy_dry_until"] = (
+                    market_clock(ctx.memory) + VENDOR_DRY_BACKOFF)
                 self._stash_reward(ctx, reward)
                 return None
             amount = min(TOOL_BUY_AMOUNT, entry.amount)

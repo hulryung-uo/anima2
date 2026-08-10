@@ -46,7 +46,7 @@ from .skills.carpentry import (
     SellFurniture,
 )
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
+from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve, vendor_dry
 from .warrior_life import WarriorLife
 
 #: Boards consumed per piece of furniture — RE-EXPORTED from `skills/carpentry.py`, which
@@ -113,7 +113,8 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
         if on_ground(obs, _BOARD_GRAPHICS):
             return "economy", "fetch_boards"
         if (pack_amount(obs, GOLD_GRAPHIC) >= BOARD_BATCH_COST
-                and _valid_spot(memory.get(BuyBoards.vendor_spot_key))):
+                and _valid_spot(memory.get(BuyBoards.vendor_spot_key))
+                and not vendor_dry(memory)):
             return "economy", "buy_boards"
         return "hunt", None  # no material and no means — wait rather than stall
     if pack_amount(obs, GOLD_GRAPHIC) > _bank_reserve(memory, BANK_RESERVE) \

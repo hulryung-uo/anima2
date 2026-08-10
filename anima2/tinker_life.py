@@ -41,7 +41,7 @@ from .contract import Observation
 from .knobs import knob_int
 from .obsview import on_ground, owns, pack_amount
 from .skills.hunt import GOLD_GRAPHIC
-from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve
+from .skills.market import TOOL_BUY_AMOUNT, _bank_reserve, vendor_dry
 from .skills.smelt import INGOT_GRAPHICS
 from .skills.tinkering import (
     FETCH_IRON_PACK_CAP,
@@ -149,7 +149,8 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     if gold > reserve and _valid_spot(memory.get("banker_spot")):
         return "economy", "bank_gold"
     if (iron < BuyIron.buy_reorder and gold >= IRON_BATCH_COST
-            and _valid_spot(memory.get(BuyIron.vendor_spot_key))):
+            and _valid_spot(memory.get(BuyIron.vendor_spot_key))
+            and not vendor_dry(memory)):
         return "economy", "buy_iron"
     return "hunt", None
 

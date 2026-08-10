@@ -37,7 +37,7 @@ from .knobs import knob_param
 from .obsview import owns, pack_amount, pack_has
 from .persona import Persona
 from .profession import PROFESSIONS
-from .skills.market import _bank_reserve
+from .skills.market import _bank_reserve, vendor_dry
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.warrior import (
     BANDAGE_GRAPHICS,
@@ -159,7 +159,7 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
             and _valid_spot(memory.get("weapon_vendor_spot"))):
         return "economy", "buy_weapon"
     if pack_amount(obs, BANDAGE_GRAPHICS) < LOW_BANDAGES and gold >= BANDAGE_BATCH_COST \
-            and _valid_spot(memory.get("healer_spot")):
+            and _valid_spot(memory.get("healer_spot")) and not vendor_dry(memory):
         return "economy", "buy_bandage"
     if (not owns(obs, PLATE_CHEST_GRAPHIC, layer=PLATE_ARMOR_LAYERS[PLATE_CHEST_GRAPHIC])
             and gold >= ARMOR_PRICE and _valid_spot(memory.get("armorer_spot"))):
@@ -511,6 +511,22 @@ class WarriorLife:
         # `capability_wait` with nothing admitted) or real work. No Life subclass
         # overrides `tick`, so every one of the five gets this by construction.
         self._ticked_agent = self.econ_agent if self.mode == "economy" else self.hunt_agent
+        # A clock the RULE can see that the rule's own decisions cannot stop. Exactly one
+        # inner agent ticks per orchestrator tick, so this advances by 1 every tick
+        # regardless of mode — unlike `mkt_tick` (only inside a market skill's `step`) and
+        # unlike `econ_agent.ticks` (only in economy mode).
+        #
+        # That distinction is load-bearing and was found by measurement, not foresight.
+        # `market.vendor_dry`'s stand-down was first written against `mkt_tick`, and a
+        # tinker facing a dry vendor stood the branch down, went to hunt, stopped ticking
+        # the economy agent, stopped advancing `mkt_tick` — and so never reached the
+        # expiry: measured at `mkt_tick=18 dry_until=196` still frozen after 1200 ticks, a
+        # PERMANENT stand-down wearing a timer. It is the same shape §5 records for
+        # `expire_due` ("frozen, the deadline is unreachable by construction") and the same
+        # one §18 discarded a bound-2 experiment over. A threshold must never be counted in
+        # a clock the decision it gates can halt.
+        self.econ_agent.memory["life_tick"] = (
+            self.hunt_agent.ticks + self.econ_agent.ticks)
         action = self._ticked_agent.tick()
         obs = self.body.last_obs
         if obs is None:

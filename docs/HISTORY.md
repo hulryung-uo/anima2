@@ -1170,6 +1170,33 @@ under discussion is how a reading goes wrong. Clean otherwise: 0 deaths, 0 `!fro
 `FRAME OVERDUE`, 0 rule-vs-gate. 1536 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §22.
 
+**A vendor that just proved it is dry, and the timer that was really an off switch
+(2026-08-10).** Audit follow-up 25, from the previous entry's finding: a tinker whose vendor
+sold out re-admitted `buy_iron` 49 more times in one day, every give-up correct, with "this
+vendor is dry" a world-fact nothing carried between trips. It was invisible until follow-up
+19 made a failed buy cost 17 ticks instead of 180 — **fixing one thing is what made the next
+thing measurable.** The FSM marks `{ns}_dry_until` on ONE give-up path (the offer absent
+from every window after the re-roll budget is spent — the only one meaning "does not stock
+it") and the RULE reads it, deliberately NOT a gate: a gate refusing while the rule still
+wanted the buy would be a manufactured rule-vs-gate disagreement, and the detector built to
+catch those would fire every time a shop ran out. Wired on all FOUR material-buy branches,
+not just the measured tinker, because one Life fixed and three not is this project's own
+defect class. **The first version was a permanent stand-down wearing a timer.** It counted
+in `mkt_tick`, which only advances inside a market skill's `step` — so standing the branch
+down sent the Life to hunt, stopped the economy agent, stopped the clock, and the expiry was
+never reached: measured at `mkt_tick=18 dry_until=196` still frozen after 1200 ticks. That is
+the same shape recorded twice before, for `expire_due` under a frozen econ agent and for the
+discarded bound-2 starvation experiment: **a threshold must never be counted in a clock the
+decision it gates can halt.** Fixed with `life_tick`, stamped every orchestrator tick from
+`hunt_agent.ticks + econ_agent.ticks` regardless of mode. **How it was caught matters more
+than the fix**: the first measurement said "1 hopeless trip in 1800 against 49", a 49x
+improvement — exactly the sort of number worth distrusting. It was the branch switched off.
+After the fix: 9 trips in 1800, with the shop rechecked about every 180 ticks so a restock
+is noticed. Mutation-checked three ways. **Offline only**, 180 is derived rather than
+validated against a real restock interval, and the tool-buy family marks a dry vendor with
+no rule yet reading it (named as follow-up 26 rather than half-wired). 1536 → **1542
+tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §23.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion

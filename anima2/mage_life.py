@@ -27,7 +27,7 @@ from __future__ import annotations
 from .capabilities import _valid_spot
 from .contract import Observation
 from .obsview import ground_amount, pack_amount
-from .skills.market import _bank_reserve
+from .skills.market import _bank_reserve, vendor_dry
 from .skills.hunt import GOLD_GRAPHIC
 from .skills.mage import FETCH_GOLD_PACK_CAP, BuyReagent, SULFUROUS_ASH_GRAPHIC
 from .warrior_life import WarriorLife
@@ -69,7 +69,8 @@ def decide_candidates(obs: Observation, memory: dict) -> list[str]:
     gold = pack_amount(obs, GOLD_GRAPHIC)
     if (pack_amount(obs, SULFUROUS_ASH_GRAPHIC) < LOW_REAGENTS
             and gold >= REAGENT_BATCH_COST
-            and _valid_spot(memory.get("mage_vendor_spot"))):
+            and _valid_spot(memory.get("mage_vendor_spot"))
+            and not vendor_dry(memory)):
         out.append("buy_reagent")
     if ground_amount(obs, GOLD_GRAPHIC) >= COLLECT_ABOVE and gold < FETCH_GOLD_PACK_CAP:
         out.append("fetch_gold")
