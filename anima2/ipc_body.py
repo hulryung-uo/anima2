@@ -122,7 +122,20 @@ from .contract import Action, Observation
 # emitted. (`PlayerView.pos` reads as "missing" under a naive `"key": p.field` scan and is
 # not — the bridge emits it as `"pos": pos_json(&p.pos)`, a nested object. Checked, because
 # a false positive in a mechanical check is exactly as bad as a false negative.)
-SUPPORTED_SCHEMA_VERSION = 27
+#
+# 27→28, the THIRD bridge move in one working session (26→27→28), and the operational
+# lesson is that pattern rather than the diff: the sibling repo is under active
+# development, so a live run now needs a schema check as a matter of course, not as a
+# reaction to an aborted one. All three aborts cost a retry each because the guard is
+# there; without it they would have been three misread days.
+#
+# The diff itself is the cleanest yet — FOUR deletions, every one the changelog sentence,
+# the constant and a version test, with NO serializer line touched at all. v28 adds the
+# `type >= 6` tail of 0x11 flat on `player`: five resistance caps and ten combat/casting
+# modifiers, all zero unless the shard is ML+ and the client asked for extended status.
+# Cross-checked as before: 19 action types still accepted, 57 observation keys still
+# emitted.
+SUPPORTED_SCHEMA_VERSION = 28
 
 
 def default_bridge_path() -> Path:
