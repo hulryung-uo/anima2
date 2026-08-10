@@ -1326,6 +1326,35 @@ spread that swamps the difference. The miner froze at sample 116 of 205, the fou
 row at essentially the same point, and the thing none of this has moved. 1547 tests, ruff
 clean. Detail: `docs/AUDIT-2026-07-29.md` §28.
 
+**The stuck-streak distribution, measured — and the trickle the window guards against
+never happened (2026-08-10).** The previous entry named the measurement; instrumented as a
+`{streak length: recoveries}` histogram and run for a full 1800-tick day: **zero recoveries**
+across 21 full windows, 4 of them 100% stuck and 7 containing both kinds. The mixed ones are
+not counter-examples — a window is the last 24 samples, so a stand running productive-then-
+stuck shows both while the window straddles the transition. **Not one vein produced again
+after a no-metal reply at the same stand.** That is stronger than it first looks because a
+`0` sample is not "the tick went fine": in outcome-only mode, which `Mine` uses, the
+sampler's own docstring defines it as "a productive reply (success, or skill-fail-with-ore —
+proof the bank still yields)", with invalid-target replies appending a `1`. So a `0` is
+direct evidence of remaining ore, and none ever followed a `1`. **And the docstring explains
+why the trickle once did defeat a strict streak**: the LEGACY sampler appended a `0` on
+"every reply-less or unrecognized tick", so invalid tiles and server-lag silence both read as
+"not stuck" and a dead bank "crawled at rate ~0.5". The streak that failed was a streak over
+NOISY samples; outcome-only sampling removed the noise on 2026-07-30 and nothing re-examined
+the window it was chosen for. **No threshold was changed**, because doing so on one day at
+one mine, with no max-streak high-water mark recorded, would repeat the mine-pool mistake
+exactly — a plausible mechanism, one run, and a number chosen rather than derived. The next
+step is a second day plus the high-water mark, which turns "no counter-examples" into a
+bound. **An instrument bug the first live sample caught**: it reported `recov=24(1)`, a
+recovery from a streak of exactly the window length, which was stuck replies accumulated at
+one stand, carried across a relocation and broken at the next — `_relocate_step` reset the
+window and not the new streak. Caught by the number landing precisely on the window rather
+than by a test; there is a test now, and the run carrying the bad instrument was killed
+rather than left to produce unusable numbers. The day itself banked 473 (+550), the fifth
+1800-tick day and the fifth wildly different figure (0, 473, 503, 573, 818) — a standing
+reason not to attribute any of them. 1551 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §29.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
