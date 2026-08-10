@@ -1298,6 +1298,34 @@ much of the 193 ticks is walking versus swinging — which decides whether the l
 window or the route. 1545 tests, ruff clean, no shard time spent. Detail:
 `docs/AUDIT-2026-07-29.md` §27.
 
+**Walk versus swing, measured — the window is the lever (2026-08-10).** The previous
+entry said this split "decides whether the lever is the window or the route". It is not
+close: **whole run `walk=99 swing=1387` (6.7% walking), dead tail `walk=44 swing=711`
+(5.8%)**. In 755 dead ticks the miner proved EIGHT stands empty — ~94 ticks each, of which
+~88 are swinging and ~5 walking. Making relocation instant would recover under 6% of the
+dead time; the 24-reply stuck window governs the other 94%. **The instrument had to be
+built because the existing one lies**: `steps=` reads ZERO across every dead tail, which
+looks like "no walking at all" and is an artefact — it counts `Walk` actions, and a
+relocation issues one fire-and-forget `WalkTo` and then idles while the server advances the
+route. A first attempt to derive the split from it was discarded for that reason. The two
+new counters partition every harvest tick, and getting that partition right took a
+correction: incrementing the walk counter before `_relocate_step` put the ARRIVAL tick —
+where it returns None and execution falls through — into BOTH buckets, so the two stopped
+summing to the ticks elapsed. A split that does not partition is not a split. This also
+revises the previous entry's ~193 ticks per stand down to ~94, same conclusion and a better
+number, because that figure divided dead ticks by position changes rather than distinct
+stands. **The open question is now sharp**: the window is 24 replies at a 0.75 rate
+threshold and it is 24 because a strict streak was defeated by trickle-through successes, so
+a 100%-stuck window could give up sooner without touching the trickle case — but what
+"sooner" may safely be is unmeasured, and picking it by eye is exactly the mistake made and
+retracted two entries ago. The cheap next step is logging the stuck-rate distribution over
+the window, which is not a behaviour change. **The economics were the best day recorded (818
+banked, +900 net) and are still not attributable** — the two pool-6 runs differ from each
+other by more than the two pool-12 runs differ, four runs across two configurations with a
+spread that swamps the difference. The miner froze at sample 116 of 205, the fourth run in a
+row at essentially the same point, and the thing none of this has moved. 1547 tests, ruff
+clean. Detail: `docs/AUDIT-2026-07-29.md` §28.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
