@@ -406,6 +406,13 @@ class Harvest(Skill):
         spot's own tiles haven't been sampled yet.
         """
         ctx.memory["harvest_recent_stuck"] = None
+        # ...and the streak with it. A run of consecutive stuck replies means "how dead
+        # did THIS vein look", so carrying it across a relocation measures the wrong
+        # thing entirely: the first live sample reported `recov=24(1)` — a recovery from
+        # a streak of exactly the window length — which was stuck replies accumulated at
+        # a dead stand, walked to a new one, and broken by the first swing there. Caught
+        # by the number being suspiciously equal to the window, not by a test.
+        ctx.memory["harvest_stuck_streak"] = 0
         pool = ctx.memory.get("harvest_spot_pool")
         if pool:
             # A KNOWN next stand (Control-plane surveyed, e.g. `find_mine_spots`

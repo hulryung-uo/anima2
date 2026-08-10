@@ -808,7 +808,32 @@ def test_an_unbroken_streak_is_never_counted_as_a_recovery():
                                 persona=Persona(name="Grimm"), memory=memory))
     assert not (memory.get("harvest_recoveries") or {}), (
         f"a permanently dead vein recorded a recovery: {memory.get('harvest_recoveries')}")
-    assert memory.get("harvest_stuck_streak", 0) > 0, "the streak must still be counting"
+
+
+def test_a_relocation_resets_the_streak_so_it_measures_ONE_vein():
+    """A run of consecutive stuck replies means "how dead did THIS vein look". Carrying it
+    across a relocation measures something else entirely, and the first live sample said
+    so out loud: `recov=24(1)`, a recovery from a streak of exactly the window length,
+    which was stuck replies accumulated at a dead stand, walked to a new one, and broken
+    by the first swing there.
+
+    Caught by the number being suspiciously equal to the window rather than by a test —
+    which is why there is now a test."""
+    memory = {"smithy_drop": (60, 50)}
+    skill = MineSmeltDeliver()
+    window = max(1, len(Mine.probe_offsets)) * Mine.stuck_window_rotations
+    for _ in range(window + 6):          # drain until it gives up and relocates
+        skill.step(SkillContext(obs=_obs(cursor=True, no_metal=False),
+                                persona=Persona(name="Grimm"), memory=memory))
+        skill.step(SkillContext(obs=_obs(cursor=False, no_metal=True),
+                                persona=Persona(name="Grimm"), memory=memory))
+        if memory.get("harvest_relocating"):
+            break
+    assert memory.get("harvest_relocating"), "this fixture must actually relocate"
+    assert memory.get("harvest_stuck_streak") == 0, (
+        f"the streak survived the relocation and is now counting two veins as one: "
+        f"{memory.get('harvest_stuck_streak')}")
+    assert memory.get("harvest_recent_stuck") is None, "the window resets alongside it"
 
 
 def test_the_histogram_reads_nothing_back_into_the_decision():
