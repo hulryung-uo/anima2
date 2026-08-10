@@ -1249,6 +1249,31 @@ deeper thing: nothing detects an EXHAUSTED POOL, so when all twelve are dead the
 churn exactly as it did on six (follow-up 28), and ServUO's respawn timing remains
 unmeasured. 1542 → **1545 tests**, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §25.
 
+**The pool change live, and the diagnosis it refuted (2026-08-10).** Same command,
+`MINE_POOL_SPOTS` 6 → 12, with the prediction written first asking for the miner's freeze
+point to MOVE LATER. **It did not — 115/207 against 119 and 114 — and that refutes the
+diagnosis rather than the fix.** The previous entry read "stood on all 6 of 6 pool stands"
+as proof the pool was exhausted; with ELEVEN available he stood on SEVEN and stopped, four
+never reached, still walking outward when the run ended. **"Stood on all of them" was a
+consequence of having only six, not evidence that six was the limit** — a correlation read
+as a cause, which the larger pool is what exposed. What the tail actually shows is a miner
+that never stops relocating: five distinct positions after the freeze, the stuck window
+resetting and refilling each time (`20/23`, then `2/2`, `6/6`, `11/11`, `15/15`, `19/19`)
+with every sample a no-metal verdict. So the constraint is the COST OF PROVING A STAND
+DEAD: the window is 24 swing replies, which this repo's own test pins and its module
+comment calls "roughly two minutes of swinging at a dead vein". Seven dead stands is most
+of an hour spent establishing emptiness, and more stands cannot help a miner that cannot
+reach them. **The economics were the best of the three days (573 banked, +655 net against
+503/+585 and 0/+35) and that is NOT attributable**: the two pool-6 runs differ from each
+other by more than the new run differs from the better of them, so with one sample per
+configuration the honest claim is that the change did no harm. The pool change is kept —
+it is free, the survey had already found the stands, and it is what made the real
+constraint visible. Follow-up 28 is restated: not "detect an exhausted pool" but either
+prove a stand dead faster (without breaking the trickle-vein case the window exists for) or
+notice the whole area is dead and wait — and measuring either needs ServUO's ore respawn
+interval, which nobody here has ever measured. 1545 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §26.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
