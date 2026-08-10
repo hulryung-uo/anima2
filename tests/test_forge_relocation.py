@@ -707,3 +707,53 @@ def test_the_pool_stays_within_a_days_walk_of_home():
         "straight-line distances are monotone, so the survey may have switched from BFS "
         "ordering to a naive one — which would put far-flank stands in the pool, the "
         "forge12 failure this file already records")
+
+
+def test_the_walk_and_swing_counters_split_the_ticks_between_them():
+    """Follow-up 28's instrument. §27 established that ore never respawns inside a forge
+    day, so a miner's output is `banks reached x 10-34` and the only lever is reaching
+    more banks — which makes "does a dead stand cost us the walk or the proving?" the
+    question that picks the fix.
+
+    The existing telemetry cannot answer it, and the failed attempt is why this exists:
+    the worker's `steps=` reads ZERO across both dead tails, which looks like "no walking
+    at all" and is an artefact — it counts `Walk` actions, and a relocation issues one
+    fire-and-forget `WalkTo` and then IDLES while the server advances the route."""
+    memory = {"smithy_drop": (60, 50)}
+    skill = MineSmeltDeliver()
+    window = max(1, len(Mine.probe_offsets)) * Mine.stuck_window_rotations
+    ticks = 0
+    for _ in range(window + 40):
+        for cursor, no_metal in ((True, False), (False, True)):
+            skill.step(SkillContext(obs=_obs(cursor=cursor, no_metal=no_metal),
+                                    persona=Persona(name="Grimm"), memory=memory))
+            ticks += 1
+
+    walk = memory.get("harvest_walk_ticks", 0)
+    swing = memory.get("harvest_swing_ticks", 0)
+    assert swing > 0, "the swing counter never moved"
+    assert walk + swing == ticks, (
+        f"every harvest tick must land in exactly one bucket: {walk}+{swing} != {ticks}")
+    # The vein is dead, so this drove a relocation — and its walk ticks are counted even
+    # though the agent emits no `Walk` at all while the route advances.
+    assert walk > 0, (
+        "a relocation must register as WALKING; if this is 0 the counter is measuring "
+        "the same nothing `steps=` measured")
+
+
+def test_the_counters_are_cumulative_and_never_double_count_an_arrival():
+    """An arrival tick falls through the relocation branch into the harvest machine, and
+    is counted as a SWING — right, because it does resume harvesting, and a one-tick
+    attribution per relocation either way. What must never happen is a tick landing in
+    both, which would make the ratio the whole instrument exists for meaningless."""
+    memory = {"smithy_drop": (60, 50)}
+    skill = MineSmeltDeliver()
+    seen = []
+    for _ in range(120):
+        before = (memory.get("harvest_walk_ticks", 0), memory.get("harvest_swing_ticks", 0))
+        skill.step(SkillContext(obs=_obs(cursor=False, no_metal=True),
+                                persona=Persona(name="Grimm"), memory=memory))
+        after = (memory.get("harvest_walk_ticks", 0), memory.get("harvest_swing_ticks", 0))
+        seen.append((after[0] - before[0], after[1] - before[1]))
+    assert all(d in ((1, 0), (0, 1)) for d in seen), (
+        f"a tick landed in both buckets or neither: {set(seen)}")

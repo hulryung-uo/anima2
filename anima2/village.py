@@ -2294,6 +2294,15 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # wedge (forge unreachable, ore unsmeltable) than one in `mine` (dead
         # vein / lost tool) — from outside they look identical without this.
         grimm_flag += f" ph={miner.memory.get('smelt_phase', 'mine')}"
+        # Walk vs swing, the split that decides follow-up 28 (audit §27.4). Ore never
+        # respawns inside a day, so output is `banks reached x 10-34` and the only lever
+        # is reaching more banks — which makes "is a dead stand costing us the walk or
+        # the proving?" the question. `steps=` on the worker line CANNOT answer it: a
+        # relocation issues one fire-and-forget `WalkTo` and then idles, so it reads 0.
+        walk = int(miner.memory.get("harvest_walk_ticks", 0) or 0)
+        swing = int(miner.memory.get("harvest_swing_ticks", 0) or 0)
+        if walk or swing:
+            grimm_flag += f" walk={walk} swing={swing}"
         print(f"— forge pair {bank_state} "
               f"grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}{grimm_flag}]  "
               f"drop[grimm_sees={_ground_iron(m_obs)} pim_sees={_ground_iron(p_obs)}]  "

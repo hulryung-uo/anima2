@@ -226,13 +226,40 @@ class Harvest(Skill):
         # anything else touches `pending_target`/probing: a relocation leg
         # only ever starts between swings (no cursor open), so there's never a
         # dangling target to worry about here.
+        # The walk/swing split, counted here because this is the ONE branch that
+        # separates them (audit follow-up 28). §27 established that ore never respawns
+        # inside a forge day, so a miner's whole output is `banks reached x 10-34` and
+        # the only lever is reaching more banks — which makes "what does a dead stand
+        # actually cost, walking or swinging?" the question that picks the fix.
+        #
+        # It cannot be derived from the existing telemetry, and the attempt is worth
+        # recording: the worker's `steps=` counter reads ZERO across both dead tails,
+        # which looks like "no walking at all" and is an artefact — `steps` counts
+        # `Walk` actions, and a relocation issues one fire-and-forget `WalkTo` and then
+        # IDLES while the server advances the route. Two counters, or nothing.
         if ctx.memory.get("harvest_relocating"):
             result = self._relocate_step(ctx)
             if result is not None:
+                # Counted HERE, not before the call: on the ARRIVAL tick
+                # `_relocate_step` returns None and execution falls through to the
+                # harvest machine, so incrementing earlier put that tick in BOTH
+                # buckets and the ratio stopped summing to the ticks elapsed. Caught by
+                # `test_the_counters_are_cumulative_and_never_double_count_an_arrival`,
+                # which exists because a split that does not partition is not a split.
+                ctx.memory["harvest_walk_ticks"] = (
+                    int(ctx.memory.get("harvest_walk_ticks", 0) or 0) + 1)
                 return SkillResult(result.status, result.action, result.reward + reward)
             # Arrived (or gave up) — fall through to resume ordinary
             # harvesting from the new position; `_relocate_step` already
             # cleared the relocation state and the stuck-rate window.
+
+        # Every tick that gets past the branch above is the harvest state machine
+        # running: swinging, waiting on a verdict, or stepping the craft cursor. An
+        # ARRIVAL tick falls through and is counted here rather than as a walk, which
+        # is right — it does resume harvesting — and is a one-tick attribution per
+        # relocation either way.
+        ctx.memory["harvest_swing_ticks"] = (
+            int(ctx.memory.get("harvest_swing_ticks", 0) or 0) + 1)
 
         # See the module-level comment above `no_resource_clilocs` for the
         # windowed-rate design. LEGACY mode samples one per swing *reply* —
