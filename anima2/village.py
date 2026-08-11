@@ -2254,9 +2254,18 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
                               f"attempts={m.get('bank_deposit_attempts')} "
                               f"popup_wait={m.get('bank_popup_wait')})")
             elif capname:
-                stage_keys = ("mkt_phase", "bs_state", "sell_stage", "sell_vendor",
-                              "sell_find_wait", "sell_popup_wait", "cap_craft_stage",
-                              "buy_stage", "fetch_stage")
+                # `*_leg` is the WALK's own cursor, and its absence is why follow-up 29
+                # could not be diagnosed from a full day's log. That run showed
+                # `mkt_phase=sell` on 134 samples with `sell_stage` never written once —
+                # so the trip started and died before its first stage, which is the walk,
+                # and no key here could say so. Offline reproduction at the identical
+                # geometry reaches `stage=popup` immediately with or without the adjacent
+                # miner and with or without the shop-identity pin, so all three are ruled
+                # out and the remaining suspects are all live-only. This is the field that
+                # separates them.
+                stage_keys = ("mkt_phase", "bs_state", "sell_leg", "sell_stage",
+                              "sell_vendor", "sell_find_wait", "sell_popup_wait",
+                              "cap_craft_stage", "buy_leg", "buy_stage", "fetch_stage")
                 kv = " ".join(f"{k}={m[k]}" for k in stage_keys if k in m)
                 bank_state = f" {capname}({kv})" if kv else f" {capname}()"
         # The tool-gone confession (skills/harvest.py): a toolless miner makes no
