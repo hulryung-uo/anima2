@@ -213,6 +213,27 @@ runner says whether it DIED — the distinction between a corpse, a lost pickaxe
 vein, which no log before could make. The death half is OFFLINE ONLY; no forge log has ever
 contained a death. Audit §9, `docs/MONITORING.md`.
 
+**The freeze itself is now DIAGNOSED — three defects, fixed offline, unattributed live
+(2026-08-12, audit §34).** After five runs freezing at ~58%, an adversarial review first
+**refuted the hypothesis it started from** (ore banks are 8x8, so stands packed closer would
+share one — they are not: 12 stands, 12 distinct banks, spacing exactly 8). What was wrong:
+(1) `harvest_idx` advanced only on cliloc 500493, LUMBERJACKING's "no resources" message,
+while mining's is 503040 — so `Mine` cycled its node list **never**, and 12 of the pool's 14
+distinct ore banks were unreachable by construction, with any stand whose first node was
+merely untargetable a total loss; (2) a blind relocation left the condemned stand's nodes
+installed, so every swing after a 12-tile hop answered "That is too far away" — a FAILURE
+verdict, so the window filled and it relocated again, forever; (3) `nodes[0]` was the
+raster-order CORNER of the reach box, and relocation deliberately arrives one tile short, so
+corner + one short exceeds ServUO's MaxRange=2. All three carry tests that fail on the old
+code (9 mutants, all killed). **What no evidence says is which of the three the live dead
+tail actually was** — that needs one ordinary forge day, and the cause split (`nores=`/
+`inval=`/`packfull=`, a checkable partition) plus `banks=` were added to collect it. The
+prediction is written down in §34.4 *before* the run, as this project requires:
+`nores=` should dominate `inval=` on healthy early stands; if `inval=` dominates in the dead
+tail instead, the lever is geometry rather than give-up speed. **Follow-up 28 is closed as
+"do not"** — the 24-sample window cannot be shortened; measured per-stand false-fire floors
+reach 17.3, and both arguments for shortening it were destroyed (§34.5).
+
 ## Dev
 - Offline: `uv venv && uv pip install -e ".[dev]"` · `python -m anima2` · `pytest -q` · `ruff check .`
 - Live: build the bridge in the sibling repo (`cd ../anima-client && cargo build -p anima-net`),
