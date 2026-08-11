@@ -187,6 +187,58 @@ def _registry_ids(profession: str) -> frozenset[str]:
                      if prof == profession)
 
 
+#: Which professions' rules actually READ a vendor-dry marker. An EQUALITY, not a
+#: floor, for the same reason `_NOT_DRIVEN_BY_THE_LIFE` is one: a Life that quietly
+#: stops reading its marker turns this axis back into the no-op it used to be, and
+#: an axis nobody can see fire is an axis that is not testing anything. The
+#: lumberjack is absent because `woodsman_life` has no `vendor_dry` read at all.
+_DRY_CHANGES_A_DECISION = frozenset({"swordsman", "mage", "carpenter", "tinker"})
+
+
+def _assert_dry_axis(profession, decide, cases):
+    """Walk the lattice again with a vendor-dry marker planted.
+
+    This suite made **3316** `vendor_dry` calls and planted a marker on exactly
+    ZERO of them, so `vendor_dry` returned `False` every single time and the whole
+    axis was untested — the suite was comparing the rule with itself. The vacuity
+    is not cosmetic: a dry read added to the tool-buy GATE (a textbook rule-vs-gate
+    standoff, and precisely what this file exists to catch) passes all 1578 tests
+    as they stand, and is caught by four of the five the moment a marker is planted.
+
+    BOTH keys production writes are planted. `buy_dry_until` is read by four Life
+    rules; `toolbuy_dry_until` (`market.py`) is written and read NOWHERE — planting
+    it is what makes a future reader's disagreement fail here, on the day it is
+    written, instead of on a shard.
+    """
+    changed = False
+    for obs, memory in cases:
+        base = decide(obs, dict(memory))
+        for marker in ("buy_dry_until", "toolbuy_dry_until"):
+            # 1 beats `market_clock`'s 0 default, so the stand-down reads as live.
+            tuned = {**memory, marker: 1}
+            mode, cap = decide(obs, dict(tuned))
+            if (mode, cap) != base:
+                changed = True
+            if mode != "economy" or cap is None:
+                continue
+            ctx = SkillContext(obs=obs, persona=Persona(name="T"),
+                               memory=dict(tuned))
+            ready = ready_capability_ids(profession, ctx)
+            assert cap in ready, (
+                f"{profession}: with {marker} planted the rule wants {cap!r} but "
+                f"the gate refuses (ready={sorted(ready)}). A gate that reads a "
+                f"vendor-dry marker its rule does not read is the rule-vs-gate "
+                f"standoff this axis exists to catch."
+            )
+    assert changed == (profession in _DRY_CHANGES_A_DECISION), (
+        f"{profession}: planting a vendor-dry marker "
+        f"{'changed nothing' if not changed else 'changed a decision'}, which "
+        f"_DRY_CHANGES_A_DECISION contradicts. Either a Life gained or lost a "
+        f"`vendor_dry` read, or the lattice stopped reaching the branch that has "
+        f"one — and either way this axis has gone back to testing nothing."
+    )
+
+
 def _assert_concordance(profession, decide, cases, expected_caps,
                         knobs=("bank_reserve",)):
     """Forward: rule wants cap => gate ready. Coverage: every cap wanted somewhere.
@@ -234,6 +286,7 @@ def _assert_concordance(profession, decide, cases, expected_caps,
         f"lattice lost an axis or the rule has a dead branch (the unreachable "
         f"BANK_ABOVE=300 shape)."
     )
+    _assert_dry_axis(profession, decide, cases)
     undriven = _registry_ids(profession) - wanted
     assert undriven == _NOT_DRIVEN_BY_THE_LIFE.get(profession, frozenset()), (
         f"{profession}: the registry binds {sorted(undriven)} which no lattice point "

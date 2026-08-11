@@ -472,3 +472,29 @@ def test_a_wedged_market_walk_is_distinguishable_from_a_walking_one():
         f"clear={clear_peak} wedged={wedged_peak}")
     assert wedged_peak >= BlacksmithMarket.stall_limit - 1, wedged_peak
     assert wedged_stage is None, "a trip that never arrives must not have set a stage"
+
+
+def test_the_dry_backoff_is_one_buy_frames_own_deadline():
+    """`VENDOR_DRY_BACKOFF` is DERIVED, not chosen: it is how long a buy frame is
+    given before its deadline expires, so standing down for exactly that long
+    forfeits at most one trip's worth of ticks. Read off the registry rather than
+    restated, because the day some binding's deadline moves is the day the
+    justification stops holding — and `bank_gold`'s 120 proves 180 is not simply
+    what every capability happens to use.
+
+    It bounds WASTED TRIPS, and can never be justified as waiting for supply:
+    ServUO's `BaseVendor` restocks lazily on a 60-minute timer stamped at
+    construction, and `control.stage_npc` builds the vendor at run start — against
+    a forge day of 13.7 minutes, no restock can land inside a run at all.
+    """
+    from anima2.capabilities import CAPABILITIES
+    from anima2.skills.market import VENDOR_DRY_BACKOFF
+
+    deadlines = {i: b.default_deadline_ticks
+                 for (_p, i), b in CAPABILITIES.items() if "buy" in i}
+    assert deadlines, "no buy bindings found — the derivation lost its subject"
+    off = {i: d for i, d in deadlines.items() if d != VENDOR_DRY_BACKOFF}
+    assert not off, (
+        f"VENDOR_DRY_BACKOFF={VENDOR_DRY_BACKOFF} is derived from a buy frame's own "
+        f"deadline, but {off} disagree. Either the constant follows, or the "
+        f"derivation in its docstring is no longer true and must be rewritten.")
