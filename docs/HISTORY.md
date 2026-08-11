@@ -1404,6 +1404,29 @@ and the day says nothing — which the written-beforehand prediction named as th
 outcome, since placement is the server's and not ours. 1553 → **1555 tests**, ruff clean.
 Detail: `docs/AUDIT-2026-07-29.md` §32.
 
+**Follow-up 25, live at last — 49 hopeless trips become 5 (2026-08-11).** Two earlier
+attempts failed to measure this (one lost to schema drift, one to a miner that never earned
+enough to want a buy); this day got it incidentally, while looking for something else.
+**The shape is identical across the pair, which is what makes them comparable**: the vendor
+sold its stock to exactly TWO purchases and then had none, in both runs, with every later
+trip a correct discovery that there was nothing to buy. Without the backoff that produced
+49 give-ups over 60 admitted samples; with it, **5 give-ups over 11**. The offline Life
+predicted 9; the live number is lower, plausibly because the tinker spent part of the day on
+delivered iron and so was not continuously wanting to buy. Predicted direction and rough
+magnitude, better outcome. Note this is a comparison of COUNTS under one identical world
+condition, not of gold — the gold figures remain unattributable across six days. **The rest
+of the day**: a third consecutive `recov=none peak=24` (streaks reach the full window, no
+vein of any length ever recovers); walk/swing at 7.0%, against 6.7% and 7.5% before, so
+~93% swinging is stable across three days; the miner froze at sample 121/207, the FIFTH
+consecutive run at essentially the same point and still the thing nothing has moved; and a
+healthy economy otherwise (19 crafts, 19 sells, 15 banks, 503 banked, zero deaths, zero
+`!frozen`, zero overdue frames, zero rule-vs-gate). Follow-up 29 did not recur — the Tinker
+staged one tile from the stand rather than two — as the written prediction said was likeliest.
+**Still open**: one live pair of runs, `VENDOR_DRY_BACKOFF = 180` derived rather than tuned
+(ServUO's VENDOR restock interval is a different number from the ore respawn and remains
+unmeasured), and the tool-buy family still marks a dry vendor with no rule reading it.
+1555 tests, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §33.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
