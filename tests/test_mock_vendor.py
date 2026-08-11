@@ -405,3 +405,70 @@ def test_a_bare_agent_with_no_life_still_gets_a_clock():
     assert market_clock({}) == 0
     for bad in (None, "5", 2.5, True):                            # malformed -> fall on
         assert market_clock({"life_tick": bad, "mkt_tick": 7}) == 7, repr(bad)
+
+
+def test_the_mock_walks_at_real_uo_coordinates():
+    """The default `bounds` spans UO's map, not a 1000x1000 box, and this pins it.
+
+    Every production coordinate in this project is real UO ground — the trade mine is
+    ~(2611,474) — so under the old default a fixture built at a real spot had every `Walk`
+    refused as an edge bump and never moved. It cost a wrong conclusion: audit §31.2
+    reported three hypotheses eliminated by a reproduction that could not walk at all,
+    when walking was the thing under investigation. Silent immobility teaches the wrong
+    thing twice, once when it passes and once when it is believed."""
+    from anima2.contract import Walk
+
+    body = MockBody(player=PlayerView(serial=PLAYER, name="T",
+                                      pos=Position(2609, 474, 0), hits=80, hits_max=80))
+    start = (body.player.pos.x, body.player.pos.y)
+    for _ in range(5):
+        body.act(Walk(dir=2))
+    moved = (body.player.pos.x, body.player.pos.y)
+    assert moved != start, (
+        f"a walk at real UO coordinates did not move: {start} -> {moved}; the default "
+        f"bounds are excluding the ground every production fixture stands on")
+    assert body.player.pos.x == start[0] + 5, moved
+
+
+def test_a_wedged_market_walk_is_distinguishable_from_a_walking_one():
+    """The readout follow-up 29's next run depends on. `{tag}_leg` cannot do it —
+    `_walk_route` returns `_ARRIVED` before touching the leg cursor, and on the
+    single-waypoint routes `stage_shops` produces leg 0 is also the last leg, so the key is
+    never written on any path. `{tag}_stall` is what `_market_walk_toward` maintains."""
+    from anima2.contract import MobileView
+    from anima2.skills.market import BlacksmithMarket
+    from anima2.skills.tinkering import TINKERTOOLS_GRAPHICS, TONGS_GRAPHIC
+    from anima2.tinker_life import TinkerLife
+
+    VEND, TINKER = 0xBEEF, (2611, 473)
+
+    def peak_stall(pim, blocked=()):
+        body = MockBody(player=PlayerView(serial=PLAYER, name="Pim", pos=Position(*pim, 0),
+                                          hits=80, hits_max=80, body=0x190))
+        body.blocked = set(blocked)
+        body.items[BP] = ItemView(serial=BP, graphic=0x0E75, amount=1, pos=Position(),
+                                  container=PLAYER, layer=BACKPACK_LAYER, distance=0)
+        for s, g, a in ((0x900, sorted(TINKERTOOLS_GRAPHICS)[0], 1),
+                        (0x901, TONGS_GRAPHIC, 5)):
+            body.items[s] = ItemView(serial=s, graphic=g, amount=a, pos=Position(),
+                                     container=BP, layer=0, distance=0)
+        body.mobiles[VEND] = MobileView(serial=VEND, name="T", body=0x190, notoriety=1,
+                                        hits=50, hits_max=50, distance=0,
+                                        pos=Position(*TINKER, 0))
+        life = TinkerLife(body=body, persona=Persona(name="Pim"),
+                          routes={"vendor_spot": (TINKER,)})
+        life.set_leash(pim, 30)
+        peak = 0
+        for _ in range(120):
+            life.tick()
+            peak = max(peak, int(life.econ_agent.memory.get("sell_stall", 0) or 0))
+        return peak, life.econ_agent.memory.get("sell_stage")
+
+    clear_peak, _ = peak_stall((2600, 474))
+    wedged_peak, wedged_stage = peak_stall(
+        (2600, 474), blocked={(2605, y) for y in range(460, 490)})
+    assert wedged_peak > clear_peak, (
+        f"a wedged approach must look different from a walking one: "
+        f"clear={clear_peak} wedged={wedged_peak}")
+    assert wedged_peak >= BlacksmithMarket.stall_limit - 1, wedged_peak
+    assert wedged_stage is None, "a trip that never arrives must not have set a stage"

@@ -1381,6 +1381,29 @@ economics remain unattributable, now with six samples (0, 473, 503, 573, 818, 0 
 across six identical 1800-tick days). 1553 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §30.
 
+**The reproduction that could not walk (2026-08-11).** The previous entry reported three
+hypotheses "eliminated" by an offline reproduction. **The reproduction could not move.**
+`MockBody.bounds` defaulted to `(0, 0, 1000, 1000)` and every production coordinate here is
+real UO ground — the trade mine is ~(2611,474) — so `_walk` refused every step as an edge
+bump, silently, exactly as it refuses a wall. The three variants all reached `stage=popup`
+only because Pim starts inside `SELL_REACH` and needed no walk at all. A double whose
+failure mode is silent immobility teaches the wrong thing twice: once when it passes, and
+once when the pass is believed. The entry is corrected in place rather than deleted — it
+still refutes the vendor-RESOLUTION hypothesis, since the resolver returned the right serial
+in every variant and that never depended on walking; it establishes nothing about the WALK,
+which is exactly where the failure was placed. **With bounds fixed the telemetry choice
+checks out**: clear path gives `sell_stall` peak 0, a wedge gives 5 against a limit of 6, and
+`{tag}_leg` cannot distinguish them at all — `_walk_route` returns `_ARRIVED` before touching
+the leg cursor, and on the single-waypoint routes `stage_shops` produces leg 0 is also the
+last leg, so it is never written on any path. That was caught by noticing `sell_leg` absent
+on a run where the sell was WORKING, before a second live day was spent on it. The default
+bounds are fixed rather than worked around per fixture, because the trap is that it is
+silent; two tests pin it and both fail under the old box. **Follow-up 29 remains open**: the
+Tinker staged one tile from the stand instead of the two the failure needed, the sell worked,
+and the day says nothing — which the written-beforehand prediction named as the likeliest
+outcome, since placement is the server's and not ours. 1553 → **1555 tests**, ruff clean.
+Detail: `docs/AUDIT-2026-07-29.md` §32.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion

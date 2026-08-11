@@ -76,7 +76,16 @@ class MockBody:
     items: dict[int, ItemView] = field(default_factory=dict)
     # Tiles the player cannot enter.
     blocked: set[tuple[int, int]] = field(default_factory=set)
-    bounds: tuple[int, int, int, int] = (0, 0, 1000, 1000)  # x0, y0, x1, y1
+    #: Walkable rectangle, x0/y0/x1/y1. The default spans UO's own map rather than a
+    #: convenient 1000x1000 box, because the small box was a SILENT trap: every production
+    #: coordinate in this project is real UO ground (the trade mine is ~(2611,474), the Yew
+    #: woods ~(2520,450)), so a fixture built at a real spot had every `Walk` refused as an
+    #: edge bump and simply never moved. It cost a wrong conclusion — audit §31.2 reported
+    #: three hypotheses "eliminated" by a reproduction that could not walk at all, when
+    #: walking was the thing under investigation. A double whose failure mode is silent
+    #: immobility teaches the wrong thing twice: once when it passes, once when it is
+    #: believed.
+    bounds: tuple[int, int, int, int] = (0, 0, 7168, 4096)  # x0, y0, x1, y1
     _journal: list[JournalEntry] = field(default_factory=list)
     _journal_cursor: int = 0
     #: The lift cursor: at most ONE item in hand between PickUp and Drop, like the

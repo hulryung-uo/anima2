@@ -2254,18 +2254,28 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
                               f"attempts={m.get('bank_deposit_attempts')} "
                               f"popup_wait={m.get('bank_popup_wait')})")
             elif capname:
-                # `*_leg` is the WALK's own cursor, and its absence is why follow-up 29
-                # could not be diagnosed from a full day's log. That run showed
-                # `mkt_phase=sell` on 134 samples with `sell_stage` never written once —
-                # so the trip started and died before its first stage, which is the walk,
-                # and no key here could say so. Offline reproduction at the identical
-                # geometry reaches `stage=popup` immediately with or without the adjacent
-                # miner and with or without the shop-identity pin, so all three are ruled
-                # out and the remaining suspects are all live-only. This is the field that
-                # separates them.
-                stage_keys = ("mkt_phase", "bs_state", "sell_leg", "sell_stage",
+                # `*_stall` is the WALK's own progress counter, and its absence is why
+                # follow-up 29 could not be diagnosed from a full day's log. That run
+                # showed `mkt_phase=sell` on 134 samples with `sell_stage` never written
+                # once — so the trip started and died before its first stage, which is the
+                # walk, and no key here could say so.
+                #
+                # `*_leg` was tried first and is USELESS for these runners, which is worth
+                # writing down: `_walk_route` returns `_ARRIVED` before touching the leg
+                # cursor, and on a SINGLE-waypoint route — which is what `stage_shops`
+                # produces — leg 0 is also the last leg, so the key is never written on any
+                # path at all. Arrived-instantly, walking and wedged are all indistinguish-
+                # able by it. Caught by noticing `sell_leg` absent on a run where the sell
+                # was WORKING, before a second day was spent on it.
+                #
+                # `{tag}_stall` is what `_market_walk_toward` actually maintains: it climbs
+                # while the greedy step makes no progress and the walk gives up at
+                # `stall_limit`. A wedged approach shows it climbing; an instant arrival
+                # never writes it either, but paired with `sell_stage` the two are no
+                # longer ambiguous — stage set means arrival, stall climbing means wedge.
+                stage_keys = ("mkt_phase", "bs_state", "sell_stall", "sell_stage",
                               "sell_vendor", "sell_find_wait", "sell_popup_wait",
-                              "cap_craft_stage", "buy_leg", "buy_stage", "fetch_stage")
+                              "cap_craft_stage", "buy_stall", "buy_stage", "fetch_stage")
                 kv = " ".join(f"{k}={m[k]}" for k in stage_keys if k in m)
                 bank_state = f" {capname}({kv})" if kv else f" {capname}()"
         # The tool-gone confession (skills/harvest.py): a toolless miner makes no
