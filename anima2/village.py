@@ -2309,6 +2309,18 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         recent = miner.memory.get("harvest_recent_stuck")
         if recent is not None and len(recent) > 0:
             grimm_flag += f" win={sum(recent)}/{len(recent)}"
+        # WHY the window is full, which `win=` alone cannot say. The three causes
+        # want three different fixes — `nores` is an exhausted bank (relocate),
+        # `inval` is a tile we cannot hit at all (cycle to another node; the whole
+        # point of `node_exhausted_clilocs`), `packfull` is a sink problem no walk
+        # can help. Cumulative over the run, and a partition, so they sum to the
+        # `1`s ever appended. Printed beside `banks=`, the output ceiling itself.
+        by = miner.memory.get("harvest_stuck_by_cause") or {}
+        if by:
+            grimm_flag += " " + " ".join(f"{k}={by[k]}" for k in sorted(by))
+        banks = miner.memory.get("harvest_banks_touched")
+        if banks:
+            grimm_flag += f" banks={len(banks)}"
         # The MineSmeltDeliver phase: a frozen miner in `smelt` is a different
         # wedge (forge unreachable, ore unsmeltable) than one in `mine` (dead
         # vein / lost tool) — from outside they look identical without this.

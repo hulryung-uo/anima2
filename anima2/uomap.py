@@ -309,6 +309,17 @@ def find_mine_spots(map_index: int, cx: int, cy: int, radius: int = 40,
                      for nx in range(s[0] - reach, s[0] + reach + 1)
                      for ny in range(s[1] - reach, s[1] + reach + 1)
                      if (nx, ny) in mine]
+            # NEAREST-FIRST within the stand, because `nodes[0]` is not just an
+            # ordering — it is the tile the miner swings at on arrival. Raster
+            # order made it the top-left CORNER of the box, at chebyshev `reach`
+            # exactly; and `Harvest._relocate_step` deliberately accepts arrival
+            # ONE tile short of a surveyed stand (a wall-side stand is where the
+            # greedy mover gets deflected on its last step). Corner + one tile
+            # short = chebyshev 3, past ServUO's MaxRange=2, so the first swing of
+            # a deflected arrival answered "That is too far away" — from the tile
+            # the whole relocation was for. An adjacent node survives the same
+            # deflection with a tile to spare.
+            nodes.sort(key=lambda t: (max(abs(t[0] - s[0]), abs(t[1] - s[1])), t))
             if len(nodes) >= min_face:
                 cand[s] = nodes
     # Keep only stands REACHABLE from the seed without crossing the face: a

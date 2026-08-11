@@ -172,6 +172,35 @@ class Harvest(Skill):
     #: toolless harvester is invisible to relocation BY CONSTRUCTION (stuck samples
     #: only come from swing replies); it must confess instead.
     tool_missing_confess: int = 10
+    #: Edge of this harvest system's resource-bank grid, or 0 for "not modelled".
+    #: Telemetry ONLY — nothing decides on it. ServUO gives every harvest
+    #: definition its own `BankWidth`/`BankHeight` and only mining's is pinned by
+    #: a test (`oreAndStone` 8x8), so the base stays off rather than guessing for
+    #: wood and water.
+    bank_cell_size: int = 0
+
+    @property
+    def node_exhausted_clilocs(self) -> frozenset[int]:
+        """Verdicts that condemn THIS node and should advance to the next one.
+
+        DERIVED, never a fourth hand-written set — a subclass that names a new
+        failure cliloc gets the cycling for free, and the audit's headline defect
+        class (one fact spelled twice, then diverging) has no purchase.
+
+        The bug this replaced ran for the tinker chain's whole life: cycling was
+        gated on `NODE_DEPLETED_CLILOC` ALONE, and that id (500493) is
+        LUMBERJACKING's `NoResourcesMessage`. `Mine` says 503040. So a miner
+        standing on a surveyed stand targeted `nodes[0]`, and only ever
+        `nodes[0]`, no matter how many times the shard said there was no metal
+        there — 12 of the forge pool's 14 distinct ore banks unreachable by
+        construction, and any stand whose first node is untargetable ("You can't
+        mine that", LOS-blocked) a dead loss with 14 good tiles beside it.
+
+        `pack_full_clilocs` is deliberately NOT here: a full pack is a fact about
+        US, not about the tile, and cycling on it would walk a healthy vein.
+        """
+        return (self.no_resource_clilocs | self.invalid_target_clilocs
+                | {NODE_DEPLETED_CLILOC})
 
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None or self._backpack(ctx) is not None
@@ -217,8 +246,10 @@ class Harvest(Skill):
         if self.catch_cliloc is not None:
             reward += sum(1.0 for j in obs.new_journal if j.cliloc == self.catch_cliloc)
 
-        # A node that ran out of resource → move on to the next one in the cluster.
-        if any(j.cliloc == NODE_DEPLETED_CLILOC for j in obs.new_journal):
+        # A node that yielded nothing → move on to the next one in the cluster.
+        # See `node_exhausted_clilocs` for why this is a derived set and what the
+        # single-cliloc version cost the miner.
+        if any(j.cliloc in self.node_exhausted_clilocs for j in obs.new_journal):
             ctx.memory["harvest_idx"] = ctx.memory.get("harvest_idx", 0) + 1
 
         # Already relocating → monitor that instead of the harvest state
@@ -309,6 +340,24 @@ class Harvest(Skill):
                 # give-up that would have abandoned nothing. Pure telemetry: nothing reads
                 # these to decide anything, because deciding on them before they are
                 # measured is the mistake §25 made and §26 retracted.
+                if sample:
+                    # WHICH failure — not merely that there was one. Five
+                    # distinguishable verdicts (no metal / can't mine that /
+                    # can't see that / too far away / pack full) collapse into a
+                    # single `1` in the window, and that collapse is exactly why
+                    # five audit sections could describe the miner's dead tail
+                    # without ever telling an exhausted bank apart from a tile it
+                    # could not hit. A PARTITION, one tick attributed once in the
+                    # order below, so the counts sum to the window's own `1`s and
+                    # a reader can trust the arithmetic.
+                    by = dict(ctx.memory.get("harvest_stuck_by_cause") or {})
+                    for cause, ids in (("nores", self.no_resource_clilocs),
+                                       ("inval", self.invalid_target_clilocs),
+                                       ("packfull", self.pack_full_clilocs)):
+                        if any(j.cliloc in ids for j in obs.new_journal):
+                            by[cause] = by.get(cause, 0) + 1
+                            break
+                    ctx.memory["harvest_stuck_by_cause"] = by
                 streak = int(ctx.memory.get("harvest_stuck_streak", 0) or 0)
                 if sample:
                     streak += 1
@@ -342,6 +391,17 @@ class Harvest(Skill):
             node = self._current_node(ctx)
             if node is not None:
                 x, y, z, graphic = node
+                if self.bank_cell_size:
+                    # Distinct resource banks actually SWUNG AT, which is the whole
+                    # of a mining day's output ceiling (audit §27: nothing respawns
+                    # inside a run, so ore available = banks reached x 10-34). It is
+                    # also the direct readout of the node-cycling fix — the forge
+                    # pool's 12 stands hold 14 distinct banks, and before cycling
+                    # only 12 of them could ever be targeted.
+                    cell = (x // self.bank_cell_size, y // self.bank_cell_size)
+                    banks = set(ctx.memory.get("harvest_banks_touched") or ())
+                    banks.add(cell)
+                    ctx.memory["harvest_banks_touched"] = banks
                 return SkillResult(Status.RUNNING, TargetGround(x=x, y=y, z=z, graphic=graphic), reward)
             p = obs.player.pos
             offs = self.probe_offsets
@@ -472,6 +532,22 @@ class Harvest(Skill):
             if nodes:
                 ctx.memory["harvest_nodes"] = nodes
                 ctx.memory["harvest_idx"] = 0
+            elif self._nodes_all_out_of_reach(ctx):
+                # A BLIND compass hop (the pool is spent) carries no replacement
+                # nodes, and this branch used to leave the OLD stand's list
+                # installed — so `_current_node` went on targeting rock 12+ tiles
+                # back and every swing answered "That is too far away" (500446)
+                # forever, with no verdict the window could ever break. The
+                # stall-giveup branch below already dropped them, for a reason that
+                # reads the same either way: the old nodes belong to the ground just
+                # condemned. Two arrival paths, one of them wrong, was the whole bug.
+                #
+                # Guarded on out-of-REACH rather than done unconditionally, because
+                # a short hop can still leave part of a grove workable and a
+                # woodsman's exact tree nodes are not re-probeable — dropping those
+                # would trade one wedge for another.
+                ctx.memory.pop("harvest_nodes", None)
+                ctx.memory.pop("harvest_idx", None)
             self._clear_relocate(ctx)
             return None
         cur = (here.x, here.y)
@@ -509,6 +585,24 @@ class Harvest(Skill):
             "harvest_relocate_last_pos", "harvest_relocate_stall",
         ):
             ctx.memory.pop(key, None)
+
+    def _nodes_all_out_of_reach(self, ctx: SkillContext) -> bool:
+        """True iff a node list is installed and NOT ONE of its tiles is still
+        swingable from where we stand. `all`, not `any`: while a single node is in
+        range the list is still worth cycling, and `node_exhausted_clilocs` will
+        walk past the ones that are not.
+
+        Reach is read off `probe_offsets` — the skill's own definition of how far
+        it can swing (2 for `Mine`, 4 for `Fish`) — rather than restated here.
+        """
+        nodes = ctx.memory.get("harvest_nodes")
+        if not nodes:
+            return False
+        here = ctx.obs.player.pos
+        reach = max((max(abs(dx), abs(dy)) for dx, dy in self.probe_offsets),
+                    default=0)
+        return all(max(abs(n[0] - here.x), abs(n[1] - here.y)) > reach
+                   for n in nodes)
 
     def _current_node(self, ctx: SkillContext):
         """The node to harvest now: cycle a cluster (`harvest_nodes`) if given,
@@ -574,6 +668,9 @@ class Mine(Harvest):
     #: spot rates ~0.5 and must stay quiet; a dead bank rates 1.0 (every verdict
     #: is a failure of some kind) and fires within one window.
     stuck_rate_threshold = 0.75
+    #: ServUO `Mining.cs`: `oreAndStone.BankWidth = BankHeight = 8`, grid origin
+    #: (0, 0) — the same 8 `uomap.find_mine_spots` spaces its stands by.
+    bank_cell_size = 8
 
 
 class Chop(Harvest):
