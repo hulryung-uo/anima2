@@ -1427,6 +1427,46 @@ staged one tile from the stand rather than two — as the written prediction sai
 unmeasured), and the tool-buy family still marks a dry vendor with no rule reading it.
 1555 tests, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §33.
 
+**The miner only ever swung at one tile (2026-08-12).** Five consecutive forge days froze
+at ~58% with the miner still walking, still standing, still swinging, producing nothing. An
+adversarial review — four open items investigated in parallel, each finding then attacked by
+two skeptics with different briefs — **refuted the hypothesis it started from**: ore banks
+are 8x8, so stands packed closer than 8 would share one bank, which would also explain why
+raising the pool 6 -> 12 did nothing. The check is four lines and says 12 stands, 12 distinct
+banks, minimum spacing exactly 8. That part of the system was already right, and §25's lesson
+came within one commit of repeating. What was actually wrong was three defects with one
+shape. **(1)** `harvest_idx` advanced only on cliloc 500493 — LUMBERJACKING's
+`NoResourcesMessage`; mining's is 503040 — so `Mine` cycled its node list NEVER, targeting
+`nodes[0]` and only `nodes[0]` however often the shard said there was no metal there. The
+forge pool's 12 stands span 14 distinct banks and 12 were reachable by construction; worse, a
+stand whose first node was merely *untargetable* was a total loss with 14 good tiles beside
+it. **(2)** A blind relocation left the condemned stand's nodes installed — so every swing
+after a 12-tile hop named rock 12 tiles behind and got "That is too far away", a FAILURE
+verdict, so the window filled, so it relocated again, forever. The stall-giveup branch two
+lines below already dropped them, for a reason its own comment states and that reads
+identically for the third path. **(3)** `nodes[0]` was the raster-order CORNER of the reach
+box at chebyshev 2, while relocation deliberately accepts arrival one tile short — corner
+plus one short is 3, past ServUO's MaxRange=2, so the first swing of the relocation the pool
+exists for answered "too far away". Plus the instrument that could not have said any of this:
+`win=` collapses five distinguishable verdicts into a single `1`, which is why five audit
+sections described the dead tail without ever telling an exhausted bank apart from a tile the
+miner could not hit — now a checkable partition (`nores=`/`inval=`/`packfull=`) beside
+`banks=`, the output ceiling itself. 17 new tests, every one failing on the code before it;
+nine mutants, all killed, including the original bug restated as M1. **Not settled: which of
+the three the live dead tail actually was** — the split exists to collect that and rides the
+next ordinary forge day rather than asking for one. The same pass **closed follow-up 28 as
+"do not"**: the per-stand false-fire floors measured off the real map run to 17.3, so any
+window <= 17 abandons a healthy stand somewhere, and both supporting arguments for shortening
+it — `recov=none peak=24`, and "a failure-then-success is impossible by construction" — were
+destroyed (the counter is biased toward "none", 24 is the mechanism's own ceiling rather than
+a survived streak, and ServUO's respawn clock arms on the first bite of a FULL bank, which
+persists across runs). It also diagnosed follow-up 29's age-8 signature as
+`stall_limit (6) + 2` and **refuted its own proposed fix** — anchoring `bs_stand` to
+`craft_spot` turns an 8-tick livelock into a 14-tick one — and confirmed follow-up 26's dead
+write while showing the obvious one-liner silently disarms a warrior for 180 ticks. Three of
+four diagnoses survived; three of four FIXES did not, and none of those shipped.
+1555 -> 1572 tests, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §34.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
