@@ -172,6 +172,22 @@ class Harvest(Skill):
     #: toolless harvester is invisible to relocation BY CONSTRUCTION (stuck samples
     #: only come from swing replies); it must confess instead.
     tool_missing_confess: int = 10
+    #: May this skill fall back to blind probing if its node list is dropped?
+    #: TRUE for anything that harvests TERRAIN — ore and water are land targets a
+    #: probe ring finds on its own. FALSE for `Chop`, whose trees are STATICS: the
+    #: probe branch emits `TargetGround(graphic=0)` at the player's z, which
+    #: lumberjacking can never harvest, and nothing in this file re-seeds
+    #: `harvest_nodes` (the Control plane writes it once, at staging). So for a
+    #: woodsman, dropping the grove is not a fallback — it is the end of the trade.
+    #:
+    #: The distinction was stated in a comment and then contradicted by the code
+    #: three lines beneath it: the drop was guarded on "are they all out of reach",
+    #: and `min(chebyshev)` over `RELOCATE_OFFSETS` is 9 against a reach of 2, so
+    #: after ANY blind hop that guard is unconditionally true. Review-caught, one
+    #: commit after the guard shipped. A reachable path, not a theoretical one:
+    #: `Chop` sets `pack_full_clilocs`, so a woodsman whose pack fills mid-grove
+    #: samples a full window of failures and relocates.
+    nodes_are_reprobeable: bool = True
     #: Edge of this harvest system's resource-bank grid, or 0 for "not modelled".
     #: Telemetry ONLY — nothing decides on it. ServUO gives every harvest
     #: definition its own `BankWidth`/`BankHeight` and only mining's is pinned by
@@ -347,9 +363,18 @@ class Harvest(Skill):
                     # single `1` in the window, and that collapse is exactly why
                     # five audit sections could describe the miner's dead tail
                     # without ever telling an exhausted bank apart from a tile it
-                    # could not hit. A PARTITION, one tick attributed once in the
-                    # order below, so the counts sum to the window's own `1`s and
-                    # a reader can trust the arithmetic.
+                    # could not hit. One tick is charged exactly ONCE, in the
+                    # order below, so these are a partition of the failures and
+                    # not a tally of clilocs.
+                    #
+                    # They are CUMULATIVE OVER THE RUN, and `win=` is a rolling
+                    # window that `_start_relocate` empties at every hop — so the
+                    # two do NOT sum to each other and a reader must not expect
+                    # them to. The first version of this comment claimed they did;
+                    # it was false twice over (the reset, and ordinary deque
+                    # eviction at `maxlen`) and it had two tests agreeing with it
+                    # that passed only because five samples never fill a window of
+                    # twenty-four. Review-caught.
                     by = dict(ctx.memory.get("harvest_stuck_by_cause") or {})
                     for cause, ids in (("nores", self.no_resource_clilocs),
                                        ("inval", self.invalid_target_clilocs),
@@ -358,6 +383,23 @@ class Harvest(Skill):
                             by[cause] = by.get(cause, 0) + 1
                             break
                     ctx.memory["harvest_stuck_by_cause"] = by
+                # A bank is credited on a VERDICT ABOUT IT, never on having aimed:
+                # a productive reply or "there is no metal here" both prove the
+                # shard evaluated that bank, while "you can't mine that" / "too far
+                # away" prove only that we failed to address it. Crediting at
+                # target-emission time instead inflates the count in exactly the
+                # state that produces nothing — and `banks=` is published as a
+                # mining day's OUTPUT CEILING (§27), so overstating it there is the
+                # one direction that misleads. Review-caught before it ran live.
+                aimed = ctx.memory.get("harvest_last_target")
+                if self.bank_cell_size and aimed and (
+                    not sample or any(j.cliloc in self.no_resource_clilocs
+                                      for j in obs.new_journal)
+                ):
+                    banks = set(ctx.memory.get("harvest_banks_touched") or ())
+                    banks.add((aimed[0] // self.bank_cell_size,
+                               aimed[1] // self.bank_cell_size))
+                    ctx.memory["harvest_banks_touched"] = banks
                 streak = int(ctx.memory.get("harvest_stuck_streak", 0) or 0)
                 if sample:
                     streak += 1
@@ -391,17 +433,9 @@ class Harvest(Skill):
             node = self._current_node(ctx)
             if node is not None:
                 x, y, z, graphic = node
-                if self.bank_cell_size:
-                    # Distinct resource banks actually SWUNG AT, which is the whole
-                    # of a mining day's output ceiling (audit §27: nothing respawns
-                    # inside a run, so ore available = banks reached x 10-34). It is
-                    # also the direct readout of the node-cycling fix — the forge
-                    # pool's 12 stands hold 14 distinct banks, and before cycling
-                    # only 12 of them could ever be targeted.
-                    cell = (x // self.bank_cell_size, y // self.bank_cell_size)
-                    banks = set(ctx.memory.get("harvest_banks_touched") or ())
-                    banks.add(cell)
-                    ctx.memory["harvest_banks_touched"] = banks
+                # Remembered, not yet credited: `banks=` counts banks the shard
+                # gave a verdict about, and the verdict lands on a later tick.
+                ctx.memory["harvest_last_target"] = (x, y)
                 return SkillResult(Status.RUNNING, TargetGround(x=x, y=y, z=z, graphic=graphic), reward)
             p = obs.player.pos
             offs = self.probe_offsets
@@ -532,22 +566,8 @@ class Harvest(Skill):
             if nodes:
                 ctx.memory["harvest_nodes"] = nodes
                 ctx.memory["harvest_idx"] = 0
-            elif self._nodes_all_out_of_reach(ctx):
-                # A BLIND compass hop (the pool is spent) carries no replacement
-                # nodes, and this branch used to leave the OLD stand's list
-                # installed — so `_current_node` went on targeting rock 12+ tiles
-                # back and every swing answered "That is too far away" (500446)
-                # forever, with no verdict the window could ever break. The
-                # stall-giveup branch below already dropped them, for a reason that
-                # reads the same either way: the old nodes belong to the ground just
-                # condemned. Two arrival paths, one of them wrong, was the whole bug.
-                #
-                # Guarded on out-of-REACH rather than done unconditionally, because
-                # a short hop can still leave part of a grove workable and a
-                # woodsman's exact tree nodes are not re-probeable — dropping those
-                # would trade one wedge for another.
-                ctx.memory.pop("harvest_nodes", None)
-                ctx.memory.pop("harvest_idx", None)
+            else:
+                self._drop_condemned_nodes(ctx, abandoned=False)
             self._clear_relocate(ctx)
             return None
         cur = (here.x, here.y)
@@ -563,9 +583,8 @@ class Harvest(Skill):
             # rock from the wrong tile (burning "too far away" replies), and the
             # OLD nodes belong to the ground just condemned — drop both and fall
             # back to probing wherever this ended up.
-            if ctx.memory.pop("harvest_pending_nodes", None) is not None:
-                ctx.memory.pop("harvest_nodes", None)
-                ctx.memory.pop("harvest_idx", None)
+            abandoned = ctx.memory.pop("harvest_pending_nodes", None) is not None
+            self._drop_condemned_nodes(ctx, abandoned=abandoned)
             self._clear_relocate(ctx)
             return None
         return SkillResult(Status.RUNNING, None)
@@ -585,6 +604,28 @@ class Harvest(Skill):
             "harvest_relocate_last_pos", "harvest_relocate_stall",
         ):
             ctx.memory.pop(key, None)
+
+    def _drop_condemned_nodes(self, ctx: SkillContext, *, abandoned: bool) -> None:
+        """Let go of a node list that belongs to ground we have just left.
+
+        BOTH ends of a relocation call this — the arrival and the stall-giveup —
+        because the reason is the same at both and having it in one of them was
+        the bug. The first version put the drop only in the arrival branch and its
+        comment claimed *"the stall-giveup branch below already dropped them"*;
+        that branch's drop was guarded on `harvest_pending_nodes`, so on a BLIND
+        hop — the very path the fix was about, taken once the surveyed pool is
+        spent — nothing was dropped and the "too far away forever" wedge survived
+        on the stalling half. Review-caught one commit later.
+
+        `abandoned` means a POOL spot was given up on: its nodes were never
+        installed and the old ones are condemned regardless, so the drop is
+        unconditional. Otherwise it is only right when the list is genuinely
+        unreachable AND this skill can re-probe without one (`nodes_are_reprobeable`).
+        """
+        if abandoned or (self.nodes_are_reprobeable
+                         and self._nodes_all_out_of_reach(ctx)):
+            ctx.memory.pop("harvest_nodes", None)
+            ctx.memory.pop("harvest_idx", None)
 
     def _nodes_all_out_of_reach(self, ctx: SkillContext) -> bool:
         """True iff a node list is installed and NOT ONE of its tiles is still
@@ -696,6 +737,12 @@ class Chop(Harvest):
     # via `no_resource_clilocs`, which `Chop` leaves empty). `pack_full_clilocs`
     # is new for it.
     pack_full_clilocs = frozenset({500497})  # "You can't place any wood into your backpack!"
+    #: Trees are STATICS — the probe ring targets ground and can never hit one, and
+    #: nothing re-seeds the grove after staging. So a dropped node list ends the
+    #: trade rather than falling back to anything. See the base attribute; and note
+    #: that the `pack_full_clilocs` immediately above is what makes a woodsman's
+    #: relocation reachable at all, so this is not a hypothetical path.
+    nodes_are_reprobeable = False
 
 
 class Fish(Harvest):

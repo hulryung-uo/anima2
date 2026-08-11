@@ -30,11 +30,17 @@ from anima2.contract import (
 from anima2.persona import Persona
 from anima2.skills import Chop, Fish, Mine
 from anima2.skills.base import SkillContext
-from anima2.skills.harvest import NODE_DEPLETED_CLILOC
+from anima2.skills.harvest import NODE_DEPLETED_CLILOC, RELOCATE_OFFSETS
 
 PICKAXE = 0x0E86
 BACKPACK = 0x40001453
 CURSOR = TargetCursor(target_type=1, cursor_id=1, cursor_flag=0)
+
+
+def _ctx_at(mem, pos, *, tool=PICKAXE):
+    obs = Observation(player=PlayerView(serial=1, pos=Position(*pos, 0)),
+                      items=[_pack(tool)])
+    return SkillContext(obs=obs, persona=Persona(name="Grimm"), memory=mem)
 
 
 def _pack(graphic=PICKAXE):
@@ -210,6 +216,86 @@ def test_a_short_hop_keeps_the_nodes_that_are_still_in_reach():
     assert mem["harvest_nodes"] == [(99, 99, 0, 0), (101, 101, 0, 0)]
 
 
+def test_a_blind_hop_that_stalls_also_drops_the_condemned_nodes():
+    """The half the first fix missed, and its own comment denied. That comment said
+    "the stall-giveup branch below already dropped them" — but that branch's drop
+    was guarded on `harvest_pending_nodes`, which a BLIND hop never sets. So on the
+    path taken once the surveyed pool is spent, a relocation that stalls short kept
+    the condemned stand's rock and the "too far away forever" wedge survived on
+    exactly the half the fix was written for."""
+    mem: dict = {}
+    mine = _relocating(mem, target=(112, 100), nodes=[(99, 99, 0, 0)])
+    # Stalls PART WAY — wedged at (108,100), nine tiles from the condemned rock.
+    # (Stalling on the starting tile is a different case and the nodes are rightly
+    # kept there: they are still in reach, so nothing has been walked away from.)
+    for _ in range(mine.relocate_stall_limit + 2):
+        mine.step(_ctx_at(mem, (108, 100)))
+    assert not mem.get("harvest_relocating")     # gave up
+    assert "harvest_nodes" not in mem            # ...and let the dead rock go
+    assert "harvest_idx" not in mem
+
+
+def test_a_stall_on_the_starting_tile_keeps_rock_that_is_still_in_reach():
+    """The other half of the same guard, and the reason it is not unconditional: a
+    relocation that never got anywhere has condemned nothing — the stand's own rock
+    is still swingable, and dropping it would blind a miner that merely failed to
+    walk."""
+    mem: dict = {}
+    mine = _relocating(mem, target=(112, 100), nodes=[(99, 99, 0, 0)])
+    for _ in range(mine.relocate_stall_limit + 2):
+        mine.step(_ctx_at(mem, (100, 100)))
+    assert not mem.get("harvest_relocating")
+    assert mem["harvest_nodes"] == [(99, 99, 0, 0)]
+
+
+def test_a_woodsmans_grove_survives_a_relocation_it_cannot_reprobe():
+    """The regression the first fix INTRODUCED, in the very case its own comment
+    named. Trees are statics: the probe ring targets ground at the player's z and
+    can never hit one, and nothing re-seeds `harvest_nodes` after staging — so for
+    `Chop` a dropped list is not a fallback, it is the end of the trade. And the
+    guard could never spare it: `min(chebyshev)` over `RELOCATE_OFFSETS` is 9
+    against a reach of 2, so "are they all out of reach" is unconditionally true
+    after any blind hop.
+
+    Reachable, not theoretical: `Chop` sets `pack_full_clilocs`, so a woodsman
+    whose pack fills mid-grove fills a window of failures and relocates."""
+    assert min(max(abs(a), abs(b)) for a, b in RELOCATE_OFFSETS) > max(
+        max(abs(a), abs(b)) for a, b in Chop.probe_offsets)
+    grove = [(99, 99, 0, 0x0CCA), (101, 101, 0, 0x0CCB)]
+    mem: dict = {"harvest_nodes": grove, "harvest_idx": 1,
+                 "harvest_relocating": True,
+                 "harvest_relocate_target": (112, 100),
+                 "harvest_recent_stuck": None}
+    chop = Chop()
+    chop.step(_ctx_at(mem, (112, 100), tool=0x0F43))          # arrival
+    assert mem["harvest_nodes"] == grove
+    mem.update({"harvest_relocating": True, "harvest_relocate_target": (88, 100)})
+    for _ in range(chop.relocate_stall_limit + 2):            # ...and stall-giveup
+        chop.step(_ctx_at(mem, (112, 100), tool=0x0F43))
+    assert mem["harvest_nodes"] == grove
+
+
+def test_reprobeability_is_one_class_fact_read_by_both_relocation_exits():
+    """Single source. The bug was the same reason living in one of two branches;
+    a flag only one of them reads would rebuild it."""
+    assert Mine.nodes_are_reprobeable and Fish.nodes_are_reprobeable
+    assert not Chop.nodes_are_reprobeable
+
+
+def test_a_bank_is_credited_on_a_verdict_not_on_having_aimed_at_it():
+    """`banks=` is published as a mining day's OUTPUT CEILING, so the one direction
+    that misleads is overstating it. "You can't mine that" and "too far away" prove
+    only that we failed to ADDRESS the bank — crediting those would count a bank
+    per aim in exactly the state that produces nothing."""
+    mem: dict = {"harvest_nodes": [(102, 100, 0, 0), (104, 100, 0, 0)]}
+    _swings(mem, 501862, count=2, pos=(103, 100))
+    assert "harvest_banks_touched" not in mem
+    # ...while "there is no metal here" IS a verdict about that bank.
+    mem2: dict = {"harvest_nodes": [(102, 100, 0, 0)]}
+    _swings(mem2, 503040, count=1, pos=(103, 100))
+    assert mem2["harvest_banks_touched"] == {(12, 12)}
+
+
 def test_an_arriving_pool_spot_still_installs_its_own_surveyed_rock():
     """The guard must not fire on the path that DOES carry replacements — the
     surveyed-pool arrival, which is the whole point of the pool."""
@@ -224,17 +310,30 @@ def test_an_arriving_pool_spot_still_installs_its_own_surveyed_rock():
 
 # --- 3. the readout: which failure, and how many banks -------------------------------
 
-def test_the_stuck_cause_split_partitions_the_windows_failures():
+def test_the_stuck_cause_split_partitions_the_failures():
     """`win=` collapses five distinguishable verdicts into a single `1`, which is
     why five audit sections could describe the dead tail without ever telling an
-    exhausted bank apart from a tile the miner could not hit. A PARTITION: the
-    counts sum to the window's own `1`s, so the arithmetic is checkable."""
+    exhausted bank apart from a tile the miner could not hit."""
     mem: dict = {}
     for cliloc in (503040, 503040, 500446, 501862, 1010481):
         _swings(mem, cliloc, count=1)
-    by = mem["harvest_stuck_by_cause"]
-    assert by == {"nores": 2, "inval": 2, "packfull": 1}
-    assert sum(by.values()) == sum(mem["harvest_recent_stuck"])
+    assert mem["harvest_stuck_by_cause"] == {"nores": 2, "inval": 2, "packfull": 1}
+
+
+def test_the_causes_are_cumulative_and_the_window_is_not():
+    """The invariant the first version of this file asserted — that the cause
+    counts sum to `win=`'s own `1`s — is FALSE, and it passed only because five
+    samples never fill a window of twenty-four. `_start_relocate` empties the
+    window at every hop while the causes accumulate over the whole run, so the two
+    diverge by design; ordinary deque eviction at `maxlen` breaks it a second way.
+    Pinned in the direction of the truth so the wrong claim cannot come back."""
+    mem: dict = {}
+    _swings(mem, 503040, count=3)
+    assert sum(mem["harvest_recent_stuck"]) == 3
+    # Relocate: the window is emptied, the ledger is not.
+    Mine()._start_relocate(_ctx_at(mem, (100, 100)), 0.0)
+    assert mem["harvest_recent_stuck"] is None
+    assert mem["harvest_stuck_by_cause"] == {"nores": 3}
 
 
 def test_a_tick_carrying_two_verdicts_is_charged_to_exactly_one_cause():

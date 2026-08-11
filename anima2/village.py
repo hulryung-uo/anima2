@@ -2313,8 +2313,12 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # want three different fixes — `nores` is an exhausted bank (relocate),
         # `inval` is a tile we cannot hit at all (cycle to another node; the whole
         # point of `node_exhausted_clilocs`), `packfull` is a sink problem no walk
-        # can help. Cumulative over the run, and a partition, so they sum to the
-        # `1`s ever appended. Printed beside `banks=`, the output ceiling itself.
+        # can help. A partition — one tick charged once — and CUMULATIVE over the
+        # run, which `win=` is not: it is a rolling window that every relocation
+        # empties. So these do NOT sum to `win=` and a reader must not try; an
+        # earlier comment here and in the audit both claimed they did.
+        # Printed beside `banks=`, the output ceiling itself — and `banks=` counts
+        # banks the shard gave a VERDICT about, never banks merely aimed at.
         by = miner.memory.get("harvest_stuck_by_cause") or {}
         if by:
             grimm_flag += " " + " ".join(f"{k}={by[k]}" for k in sorted(by))
