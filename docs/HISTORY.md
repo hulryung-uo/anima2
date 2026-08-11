@@ -1355,6 +1355,32 @@ rather than left to produce unusable numbers. The day itself banked 473 (+550), 
 reason not to attribute any of them. 1551 tests, ruff clean. Detail:
 `docs/AUDIT-2026-07-29.md` §29.
 
+**The streak bound, and a new sell failure the same run exposed (2026-08-11).** `peak=`
+records the longest stuck streak reached anywhere in a run, deliberately NOT reset by a
+relocation — the opposite rule to the streak itself, which must reset or it measures two
+veins as one. A full day gives **`recov=none peak=24`**: streaks reached the FULL window and
+not one of any length ever broke, with the peak climbing 5, 10, 14, 19, 23, 24 as the day
+went on. Two consecutive days of zero recoveries, and this one bounds the claim — every
+length from 1 to 24 was reached, so the absence is not for want of opportunity. With the
+sampler's own semantics (a `0` is "a productive reply … proof the bank still yields"; invalid
+tiles append `1`), the statement is: **at this mine, once a stand starts replying "no metal",
+real ore never appears again there.** Still not changed: two days at one mine, one ore type,
+and `Chop`/`Fish` share the same `Harvest` constant — a third profession's day would settle
+that and is cheap. **The same run lost its whole economy to something unrelated**: 203
+`sell_tongs` give-ups, EVERY ONE at age 8, `sell_stage` never printed once, `banked=0
+net=+0g`, ending with 5 unsold tongs. The only visible difference is staging — the Tinker
+landed at (2611,473), two tiles out instead of one, and adjacent to Grimm's own stand, which
+is the shape of a failure this project already paid for and the reason `shop_serials` exists.
+**But the identity pin IS wired here**, so the obvious explanation is ruled out and the cause
+is unknown; recorded as follow-up 29 rather than guessed at, with the first thing to check
+named (`_begin_goal` refusing is the one path that no-ops without ever setting `mkt_phase`).
+**Two things this says about earlier work**: follow-up 19 earned its keep visibly — 203 sell
+frames retired at age 8 where before each would have burned a 180-tick deadline, which is
+what made the signal readable at all rather than a handful of enormous stalls; and the
+economics remain unattributable, now with six samples (0, 473, 503, 573, 818, 0 banked
+across six identical 1800-tick days). 1553 tests, ruff clean. Detail:
+`docs/AUDIT-2026-07-29.md` §30.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
