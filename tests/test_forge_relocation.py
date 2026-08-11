@@ -850,3 +850,46 @@ def test_the_histogram_reads_nothing_back_into_the_decision():
     for guard in ("if ctx.memory.get(\"harvest_recoveries\")",
                   "harvest_recoveries\") >", "harvest_recoveries\") <"):
         assert guard not in src, f"the histogram is being used to decide something: {guard}"
+
+
+def test_the_peak_streak_survives_a_relocation_even_though_the_streak_does_not():
+    """The pair `recov=none peak=N` is the whole statement, and the two need opposite
+    reset rules to make it.
+
+    The STREAK resets per stand, or it measures two veins as one (§29.4). The PEAK must
+    not, or it only ever reports the last stand's run and "zero recoveries" stays an
+    absence rather than a bound — which is exactly what §29.3 had to settle for."""
+    memory = {"smithy_drop": (60, 50)}
+    skill = MineSmeltDeliver()
+    window = max(1, len(Mine.probe_offsets)) * Mine.stuck_window_rotations
+    for _ in range(window * 3):
+        skill.step(SkillContext(obs=_obs(cursor=True, no_metal=False),
+                                persona=Persona(name="Grimm"), memory=memory))
+        skill.step(SkillContext(obs=_obs(cursor=False, no_metal=True),
+                                persona=Persona(name="Grimm"), memory=memory))
+        if memory.get("harvest_relocating"):
+            break
+    assert memory.get("harvest_relocating"), "this fixture must actually relocate"
+    peak, streak = memory.get("harvest_stuck_max", 0), memory.get("harvest_stuck_streak")
+    assert streak == 0, f"the streak must reset per stand: {streak}"
+    assert peak > 0, "the peak must SURVIVE the reset, or it measures only the last stand"
+    assert peak >= window * Mine.stuck_rate_threshold, (
+        f"a stand driven to relocation should have reached most of the window: {peak}")
+
+
+def test_the_peak_is_a_high_water_mark_and_never_decreases():
+    """It is the ceiling of evidence gathered, not a current value: a later, shorter run
+    of stuck replies must not erase the knowledge that a longer one happened."""
+    memory = {"smithy_drop": (60, 50)}
+    skill = MineSmeltDeliver()
+    peaks = []
+    for i in range(160):
+        # long dead stretch, then alternating — the second half must not lower the peak
+        no_metal = True if i < 100 else (i % 2 == 0)
+        skill.step(SkillContext(obs=_obs(cursor=True, no_metal=False),
+                                persona=Persona(name="Grimm"), memory=memory))
+        skill.step(SkillContext(obs=_obs(cursor=False, no_metal=no_metal),
+                                persona=Persona(name="Grimm"), memory=memory))
+        peaks.append(memory.get("harvest_stuck_max", 0))
+    assert peaks == sorted(peaks), "the peak decreased at some point"
+    assert peaks[-1] > 1

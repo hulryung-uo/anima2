@@ -311,7 +311,16 @@ class Harvest(Skill):
                 # measured is the mistake §25 made and §26 retracted.
                 streak = int(ctx.memory.get("harvest_stuck_streak", 0) or 0)
                 if sample:
-                    ctx.memory["harvest_stuck_streak"] = streak + 1
+                    streak += 1
+                    ctx.memory["harvest_stuck_streak"] = streak
+                    # High-water mark across the WHOLE run — deliberately not reset by a
+                    # relocation, unlike the streak itself. "Zero recoveries" alone only
+                    # says no counter-example was seen; paired with "streaks reached N" it
+                    # becomes a bound: every length up to N was observed and none of them
+                    # ever broke. Without it the strongest claim is an absence, which is
+                    # what §29.3 had to settle for.
+                    if streak > int(ctx.memory.get("harvest_stuck_max", 0) or 0):
+                        ctx.memory["harvest_stuck_max"] = streak
                 else:
                     if streak:
                         rec = dict(ctx.memory.get("harvest_recoveries") or {})

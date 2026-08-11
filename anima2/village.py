@@ -2307,8 +2307,15 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # as longest-recovered(total): if no vein ever came back after N consecutive stuck
         # replies, a give-up above N abandons nothing that would have paid.
         rec = miner.memory.get("harvest_recoveries") or {}
-        if rec:
-            grimm_flag += f" recov={max(rec)}({sum(rec.values())})"
+        peak = int(miner.memory.get("harvest_stuck_max", 0) or 0)
+        if rec or peak:
+            # `recov=` is the longest streak a vein ever came BACK from; `peak=` is the
+            # longest ever reached at all. Printed together because either alone is
+            # unreadable: 0 recoveries with a peak of 3 says almost nothing, and the same
+            # 0 with a peak of 24 says every length up to the window was tried.
+            grimm_flag += (f" recov={max(rec)}({sum(rec.values())})" if rec
+                           else " recov=none")
+            grimm_flag += f" peak={peak}"
         print(f"— forge pair {bank_state} "
               f"grimm[iron={pack_amount(m_obs, INGOT_GRAPHICS)}{grimm_flag}]  "
               f"drop[grimm_sees={_ground_iron(m_obs)} pim_sees={_ground_iron(p_obs)}]  "
