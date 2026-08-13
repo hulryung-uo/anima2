@@ -154,6 +154,10 @@ class Harvest(Skill):
     #: (see `Mine`: 0.75 over a half-invalid ring).
     productive_clilocs: frozenset[int] = frozenset()
     invalid_target_clilocs: frozenset[int] = frozenset()
+    #: A SUBSET of `invalid_target_clilocs` reported as its own cause. Empty on the base,
+    #: so `Chop` and `Fish` partition exactly as they did before; `Mine` narrows it. See
+    #: `Mine.too_far_clilocs` for what the split buys and why it was deferred until now.
+    too_far_clilocs: frozenset[int] = frozenset()
     #: How many probe-ring rotations the rate window spans.
     stuck_window_rotations: int = 3
     #: Fraction of a full window that must be "stuck" to act.
@@ -376,7 +380,21 @@ class Harvest(Skill):
                     # that passed only because five samples never fill a window of
                     # twenty-four. Review-caught.
                     by = dict(ctx.memory.get("harvest_stuck_by_cause") or {})
+                    # `far` BEFORE `inval`, and split out of it: §35.5 deferred this
+                    # deliberately, because redefining `inval` would have invalidated
+                    # §34.4's written-down-beforehand prediction. **That prediction was
+                    # adjudicated on 2026-08-13 (§39.1), so the reason for the deferral
+                    # is spent** and the split is now the field that adjudicates the
+                    # NEXT one: §41 predicts the dead tail is line-of-sight refusals
+                    # (500237) and NOT range refusals (500446), and those two are
+                    # indistinguishable while they share a counter.
+                    #
+                    # It rides ahead of `inval` so the narrower cause wins the tie, the
+                    # same shape as `nores` winning against `inval` today. `inval` keeps
+                    # 500237 + 501862, so a reader comparing this run to an older tape
+                    # still compares like with like on the counter that mattered there.
                     for cause, ids in (("nores", self.no_resource_clilocs),
+                                       ("far", self.too_far_clilocs),
                                        ("inval", self.invalid_target_clilocs),
                                        ("packfull", self.pack_full_clilocs)):
                         if any(j.cliloc in ids for j in obs.new_journal):
@@ -698,6 +716,16 @@ class Mine(Harvest):
         500237,   # "Target can not be seen." — LOS-blocked probe tile.
         500446,   # "That is too far away." — probe reached past the harvest range.
     })
+    #: The RANGE refusal alone, reported separately by the cause split while staying a
+    #: member of `invalid_target_clilocs` above — the give-up window's behaviour is
+    #: deliberately unchanged, only the reporting is finer.
+    #:
+    #: They want opposite fixes and were indistinguishable while merged. 500446 means the
+    #: miner is standing too far from ore he could otherwise work — a WALK problem, and the
+    #: documented one-tile-short arrival is its main source. 500237 means he is at the foot
+    #: of a cliff aiming above his eye — a SURVEY problem, which `uomap.max_rise` now
+    #: prevents. §41 predicts the 2026-08-13 dead tail was almost entirely the latter.
+    too_far_clilocs = frozenset({500446})
     #: One rotation, not three: with outcome-only samples every entry is a real
     #: swing verdict, and 24 verdicts over a shared 8x8 ore bank is already
     #: conclusive — three rotations made a dead vein take 3-5 live minutes to
