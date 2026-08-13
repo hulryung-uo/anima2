@@ -200,6 +200,14 @@ added bound 3. So the standing count is bounds 2 and 3 live-proven, bound 1 not.
   on ONE observation (§17's 756-tick gap between deposits); `landed=` exists to collect the
   real distribution. Prediction for its first run: `docs/AUDIT-2026-07-29.md` §38.4, and it
   names the outcome that would say the threshold is too low.
+- **First live day for all four, 2026-08-13 (§39): three worked, one did not.** `trip=`,
+  `landed=` and `NOTHING LANDS` all behaved as pre-registered on a run that banked 1483g (the
+  best on record); `WEDGED WALK` FALSE-FIRED six times on a productive stationary crafter, and
+  its guard is now a majority rule. It has still never fired truly on a shard. The same day
+  fired §34.4's pre-registered miner prediction on its REFUTING branch — `inval=` dominates the
+  dead tail 76% to 26% — so follow-up 28's premise is false and the mining lever is GEOMETRY,
+  not give-up speed. §36.5's `d=`-should-fall bullets are STRUCK, not scored: strict staging
+  puts every shop inside reach, so `d=` can only read `<=2` on this runner.
 - **Watch for, on any live run:** `!frozen` on a live frame while the character is not dead
   (the regression detector), a `+hold` whose `@age` stops climbing (the old defect wearing
   the new marker), and `FRAME OVERDUE` (bounds 1 and 2 both failed). Do NOT use the

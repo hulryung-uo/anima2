@@ -333,6 +333,17 @@ Both blindnesses are structural, and they are different:
 |---|---|
 | `** <name>: WEDGED WALK — <n> walk actions emitted over <m> ticks and the position never changed (t=<tick>, @(x,y)) **` | fires every `_WEDGE_TICKS` while the wedge holds. It names the TILE because the fix for a wedge is geometry, and pairs with `trip=`'s `to=`/`d=` on the status line to say what it was walking toward. |
 
+**LIVE VERDICT, 2026-08-13 (audit §39): it false-fired six times on its first forge day**, on a
+tinker who banked 1483 gold, printing `3 walk actions emitted over 1440 ticks` while he stood on
+his own craft tile. The guard was "were any walks emitted during this stretch?", which a
+stationary crafter satisfies with three stray steps — and the evidence RATIO decays as the
+stretch grows (1.25% at the first fire, 0.21% at the sixth) while the alarm keeps repeating.
+Fixed to a MAJORITY rule: more than half the stretch must be walk attempts. Measured separation
+is ~60x — a real wedge runs 75.8%..75.1%, stable — so this is a statement about what a wedge is,
+not a tuned constant. The share is now printed (`182 walk actions over 240 ticks (75% of them)`)
+so a reader can judge the evidence rather than trust the verdict. **It has still never fired
+truly on a shard.**
+
 **Why it is a separate alarm rather than a fix to `NO PROGRESS`.** Simply dropping `steps`
 from the shared pulse also detects the wedge — measured, 0 → 9 fires — but it silently
 re-tunes the surviving alarm, because **a walk leg giving up does not reset the counter**: the
