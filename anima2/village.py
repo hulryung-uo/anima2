@@ -50,6 +50,7 @@ from .skills.mage import KeepDistance
 from .skill_library import SkillLibrary
 from .skill_tuning import DELIVER_THRESHOLD_CANDIDATES, ParamSpec, ParamTuner
 from .skills import MineSmeltDeliver
+from .skills.market import walk_readout
 from .skills.base import Status
 from .uomap import find_mine_spots, find_tree_clusters
 
@@ -782,6 +783,35 @@ def stage_key_readout(memory, keys) -> str:
     return " ".join(f"{k}={snapshot[k]}" for k in keys if k in snapshot)
 
 
+def agent_walk_readout(agent, pos) -> str:
+    """`market.walk_readout` for whatever object a runner handed `_run_worker`.
+
+    Two things this owns, and both are why it is not a one-liner at the call site.
+
+    WHICH MEMORY. A Life's market state is on its ECONOMY agent; everything else's is on
+    itself. `getattr(agent, "econ_agent", None) or agent` is the same resolution
+    `life_runner.frame_retirements` makes, for the same reason — `run_village`'s
+    `--capability-goals` fleet hands this worker a plain `Agent` that has no `econ_agent`
+    and never will. Falling back to a Life's OWN memory would be worse than failing: that
+    is the hunt agent's, which carries none of these keys, so it would render a confident
+    `trip=none` for a Life mid-transaction.
+
+    AND IT CANNOT RAISE. `_run_worker` composes its status line outside any `except`, and
+    its callers' loops have none either, so an `AttributeError` here escapes a daemon
+    worker's parent thread and ends the run. Not hypothetical: `tests/test_forge_relocation`
+    drives this worker with an `econ_agent` stand-in that has no `memory` at all, and the
+    unguarded version raised on it — a duck-typed object this repo already ships. The
+    honest rendering for "cannot read this agent's market state" is `trip=?`, which is
+    already `walk_readout`'s own token for it, not a silent omission and not a confident
+    `trip=none`.
+    """
+    try:
+        econ = getattr(agent, "econ_agent", None) or agent
+        return walk_readout(dict(econ.memory), pos)
+    except Exception:  # noqa: BLE001 — telemetry must never break the run
+        return "trip=?"
+
+
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
                 job: str, *, chronicle: ChronicleLedger | None = None,
                 counterpart: str | None = None,
@@ -1148,8 +1178,25 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             # whole point of this pair is to make a frozen `eps=` beside `deaths=0`
             # (a lost tool, a dead vein) a different diagnosis from the same frozen
             # `eps=` beside `deaths=3`.
+            # `trip=` rides HERE — beside `@(x,y)`, on the one line every runner prints
+            # for every agent — and that placement is follow-up 32's actual content.
+            # A coordinate has been on this line since 2026-06-30 (`6f279a7`), six weeks
+            # before the day the follow-up was written about, so "no per-tick coordinate
+            # is printed anywhere today" was never the gap. What was missing is the
+            # coordinate's COUNTERPART: the tile the walk is trying to reach and the
+            # reach it needs. The two are useless apart and unambiguous together.
+            #
+            # Mounted on the WORKER rather than on `life_runner.telemetry_line`, which
+            # was the first attempt and structurally could not work: `telemetry_line`
+            # requires a Life (`life.econ_agent`), and `run_village`'s trade blacksmith —
+            # the ONLY production agent carrying the multi-waypoint `VENDOR_SPOT` route
+            # that `walk_readout` handles `route[leg]` for — is a plain `Agent`. The
+            # instrument would have missed the exact configuration its own design
+            # justification cited. Review-caught.
+            #
+            trip = agent_walk_readout(agent, p)
             line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) t={ticks_done} "
-                    f"hp={hp_readout(obs)} deaths={_deaths} "
+                    f"hp={hp_readout(obs)} deaths={_deaths} {trip} "
                     f"out+{agent.episodes.total_reward():.1f} eps={_recorded_now} "
                     f"steps={steps} says={says}")
             if _stalled >= _STALL_TICKS:

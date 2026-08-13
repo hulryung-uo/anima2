@@ -19,11 +19,13 @@ only thing simulated is the shard's side of a transaction (the vendor taking an 
 paying), because MockBody has no vendor NPC.
 """
 
+import re
+
 import pytest
 
 from anima2.carpenter_life import BOARD_BATCH_COST, BOARDS_PER_ITEM, CarpenterLife
 from anima2.contract import GumpView, ItemView, PlayerView, Position
-from anima2.life_runner import telemetry_line
+from anima2.life_runner import frame_retirements, telemetry_line
 from anima2.mage_life import MageLife
 from anima2.mock_body import MockBody
 from anima2.persona import Persona
@@ -34,6 +36,7 @@ from anima2.skills.tinkering import TINKERTOOLS_GRAPHICS
 from anima2.skills.woodwork import BuyHatchet
 from anima2.skills.warrior import BANDAGE_GRAPHIC, SWORD_GRAPHICS, WEAPON_LAYER
 from anima2.tinker_life import TinkerLife
+from anima2.village import agent_walk_readout
 from anima2.warrior_life import BANK_RESERVE, WarriorLife
 from anima2.woodsman_life import WoodsmanLife
 
@@ -570,11 +573,16 @@ def test_telemetry_marks_a_live_frame_that_nobody_is_ticking():
     assert _reach_the_sale(body, life)
     life.tick()
     held = telemetry_line(life, "carpenter", body.observe())
-    # `ready=[] ` with the following field's name attached, so this still pins an EMPTY
-    # gate list and cannot be satisfied by `ready=[]...` being a prefix of a longer one.
-    # (It used to be `endswith("ready=[]")`; `retired=` now rides after it — see
-    # `life_runner.retirement_reason` for why the line grew a retirement tally.)
-    assert "admitted=sell_furniture@" in held and "ready=[] retired=" in held
+    # An EMPTY gate list, pinned so it cannot be satisfied by `ready=[]` being a PREFIX of
+    # `ready=['sell_furniture']`. Twice now that has been written by naming whichever field
+    # happened to follow — `endswith("ready=[]")` first, then `"ready=[] retired="` when
+    # `retired=` was added — and a follow-up-32 draft that briefly put `trip=` between them
+    # broke it a third time. That draft did not ship (the field went to the worker line
+    # instead, `village._run_worker`), so nothing here is load-bearing for it; the
+    # assertion is fixed anyway, because the intent was never ADJACENCY. `[]` followed by
+    # a field boundary, whatever the next field turns out to be called.
+    assert re.search(r"ready=\[\](?=\s|$)", held), held
+    assert "admitted=sell_furniture@" in held
     assert "+hold" in held and "!frozen" not in held, held
 
     body.player.dead = True
@@ -917,3 +925,53 @@ def test_a_given_up_buy_frame_retires_through_bound_1_instead_of_its_deadline():
     assert rows[0][2] < budget // 2, (
         f"it must close EARLY — the whole point is not paying the {budget}-tick "
         f"deadline for a decision the FSM already made: {rows}")
+
+
+def test_the_walk_readout_renders_the_age_8_giveup_signature():
+    """Follow-up 32, against the day it was written for — and the first OFFLINE
+    reproduction of follow-up 29's signature.
+
+    §30.2: 203 `sell_tongs` frames in one live day, **every one retired at age 8**,
+    `sell_stage` never written once, 0 gold banked. §31 relocated the failure into the
+    walk, and §31.4 named the remaining hypothesis it could not test: *"a blocked approach
+    the mock cannot model (a real NPC occupying a tile, or terrain)"*. `MockBody.blocked` is
+    that, and the trip dies before the vendor is ever addressed — so reproducing it needs no
+    vendor at all, which is why this was reachable while follow-up 22's `MockVendor` work
+    was not.
+
+    Driving a real `CarpenterLife` into a walled approach reproduces the live arithmetic
+    exactly: age 8, budget 180, `giveup`, over and over. What the OLD status line could say
+    about that is `admitted=sell_furniture@5/180` — admitted, ready, unfrozen, well inside
+    budget, i.e. healthy. What it says now is that he is five tiles from a vendor he must be
+    two from, has not moved, and is five ticks into a six-tick give-up.
+
+    This does NOT establish that the live day's cause was a blocked tile — it establishes
+    that a blocked approach PRODUCES that signature, and that the line now renders it. The
+    live attribution still needs a forge day (follow-up 30).
+    """
+    body, life = _sale_life()
+    # A wall between the carpenter at (5,5) and the vendor at (10,10): every step that
+    # would close the gap bumps. `_walk` treats a blocked tile as a turn, not a move.
+    body.blocked.update({(x, 6) for x in range(20)} | {(6, y) for y in range(20)})
+
+    # Read through the SAME helper `village._run_worker` uses, econ-agent resolution and
+    # all — not by reaching into memory directly, which would prove the readout works on
+    # state no production caller assembles that way.
+    walking = []
+    for _ in range(60):
+        life.tick()
+        line = agent_walk_readout(life, body.observe().player.pos)
+        if line.startswith("trip=sell "):
+            walking.append(line)
+
+    # The wedge, on the line: the distance never closes and the give-up counter climbs.
+    assert walking, "the sell trip never started"
+    assert all("to=(10,10) d=5>2" in ln for ln in walking), walking[:3]
+    assert [ln for ln in walking if "stall=5/6" in ln], walking
+    assert (5, 5) == (body.player.pos.x, body.player.pos.y), "the wall did not hold"
+
+    # ...and the frame retirements are the live day's arithmetic, verbatim.
+    rets = frame_retirements(life)
+    assert len(rets) >= 3, rets
+    assert {(cap, age, budget, why) for _id, cap, age, budget, why in rets} == {
+        ("sell_furniture", 8, 180, "giveup")}, rets

@@ -1573,6 +1573,141 @@ class BlacksmithMarket(Blacksmith):
         return sum(i.amount for i in ctx.obs.items if i.graphic == GOLD_GRAPHIC and i.container == box.serial)
 
 
+# --- the walk's own readout (follow-up 32) -------------------------------------------
+
+#: `mkt_phase` -> (route memory key, configured-spot fallback, final reach) for the four
+#: OUTBOUND market walks. The `<ns>_return` phases share their namespace's row and are
+#: handled off it — a return leg walks the same route reversed, home to `bs_stand`, at
+#: reach 0 (`_market_return_step`).
+#:
+#: `mkt_phase`'s VALUE is also the walk tag every one of these legs passes to
+#: `_walk_route`/`_market_walk_toward` (market.py's `_sell_step`, `_bank_step`,
+#: `_buy_step`, `_toolbuy_step` and `_market_return_step` call sites), so no second
+#: phase-to-tag table exists to drift against this one.
+WALK_PHASES: Mapping[str, tuple[str, str, int]] = {
+    "sell": ("cap_sell_route", "vendor_spot", SELL_REACH),
+    "bank": ("cap_bank_route", "banker_spot", BANK_REACH),
+    "buy": ("cap_buy_route", "vendor_spot", BUY_REACH),
+    "toolbuy": ("cap_toolbuy_route", "vendor_spot", BUY_REACH),
+}
+
+
+def walk_readout(memory: Mapping[str, Any], pos) -> str:
+    """`trip=sell to=(2610,474)+1 d=4>0 stall=3/6` — where a market trip's WALK is.
+
+    Follow-up 32. The gap this closes is narrow and worth stating exactly, because the
+    follow-up's own wording overstates it: *"No per-tick coordinate is printed anywhere
+    today"* is FALSE — `village._run_worker` has put `@(x,y)` on every agent's line since
+    **2026-06-30** (commit `6f279a7`), six weeks before the day it was written about. The
+    coordinate was on every sample of that day. What was missing is the coordinate's
+    COUNTERPART: the tile the walk is trying to reach, and the reach it needs. A position
+    alone cannot distinguish an agent standing at its stand from one frozen four tiles
+    short of a vendor, and that is the whole of the 203-give-up day (§30.2, §31).
+    (An earlier draft of this paragraph credited `61768a1`/2026-07-30 — the commit that
+    last TOUCHED the line, found by searching for its current form. Reported as a
+    correction because a wrong date here would understate how long the gap stood.)
+
+    NOTHING NEW IS WRITTEN to make this readable — the same discipline
+    `life_runner.retirement_reason` states for frame outcomes. Every value here already
+    exists for a non-telemetry reason: `mkt_phase` drives the FSM, `cap_{ns}_route` is
+    stamped by each capability's `_begin_goal`, `bs_stand` by its `step`, `{tag}_leg` and
+    `{tag}_stall` by the walk itself. A telemetry key written on only some paths is worse
+    than no key (the `*_leg` lesson, `village.py`), and the way to never have that problem
+    is to add no key.
+
+    IT MIRRORS `_walk_route` RATHER THAN RE-DERIVING IT, which is the one thing that keeps
+    the readout from disagreeing with the walk it reports on:
+
+    * The FINAL waypoint's reach is tested FIRST, exactly as `_walk_route` does before it
+      touches any leg cursor. A trip standing beside its vendor is ARRIVED even with a
+      stale leg cursor of 0, and printing `to=` the first waypoint there would report a
+      walk that is not happening.
+    * Otherwise the target is `route[leg]` — the tile the greedy step actually steers
+      toward — NOT `route[-1]`. The two differ in live production config, not merely in
+      principle: `profession.VENDOR_SPOT`/`BANKER_SPOT` are `[TRADE_HUB, (2610, 473)]`
+      two-leg routes through a walled corridor, installed verbatim by `run_village`'s
+      trade blacksmith, while `life_runner.stage_shops` produces single-waypoint ones.
+      Both are live, and follow-up 31 proposes restoring the hub waypoint on the forge
+      pair — i.e. on the very chain this instrument exists to diagnose.
+    * The required reach follows the same rule the walk applies: `final_reach` on the last
+      leg, **0** on every intermediate one (`reach = final_reach if last_leg else 0`).
+      `d=4>0` and `d=4>2` are different situations and the line says which.
+
+    THE COMPARATOR IS PRINTED, so no reader has to hold two numbers in their head and
+    subtract — the `!overdue` lesson (`life_runner.telemetry_line`), which exists because
+    review-caught nobody makes a comparison the line leaves implicit. `d=4>2` is short of
+    reach; `d=1<=2` is arrived. `grep 'd=[0-9]*>'` selects every not-yet-arrived sample of
+    a run.
+
+    ABSENCE IS NEVER HEALTH. There is no state in which this returns `""`: a Life that has
+    never traded prints `trip=none`, one between trips prints `trip=craft`, an unreadable
+    route prints `to=?`, and any failure at all prints `trip=?`. The `deaths=` rule
+    (`village.py`) is that an absent field is ambiguous between "nothing happened" and "a
+    build that could not compute one", and the whole value of this group on a wedged run
+    is that it is present and says so.
+
+    `stall=` is `_market_walk_toward`'s own no-progress counter over its give-up limit.
+    `stall=-` is NOT zero and NOT "arrived": the counter is written on every greedy step
+    and popped only on a leg advance or on the give-up itself, so an ordinary arrival
+    LEAVES it behind and renders `stall=0/6`. `-` means no greedy step has run since the
+    last pop — a trip that began already inside reach, the tick after a leg advanced, or
+    the tick after a give-up. (An earlier draft of this paragraph said `-` meant "arrived,
+    or just abandoned"; the arrival half is wrong, because `_walk_route` returns `_ARRIVED`
+    from its final-reach test without touching the counter. Review-caught, and pinned by a
+    test now, because a reader who takes `stall=-` for "not walking" would read a wedge as
+    an idle agent — the exact inversion this field exists to prevent.)
+
+    `memory` should be a SNAPSHOT (`dict(agent.memory)`), not the live dict: this is read
+    from a runner's status thread while the worker thread ticks the same agent, and the
+    market FSMs pop whole key groups (`_CLEANUP_KEYS`, the stall/last_pos pair) mid-trip.
+    Taking the copy at the call site keeps every field on one line consistent with every
+    other, which re-reading the live dict per field would not.
+    """
+    try:
+        phase = memory.get("mkt_phase")
+        if phase is None:
+            return "trip=none"
+        ns = phase[:-7] if phase.endswith("_return") else phase
+        row = WALK_PHASES.get(ns)
+        if row is None:  # "craft" — the idle phase, and any future non-walking one
+            return f"trip={phase}"
+        route_key, spot_key, final_reach = row
+        raw = memory.get(route_key) or memory.get(spot_key)
+        route = BlacksmithMarket._route(raw) if raw else []
+        if phase.endswith("_return"):
+            # `_market_return_step` walks the outbound route reversed, home to the tile
+            # the trip started from, and needs it EXACTLY (reach 0).
+            stand = memory.get("bs_stand")
+            route = (list(reversed(route[:-1])) + [tuple(stand)]) if stand else []
+            final_reach = 0
+        if not route:
+            return f"trip={phase} to=?"
+        # Final reach first — `_walk_route`'s own ordering. See the docstring.
+        fx, fy = route[-1]
+        d_final = chebyshev(pos, Position(fx, fy, pos.z))
+        if d_final <= final_reach:
+            return (f"trip={phase} to=({fx},{fy}) d={d_final}<={final_reach} "
+                    f"stall={memory.get(f'{phase}_stall', '-')}"
+                    f"/{BlacksmithMarket.stall_limit}")
+        leg = memory.get(f"{phase}_leg", 0)
+        leg = min(max(0, leg if isinstance(leg, int) else 0), len(route) - 1)
+        tx, ty = route[leg]
+        last_leg = leg == len(route) - 1
+        reach = final_reach if last_leg else 0
+        d = chebyshev(pos, Position(tx, ty, pos.z))
+        more = "" if last_leg else f"+{len(route) - 1 - leg}"
+        stall = memory.get(f"{phase}_stall", "-")
+        # COMPUTED, never assumed: standing exactly on an intermediate waypoint is
+        # `d=0<=0`, and `_walk_route` advances the leg on that same tick. Hardcoding `>`
+        # here because "we did not take the arrival branch" would print a lie for one
+        # tick per leg on every multi-waypoint route.
+        cmp_ = ">" if d > reach else "<="
+        return (f"trip={phase} to=({tx},{ty}){more} d={d}{cmp_}{reach} "
+                f"stall={stall}/{BlacksmithMarket.stall_limit}")
+    except Exception:  # noqa: BLE001 — telemetry must never break the run
+        return "trip=?"
+
+
 class SellItemCapability(BlacksmithMarket):
     """Operation-specific vendor hands: sell one configured pack item, never craft
     or bank. The generalized base for `SellDaggers` (blacksmith) and `SellBoards`

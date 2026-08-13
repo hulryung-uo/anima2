@@ -893,3 +893,34 @@ def test_the_peak_is_a_high_water_mark_and_never_decreases():
         peaks.append(memory.get("harvest_stuck_max", 0))
     assert peaks == sorted(peaks), "the peak decreased at some point"
     assert peaks[-1] > 1
+
+
+def test_the_status_line_carries_the_walk_s_own_target_for_every_agent():
+    """Follow-up 32, mounted where every runner prints it.
+
+    `@(x,y)` has been on this line since 2026-06-30 and says where the agent IS; on the
+    203-give-up day (`docs/AUDIT-2026-07-29.md` §30.2) that was on every sample and told
+    nobody anything, because nothing said where the walk was TRYING to get to. The two are
+    useless apart. This pins that the group is actually mounted — a mutant that simply
+    drops `{trip}` from the f-string is otherwise invisible to the whole suite.
+
+    It also pins the honest-absence rule at the runner boundary: an agent with no market
+    state at all renders `trip=none`, not a blank. An absent field would be ambiguous
+    between "this agent never trades" and "a build that could not compute one", which is
+    the `deaths=` lesson two fields to the left.
+    """
+    import threading
+
+    from anima2.village import _run_worker
+
+    walker = _WalkerWithLedger("Bjorn", produce_every=5)
+    status: dict = {}
+    _run_worker(walker, 5, 0, status, threading.Lock(), "lumberjack")
+    assert "trip=none" in status[0], status[0]
+
+    # ...and a real market phase reaches the line through the agent's own memory.
+    walker.memory.update({"mkt_phase": "sell", "cap_sell_route": ((10, 0),),
+                          "sell_stall": 2})
+    _run_worker(walker, 1, 0, status, threading.Lock(), "lumberjack")
+    assert "trip=sell to=(10,0) d=" in status[0], status[0]
+    assert "stall=2/6" in status[0], status[0]

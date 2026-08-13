@@ -30,6 +30,7 @@ from anima2.skills.base import SkillContext
 from anima2.skills.tinkering import BuyIron, BuyTinkerTool
 from anima2.skills.craft import DAGGER_GRAPHIC
 from anima2.skills.harvest import BACKPACK_LAYER
+from anima2.skills import market as market_module
 from anima2.skills.market import (
     ASK_RETRY,
     BANK_CLILOC,
@@ -48,12 +49,14 @@ from anima2.skills.market import (
     SMITH_TONGS_GRAPHIC,
     TOOL_BUY_AMOUNT,
     TOOL_BUY_CONFIRM_TIMEOUT,
+    WALK_PHASES,
     BankGold,
     BlacksmithMarket,
     BuyIngots,
     BuyTool,
     SellDaggers,
     _bank_reserve,
+    walk_readout,
 )
 
 HAMMER = 0x13E3
@@ -2447,3 +2450,235 @@ def test_a_torn_down_trip_leaves_no_per_trip_counter_for_the_next_one():
            "cap_buy_goal_id": 7}
     BuyIron()._begin_goal(_ctx([_backpack()], memory=mem, goal_id=7))
     assert mem["buy_offer_reopens"] == 2, "a continuing trip lost its own counter"
+
+
+# --- walk_readout: where a market trip's walk actually is (follow-up 32) --------------
+
+
+def _pos(x, y, z=0):
+    return Position(x, y, z)
+
+
+def test_walk_readout_reports_a_wedged_approach_as_short_of_reach():
+    """The 203-give-up signature (§30.2/§31), on one line.
+
+    Pim's trips died INSIDE the walk: `mkt_phase=sell` on 134 samples with `sell_stage`
+    never written once. Every field the status line carried described the FRAME — admitted,
+    ready, unfrozen, age 8 of a 180 budget — and none of them could say he was four tiles
+    from a vendor he needed to be two from, not closing.
+
+    Kills the mutant that drops the reach from the render: `d=4` alone is not a diagnosis,
+    because a reader cannot tell it from a healthy mid-walk sample without knowing
+    SELL_REACH by heart. The comparator has to be ON the line (the `!overdue` lesson).
+    """
+    mem = {"mkt_phase": "sell", "cap_sell_route": ((2611, 473),),
+           "bs_stand": (2607, 477), "sell_stall": 3}
+    out = walk_readout(mem, _pos(2607, 477))
+    assert out == "trip=sell to=(2611,473) d=4>2 stall=3/6", out
+
+
+def test_walk_readout_targets_the_leg_being_walked_not_the_final_waypoint():
+    """`route[leg]`, not `route[-1]` — and the difference is LIVE PRODUCTION CONFIG.
+
+    `profession.VENDOR_SPOT` is `[TRADE_HUB, (2610, 473)]`, a two-leg route through a
+    walled corridor, installed verbatim into `run_village`'s trade blacksmith. On leg 0 the
+    walk steers at the HUB and must reach it EXACTLY (`reach = final_reach if last_leg else
+    0`, `_walk_route`), so a readout aimed at the final waypoint reports both the wrong
+    tile and the wrong threshold.
+
+    Kills two mutants at once: `route[-1]` as the target, and `final_reach` as the
+    intermediate leg's reach.
+    """
+    mem = {"mkt_phase": "sell", "cap_sell_route": ((2610, 474), (2610, 473)),
+           "sell_leg": 0, "sell_stall": 0}
+    out = walk_readout(mem, _pos(2605, 474))
+    assert "to=(2610,474)+1" in out, out          # the hub, and one waypoint still after it
+    assert "d=5>0" in out, out                    # intermediate legs need chebyshev 0
+    # On the last leg the same route reports the vendor, at the real reach.
+    mem["sell_leg"] = 1
+    assert "to=(2610,473) d=5>2" in walk_readout(mem, _pos(2605, 474))
+
+
+def test_walk_readout_calls_it_arrived_off_the_final_waypoint_even_with_a_stale_leg():
+    """Mirrors `_walk_route`'s OWN ordering: it reach-tests `route[-1]` before it looks at
+    any leg cursor, so a trip standing beside its vendor is arrived regardless of where the
+    cursor sits. `{tag}_leg` is only written when a leg COMPLETES, so on the single-waypoint
+    routes `stage_shops` produces it is never written at all — reading it first would report
+    a walk toward waypoint 0 for the entire vendor interaction.
+
+    Kills the mutant that checks the leg before the final reach.
+    """
+    mem = {"mkt_phase": "sell", "cap_sell_route": ((2610, 474), (2610, 473)),
+           "sell_leg": 0}
+    out = walk_readout(mem, _pos(2611, 473))
+    assert out == "trip=sell to=(2610,473) d=1<=2 stall=-/6", out
+
+
+def test_walk_readout_follows_the_return_leg_home_at_reach_zero():
+    """`_market_return_step` walks `reversed(route[:-1]) + [bs_stand]` and needs the stand
+    tile EXACTLY. A readout that kept pointing at the vendor would show a return trip
+    getting further from its target the closer it got to finishing.
+
+    Kills the mutant that treats `<ns>_return` as the outbound phase.
+    """
+    mem = {"mkt_phase": "sell_return", "cap_sell_route": ((2610, 474), (2610, 473)),
+           "bs_stand": (2609, 474), "sell_return_leg": 1}
+    out = walk_readout(mem, _pos(2610, 473))
+    assert out == "trip=sell_return to=(2609,474) d=1>0 stall=-/6", out
+
+
+def test_walk_readout_renders_standing_on_an_intermediate_waypoint_as_arrived_at_it():
+    """`_walk_route` advances the leg on the tick the cursor's waypoint is reached, so
+    `d == reach == 0` is a real, observable state. The comparator is COMPUTED; hardcoding
+    `>` on the non-final branch would print `d=0>0`, a lie, once per leg per route.
+
+    The hub must be far enough from the final waypoint that the arrival branch does NOT
+    win first — a fixture standing 1 tile from a reach-2 vendor is ARRIVED, and would pin
+    nothing (§35.3: a test can pass while never reaching the case it names).
+    """
+    mem = {"mkt_phase": "bank", "cap_bank_route": ((10, 0), (20, 0)), "bank_leg": 0}
+    assert "to=(10,0)+1 d=0<=0" in walk_readout(mem, _pos(10, 0))
+
+
+def test_walk_readout_never_renders_a_state_as_empty():
+    """The `deaths=` rule: an absent field is ambiguous between "nothing happened" and "a
+    build that could not compute one", and on a wedged run the whole value of this group is
+    that it is PRESENT and says so. Every state has a rendering, including the failures.
+    """
+    assert walk_readout({}, _pos(0, 0)) == "trip=none"          # never traded
+    assert walk_readout({"mkt_phase": "craft"}, _pos(0, 0)) == "trip=craft"   # between trips
+    # A phase whose route cannot be read at all — never silence, and never a fake tile.
+    assert walk_readout({"mkt_phase": "sell"}, _pos(0, 0)) == "trip=sell to=?"
+    assert walk_readout({"mkt_phase": "sell_return", "cap_sell_route": ((1, 1),)},
+                        _pos(0, 0)) == "trip=sell_return to=?"   # no bs_stand
+    # And anything at all going wrong is still a token, not an exception and not "".
+    class _Boom:
+        def get(self, *a, **k):
+            raise RuntimeError("memory exploded")
+    assert walk_readout(_Boom(), _pos(0, 0)) == "trip=?"
+    assert walk_readout({"mkt_phase": "sell", "cap_sell_route": ((1, 1),)}, None) == "trip=?"
+
+
+def test_walk_readout_falls_back_to_the_configured_spot_for_the_legacy_market():
+    """`BlacksmithMarket` (the non-capability skill) never writes `cap_{ns}_route` — it
+    calls `_route(vendor_spot)` inline every tick. Reading only the capability key would
+    blank the group for every `run_village` blacksmith.
+    """
+    out = walk_readout({"mkt_phase": "sell", "vendor_spot": VENDOR}, _pos(0, 0))
+    assert out == f"trip=sell to=({VENDOR[0]},{VENDOR[1]}) d=10>2 stall=-/6", out
+    out = walk_readout({"mkt_phase": "bank", "banker_spot": BANKER}, _pos(0, 0))
+    assert out == f"trip=bank to=({BANKER[0]},{BANKER[1]}) d=10>2 stall=-/6", out
+
+
+def test_walk_readout_covers_every_walking_phase_the_market_fsms_write():
+    """`mkt_phase`'s value IS the walk tag, on all eight walking phases. A phase missing
+    from `WALK_PHASES` renders as a bare `trip=<phase>` — indistinguishable from the idle
+    `craft`, i.e. a frozen buy trip reported as an idle agent.
+
+    Pins the table against the FSMs rather than against itself: every `mkt_phase` value
+    assigned anywhere in market.py must either be `craft` or resolve to a route.
+    """
+    import re
+    from pathlib import Path
+    src = Path(market_module.__file__).read_text()
+    written = set(re.findall(r'mkt_phase"\]\s*=\s*"(\w+)"', src))
+    assert "sell" in written and "toolbuy_return" in written, written  # the regex still works
+    for phase in written:
+        if phase == "craft":
+            continue
+        ns = phase[:-7] if phase.endswith("_return") else phase
+        assert ns in WALK_PHASES, f"{phase} is a walking phase with no route row"
+
+
+def test_walk_readout_reverses_a_multi_leg_return_route():
+    """`_market_return_step` hands `_walk_route` `reversed(route[:-1]) + [bs_stand]`, so on
+    a three-waypoint outbound route the first leg home is the SECOND-to-last waypoint, not
+    the first.
+
+    This needs THREE waypoints to test at all: on a two-waypoint route `route[:-1]` is a
+    single element and reversing it is a no-op, so the obvious fixture pins nothing while
+    passing — the §35.3 trap, caught here by a mutant that survived it.
+    """
+    mem = {"mkt_phase": "sell_return", "cap_sell_route": ((10, 0), (20, 0), (30, 0)),
+           "bs_stand": (0, 0), "sell_return_leg": 0}
+    assert "to=(20,0)+2 d=5>0" in walk_readout(mem, _pos(25, 0))
+
+
+def test_walk_readout_clamps_a_leg_cursor_that_outruns_its_route():
+    """A stale `{tag}_leg` — left by a longer route, or a non-int — must not index off the
+    end. Unclamped this raises `IndexError`, which the guard turns into `trip=?`: the one
+    outcome that loses the whole diagnosis, on a line whose entire purpose is being readable
+    when everything else has failed.
+    """
+    mem = {"mkt_phase": "sell", "cap_sell_route": ((10, 0),), "sell_leg": 5}
+    assert walk_readout(mem, _pos(0, 0)) == "trip=sell to=(10,0) d=10>2 stall=-/6"
+    mem["sell_leg"] = None
+    assert walk_readout(mem, _pos(0, 0)) == "trip=sell to=(10,0) d=10>2 stall=-/6"
+
+
+def test_walk_readout_reads_the_return_leg_s_own_stall_counter():
+    """`_market_return_step` passes tag `"sell_return"` down to `_market_walk_toward`, which
+    writes `sell_return_stall`. Reading `sell_stall` instead would report the OUTBOUND leg's
+    counter — a value not in `_CLEANUP_KEYS`, so stale rather than absent.
+
+    Kills the mutant that strips `_return` off the stall key: a tinker wedged on the walk
+    HOME would otherwise render `stall=-/6` forever, and `stall=-` is documented to mean no
+    greedy step is running — the readout would say the walk is not happening while it is
+    wedged inside it, which is the exact inversion this field exists to prevent.
+    """
+    mem = {"mkt_phase": "sell_return", "cap_sell_route": ((10, 0),), "bs_stand": (0, 0),
+           "sell_stall": 0, "sell_return_stall": 4}
+    assert walk_readout(mem, _pos(5, 0)) == "trip=sell_return to=(0,0) d=5>0 stall=4/6"
+
+
+@pytest.mark.parametrize("phase,route_key,spot_key,spot", [
+    ("sell", "cap_sell_route", "vendor_spot", VENDOR),
+    ("bank", "cap_bank_route", "banker_spot", BANKER),
+    ("buy", "cap_buy_route", "vendor_spot", VENDOR),
+    ("toolbuy", "cap_toolbuy_route", "vendor_spot", VENDOR),
+])
+def test_walk_readout_covers_all_four_families_by_value(phase, route_key, spot_key, spot):
+    """Every `WALK_PHASES` row, exercised through BOTH of its sources.
+
+    Without this only `sell` and `bank` had value coverage, so a row whose route key or
+    spot key was wrong — `buy` pointed at `banker_spot`, `toolbuy` at `cap_buy_route` —
+    rendered `to=?` on a live buy trip and no test noticed. `to=?` reads as "this walk has
+    no route", which is a real and different failure.
+    """
+    assert walk_readout({"mkt_phase": phase, route_key: ((7, 0),)},
+                        _pos(0, 0)) == f"trip={phase} to=(7,0) d=7>2 stall=-/6"
+    assert walk_readout({"mkt_phase": phase, spot_key: spot},
+                        _pos(0, 0)) == f"trip={phase} to=({spot[0]},{spot[1]}) d=10>2 stall=-/6"
+
+
+def test_walk_readout_calls_exactly_final_reach_arrived():
+    """The boundary the field exists to report. `_walk_route` arrives on `<=`, so standing
+    at exactly `SELL_REACH` is ARRIVED — off by one in either direction and the line
+    disagrees with the walk at the only distance where the answer changes.
+    """
+    mem = {"mkt_phase": "sell", "cap_sell_route": ((10, 0),)}
+    assert "d=2<=2" in walk_readout(mem, _pos(8, 0))    # exactly at reach: arrived
+    assert "d=3>2" in walk_readout(mem, _pos(7, 0))     # one further: still walking
+
+
+def test_walk_readout_leaves_the_stall_counter_behind_on_an_ordinary_arrival():
+    """`stall=-` does NOT mean arrived. `_walk_route` returns `_ARRIVED` from its
+    final-reach test without touching the counter, so a trip that walked and then arrived
+    still shows its last value. Pinned because the docstring said otherwise for a day, and
+    a reader who takes `stall=-` for "not walking" reads a wedge as an idle agent.
+    """
+    mem = {"mkt_phase": "sell", "cap_sell_route": ((10, 0),), "sell_stall": 0}
+    assert walk_readout(mem, _pos(9, 0)) == "trip=sell to=(10,0) d=1<=2 stall=0/6"
+
+
+def test_walk_readout_arrival_boundary_is_inclusive_on_a_multi_leg_route():
+    """`_walk_route` arrives on `<=`, and the single-waypoint case cannot tell `<=` from
+    `<`: the leg branch renders an identical string there, so the boundary mutant is
+    EQUIVALENT and survives. On a multi-waypoint route the two branches name different
+    tiles, which is the only fixture that can see the difference.
+
+    Standing exactly `SELL_REACH` from the FINAL waypoint is arrived at the final waypoint,
+    even though the leg cursor still points at the hub.
+    """
+    mem = {"mkt_phase": "sell", "cap_sell_route": ((0, 0), (10, 0)), "sell_leg": 0}
+    assert walk_readout(mem, _pos(8, 0)) == "trip=sell to=(10,0) d=2<=2 stall=-/6"
