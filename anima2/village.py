@@ -864,6 +864,56 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # a craft item ~10) and far below the half-hour forge2 sat dead.
     _QUIET_TICKS = 40
     _quiet = 0
+    # WEDGED WALK — the third liveness alarm, follow-up 35. `NO PROGRESS` above is
+    # structurally unable to fire during the failure this one is for, and that is why the
+    # 2026-08-11 day (`docs/AUDIT-2026-07-29.md` §30.2 — 203 `sell_tongs` frames given up
+    # at age 8, 0 gold banked) was silent on every instrument the runner had.
+    #
+    # `steps` counts EMITTED walks (`steps += isinstance(action, Walk)`), not movement,
+    # and `market._market_walk_toward` returns `SkillResult(RUNNING, Walk(...), reward)`
+    # on every tick of a greedy approach. So an agent hammering a blocked tile bumps
+    # `steps` every tick while its position never changes: the pulse always differs,
+    # `_quiet` resets every tick, and an alarm reading "reward/steps/speech/position all
+    # frozen" can never reach 40. Measured on that day's shape (a real `CarpenterLife`
+    # walled off from its vendor, 400 ticks, frozen on one tile): **0 fires**.
+    #
+    # THE OBVIOUS FIX IS WRONG, and it was implemented and measured before being thrown
+    # away: simply dropping `steps` from the pulse detects the wedge (0 -> 9 fires) but
+    # SILENTLY MOVES the surviving alarm's threshold. `_quiet` does not reset when a
+    # walk leg gives up — the position is still frozen through the give-up, the retry and
+    # the next wedge — so "a stalled leg cannot reach 40 because `stall_limit` is 6" is
+    # false. Measured: a TRANSIENT obstruction cleared after 42 worker ticks (~18s at the
+    # 2026-08-03 forge cadence) fires, and 41 does not. A one-tick margin on an alarm
+    # this project has already been burned by false-firing (see `_STALL_TICKS` below:
+    # "ten times at exactly 40 ticks, three of them in the HEALTHY first half") is not a
+    # margin. Review-caught, by three independent lenses, after the author's own transient
+    # grid stopped at 41 — one tick below the first firing point.
+    #
+    # So the wedge gets its OWN alarm and its own threshold, and `NO PROGRESS` is left
+    # byte-identical. That makes this change strictly ADDITIVE: no existing alarm's
+    # behaviour moves, so no measured threshold is silently re-tuned. It is also the rule
+    # `NO OUTPUT` already established in this file — two different failures must never
+    # share one line of text, because identical text in both halves is zero information.
+    #
+    # 240 IS DERIVED, not picked. It is `_STALL_TICKS`, the work-liveness threshold
+    # already measured in this file against the longest healthy silence any live log
+    # contains (159 ticks, Grimm's 600-tick run). The derivation is that BOTH alarms
+    # answer the same question — "is this stretch long enough that no healthy agent
+    # explains it?" — and this one can afford at least as much patience as that one,
+    # because the failure it names is PERMANENT: §30.2's wedge lasted the entire day, so
+    # detection latency costs nothing while a false fire costs the operator's trust.
+    #
+    # What it is NOT measured against: a live obstruction-duration distribution. No log
+    # records how long a real NPC stands on a tile. 240 ticks is ~100s wall at forge
+    # cadence, six times the 42 that the rejected version would have fired at.
+    _WEDGE_TICKS = 240
+    _still = 0
+    _last_stillness = None
+    #: `steps` when the current stillness stretch began. `steps - _still_steps` is the
+    #: count of walks that went nowhere, which is what separates a wedge from an agent
+    #: that is merely idle — and it must be REBASED per stretch, not read since t=0, or
+    #: an agent that walked earlier and then died is reported as a wedge.
+    _still_steps = 0
     #: Consecutive ticks a Life has reported an overdue capability frame — same throttle
     #: as `_quiet`, for the same reason (see the report below).
     _overdue = 0
@@ -1134,6 +1184,19 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
         if _quiet and _quiet % _QUIET_TICKS == 0:
             print(f"  ** {agent.persona.name}: NO PROGRESS for {_quiet} ticks "
                   f"(reward/steps/speech/position all frozen) **")
+        # WEDGED WALK — the third liveness alarm, and follow-up 35. See `_WEDGE_TICKS`.
+        # The same pulse WITHOUT `steps`, so a walk that emits and never moves
+        # accumulates here instead of resetting everything.
+        _stillness = (round(agent.episodes.total_reward(), 3), says, p.x, p.y)
+        _still = _still + 1 if _stillness == _last_stillness else 0
+        if _still == 0:
+            _still_steps = steps  # baseline: walks emitted BEFORE this stretch began
+        _last_stillness = _stillness
+        _tried = steps - _still_steps
+        if _still and _tried and _still % _WEDGE_TICKS == 0:
+            print(f"  ** {agent.persona.name}: WEDGED WALK — {_tried} walk actions "
+                  f"emitted over {_still} ticks and the position never changed "
+                  f"(t={ticks_done}, @({p.x},{p.y})) **")
         # The work-liveness detector described where `_STALL_TICKS` is defined.
         # Deliberately NOT the string "NO PROGRESS": the two alarms are different
         # failures (that one is body-liveness, this one work-liveness), both stay, and

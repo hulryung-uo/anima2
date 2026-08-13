@@ -924,3 +924,212 @@ def test_the_status_line_carries_the_walk_s_own_target_for_every_agent():
     _run_worker(walker, 1, 0, status, threading.Lock(), "lumberjack")
     assert "trip=sell to=(10,0) d=" in status[0], status[0]
     assert "stall=2/6" in status[0], status[0]
+
+
+# --- follow-up 35: the wedge NO PROGRESS structurally cannot see ---------------------
+#
+# `NO PROGRESS` above is body-liveness and it is defeated by an agent that keeps EMITTING
+# walks. `steps += isinstance(action, Walk)` counts emitted actions, not movement, and
+# `market._market_walk_toward` returns a `Walk` on every tick of a greedy approach — so an
+# agent hammering a blocked tile bumps `steps` forever while its position never changes,
+# the pulse always differs, and `_quiet` can never reach 40. That is why the 2026-08-11 day
+# (`docs/AUDIT-2026-07-29.md` §30.2: 203 `sell_tongs` frames given up at age 8, 0 gold
+# banked) was silent on every instrument the runner had.
+#
+# `WEDGED WALK` is a SEPARATE alarm on a separate threshold, deliberately: dropping `steps`
+# from the shared pulse also detects the wedge, but it silently re-tunes `NO PROGRESS` —
+# a leg give-up does not reset the counter, so a transient obstruction cleared after 42
+# ticks starts firing. See `_WEDGE_TICKS` for the measurement.
+
+WEDGE_TICKS = 240  # `_WEDGE_TICKS`, derived from `_STALL_TICKS` — see `_run_worker`
+
+
+def _walled_sale_life(free_at=None):
+    """A real `CarpenterLife` walled off from its vendor — §30.2's shape, offline.
+
+    `free_at` drops the wall after that many worker ticks, modelling a TRANSIENT
+    obstruction (an NPC standing on a tile and then moving off).
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_life_frame_hold import _sale_life
+
+    body, life = _sale_life()
+    body.blocked.update({(x, 6) for x in range(20)} | {(6, y) for y in range(20)})
+    if free_at is None:
+        return body, life
+
+    class _Timed:
+        def __init__(self):
+            self.n = 0
+            #: Distinct tiles stood on AFTER the wall came down. A final-position check
+            #: cannot stand in for this: the carpenter's leash walks it back toward its
+            #: own stand, so it can recover fully and still end on the tile it was stuck
+            #: on. Recording movement is the only thing that shows it got free.
+            self.freed_tiles = set()
+            self.persona, self.episodes = life.persona, life.episodes
+            self.memory = life.memory
+
+        def __getattr__(self, k):
+            return getattr(life, k)
+
+        def tick(self):
+            self.n += 1
+            if self.n == free_at:
+                body.blocked.clear()
+            if self.n > free_at:
+                self.freed_tiles.add((body.player.pos.x, body.player.pos.y))
+            return life.tick()
+
+    return body, _Timed()
+
+
+def test_a_permanently_wedged_walk_is_reported(capsys):
+    """§30.2's shape, offline: a real `CarpenterLife` that can never reach its vendor.
+
+    Before this alarm existed the run printed NOTHING — measured, 0 `NO PROGRESS` and
+    0 `NO OUTPUT` over 400 ticks with the character frozen on one tile the whole time.
+    """
+    import threading
+
+    from anima2.village import _run_worker
+
+    body, life = _walled_sale_life()
+    _run_worker(life, 900, 0, {}, threading.Lock(), "carpenter")
+    out = capsys.readouterr().out
+    assert (body.player.pos.x, body.player.pos.y) == (5, 5), "the wall did not hold"
+    assert "WEDGED WALK" in out, out
+    # It names the tile and the tick, because the fix for a wedge is geometry and an
+    # operator's next question is always "where".
+    assert "@(5,5)" in out and "the position never changed" in out
+    # THROTTLED, one line per `_WEDGE_TICKS`, not one per tick. The state persists for as
+    # long as the wedge does, and this file already paid for that once: unthrottled,
+    # `FRAME OVERDUE` measured 3,881 identical lines in a 4,000-tick run — enough to bury
+    # every other alarm in this loop. A presence-only assertion lets the throttle be
+    # deleted, which a mutant proved.
+    assert 1 <= out.count("WEDGED WALK") <= 900 // WEDGE_TICKS + 1, out.count("WEDGED WALK")
+
+
+def test_a_transient_obstruction_is_never_called_a_wedge(capsys):
+    """The whole reason this is a separate alarm on a separate threshold.
+
+    A walk leg giving up does NOT reset the stillness counter — the position stays frozen
+    through the give-up, the retry and the next wedge — so the tempting "a stalled leg
+    cannot reach the threshold, `stall_limit` is 6" argument is FALSE. Measured on the
+    rejected design that simply dropped `steps` from the shared pulse: an obstruction
+    cleared after 42 ticks fired, 41 did not. A one-tick margin is not a margin.
+
+    Pinned at one tick under the real threshold, which is where a regression would land.
+    """
+    import threading
+
+    from anima2.village import _run_worker
+
+    body, agent = _walled_sale_life(free_at=WEDGE_TICKS - 1)
+    _run_worker(agent, 900, 0, {}, threading.Lock(), "carpenter")
+    out = capsys.readouterr().out
+    assert "WEDGED WALK" not in out, out
+    assert len(agent.freed_tiles) > 1, "the agent never moved after the wall came down"
+
+
+def test_the_wedge_alarm_does_not_disturb_no_progress(capsys):
+    """`NO PROGRESS` is left byte-identical, so no measured threshold moves. An agent that
+    emits no actions at all still trips it, and only it.
+    """
+    import threading
+
+    from anima2.village import _run_worker
+
+    class _DeadBody:
+        connected = True
+
+        def observe(self):
+            return _obs(cursor=False, no_metal=False)
+
+    class _Episodes:
+        total_recorded = 0
+
+        def total_reward(self):
+            return 0.0
+
+        def recent(self, n):
+            return []
+
+    class _DeadAgent:
+        body = _DeadBody()
+        persona = Persona(name="Grimm")
+        episodes = _Episodes()
+        memory: dict = {}
+
+        def tick(self):
+            return None
+
+    # Well past `_WEDGE_TICKS`, deliberately: a shorter run cannot reach the state where
+    # the wedge alarm would wrongly fire, so it would pin nothing (§35.3). A mutant that
+    # drops the "any walks attempted?" guard survives an 85-tick fixture and dies here.
+    _run_worker(_DeadAgent(), WEDGE_TICKS + 60, 0, {}, threading.Lock(), "miner")
+    out = capsys.readouterr().out
+    assert out.count("NO PROGRESS") >= 2, out
+    assert "WEDGED WALK" not in out, "an agent that never walked is not a wedge"
+
+
+def test_the_wedge_count_is_rebased_per_stretch_and_printed_exactly(capsys):
+    """Two things at once, both review-caught.
+
+    The COUNT is the alarm's payload — it is what separates an agent hammering a tile from
+    one that took a single stray step — so it is asserted exactly, not just for its sign.
+    A walk-in-place agent makes the arithmetic checkable: every tick emits a `Walk` and the
+    position never moves, so the count must equal the tick window exactly.
+
+    And the baseline is REBASED per stretch. Read since t=0 instead, an agent that walked
+    earlier and then died reports its old walks as a wedge — sending a reader after
+    geometry for a lost tool. Only an agent that moves BEFORE freezing can tell the two
+    rules apart; a fixture that never walks passes under both (§35.3).
+    """
+    import threading
+
+    from anima2.contract import Walk
+    from anima2.village import _run_worker
+
+    class _Body:
+        connected = True
+
+        def __init__(self):
+            self.x = 50
+
+        def observe(self):
+            o = _obs(cursor=False, no_metal=False)
+            o.player.pos = Position(self.x, 50, 0)
+            return o
+
+    class _Episodes:
+        total_recorded = 0
+
+        def total_reward(self):
+            return 0.0
+
+        def recent(self, n):
+            return []
+
+    class _WalksThenWedges:
+        """20 walks that MOVE, then walks that go nowhere forever."""
+
+        persona = Persona(name="Bjorn")
+        episodes = _Episodes()
+        memory: dict = {}
+
+        def __init__(self):
+            self.body = _Body()
+            self.n = 0
+
+        def tick(self):
+            self.n += 1
+            if self.n <= 20:
+                self.body.x += 1      # real movement — these must NOT be counted
+            return Walk(dir=2)
+
+    _run_worker(_WalksThenWedges(), WEDGE_TICKS + 25, 0, {}, threading.Lock(), "lumberjack")
+    out = capsys.readouterr().out
+    # Exactly the window, not 20 more: the 20 successful walks predate this stretch.
+    assert f"WEDGED WALK — {WEDGE_TICKS} walk actions emitted over {WEDGE_TICKS} ticks" in out, out
