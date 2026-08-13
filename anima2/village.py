@@ -906,6 +906,27 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # What it is NOT measured against: a live obstruction-duration distribution. No log
     # records how long a real NPC stands on a tile. 240 ticks is ~100s wall at forge
     # cadence, six times the 42 that the rejected version would have fired at.
+    #
+    # THE MAJORITY RULE, and why the first version was wrong — caught on this alarm's
+    # FIRST live run (2026-08-13, §39). The guard was `_tried > 0`: "were any walks
+    # emitted during this stretch?". On a shard that fired six times on a tinker who was
+    # BANKING 1483 GOLD, printing `3 walk actions emitted over 1440 ticks` while he stood
+    # on his own craft tile. Three stray walks across 1440 ticks reclassified a stationary
+    # crafter as wedged, and the line read absurd on its face.
+    #
+    # The failure gets WORSE with time, which is the part worth naming: `_tried` is fixed
+    # once the strays are emitted while `_still` keeps climbing, so the evidence ratio
+    # DECAYS while the alarm keeps firing — 1.25% at the first fire, 0.21% at the sixth.
+    #
+    # Measured separation, live false positive versus the offline §30.2 reproduction:
+    #
+    #     productive tinker (false) : 1.25% -> 0.21% of ticks were walk attempts
+    #     real wedge (true)         : 75.8% -> 75.1%, stable across every fire
+    #
+    # A ~60x gap, so the threshold is not a tuned number and is deliberately not written
+    # as a percentage: a MAJORITY of the stretch must be walk attempts. That is a
+    # statement about what a wedge IS — an agent walking, every tick, into the same tile —
+    # rather than a constant someone must later re-derive.
     _WEDGE_TICKS = 240
     _still = 0
     _last_stillness = None
@@ -1273,10 +1294,12 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             _still_steps = steps  # baseline: walks emitted BEFORE this stretch began
         _last_stillness = _stillness
         _tried = steps - _still_steps
-        if _still and _tried and _still % _WEDGE_TICKS == 0:
+        # A MAJORITY of the stretch must be walk attempts. `_tried > 0` was the first
+        # version and it false-fired on its very first live run — see `_WEDGE_TICKS`.
+        if _still and _tried * 2 >= _still and _still % _WEDGE_TICKS == 0:
             print(f"  ** {agent.persona.name}: WEDGED WALK — {_tried} walk actions "
-                  f"emitted over {_still} ticks and the position never changed "
-                  f"(t={ticks_done}, @({p.x},{p.y})) **")
+                  f"over {_still} ticks ({_tried * 100 // _still}% of them) and the "
+                  f"position never changed (t={ticks_done}, @({p.x},{p.y})) **")
         # NOTHING LANDS — transactions keep retiring and none of them achieve. See
         # `_THRASH_TICKS`. The "still retiring" clause is what keeps this from
         # double-reporting an agent that `NO OUTPUT` already owns.

@@ -1131,8 +1131,11 @@ def test_the_wedge_count_is_rebased_per_stretch_and_printed_exactly(capsys):
 
     _run_worker(_WalksThenWedges(), WEDGE_TICKS + 25, 0, {}, threading.Lock(), "lumberjack")
     out = capsys.readouterr().out
-    # Exactly the window, not 20 more: the 20 successful walks predate this stretch.
-    assert f"WEDGED WALK — {WEDGE_TICKS} walk actions emitted over {WEDGE_TICKS} ticks" in out, out
+    # Exactly the window, not 20 more: the 20 successful walks predate this stretch. The
+    # share is pinned alongside it — it is the guard's own evidence, and an agent walking
+    # in place every tick is the 100% case that bounds it.
+    assert (f"WEDGED WALK — {WEDGE_TICKS} walk actions over {WEDGE_TICKS} ticks "
+            f"(100% of them)") in out, out
 
 
 # --- follow-up 37: busy, mobile, finishing skills, completing nothing ----------------
@@ -1373,3 +1376,62 @@ def test_landed_prints_even_when_nothing_has_retired(capsys):
     _run_worker(_Quiet(), 20, 0, status, threading.Lock(), "miner")
     capsys.readouterr()
     assert "landed=0/0 " in status[0], status[0]
+
+
+def test_a_stationary_worker_with_a_few_stray_walks_is_not_a_wedge(capsys):
+    """THE LIVE FALSE POSITIVE, 2026-08-13 (§39), reproduced.
+
+    `WEDGED WALK` shipped with the guard "were any walks emitted during this stretch?".
+    On its first forge day it fired six times on a tinker who banked 1483 gold, printing
+    `3 walk actions emitted over 1440 ticks` while he stood on his own craft tile.
+
+    The failure worsens with time, which is why a share test and not a bigger threshold is
+    the fix: `_tried` is fixed once the strays are emitted while `_still` keeps climbing,
+    so the evidence RATIO decays — 1.25% at the first fire, 0.21% at the sixth — while the
+    alarm keeps repeating. Measured separation against the real wedge: 75.8%..75.1% of
+    ticks are walk attempts there, against 1.25%..0.21% here.
+
+    A crafter is exactly this shape: it stands on one tile, earns nothing for long
+    stretches between completions, and occasionally takes a step.
+    """
+    import threading
+
+    from anima2.contract import Walk
+    from anima2.village import _run_worker
+
+    class _Body:
+        connected = True
+
+        def observe(self):
+            return _obs(cursor=False, no_metal=False)   # position never changes
+
+    class _Episodes:
+        total_recorded = 0
+
+        def total_reward(self):
+            return 0.0
+
+        def recent(self, n):
+            return []
+
+    class _StationaryCrafter:
+        """Stands still, and emits three stray walks in the whole run."""
+
+        persona = Persona(name="Pim")
+        episodes = _Episodes()
+        memory: dict = {}  # noqa: RUF012
+
+        def __init__(self):
+            self.body = _Body()
+            self.n = 0
+
+        def tick(self):
+            self.n += 1
+            return Walk(dir=2) if self.n in (5, 6, 7) else None
+
+    _run_worker(_StationaryCrafter(), WEDGE_TICKS * 6, 0, {}, threading.Lock(), "tinker")
+    out = capsys.readouterr().out
+    assert "WEDGED WALK" not in out, out
+    # The agent IS frozen, so the alarm that owns that state must still say so — the point
+    # is which alarm, not silence.
+    assert "NO PROGRESS" in out, out
