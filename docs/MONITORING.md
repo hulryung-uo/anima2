@@ -258,6 +258,58 @@ Two properties that make them trustworthy, and one that limits them:
 **`FRAME RETIRED … -> giveup` has never printed on a shard.** Bound 1 is OBSERVABLE now; it is
 not exercised. Audit §8.3.
 
+## Transaction-liveness: `NOTHING LANDS`, `landed=` (2026-08-13, follow-up 37)
+
+The other three alarms all answer *"has this agent stopped?"*. None answers *"is any of this
+working?"* — and that is a different failure with its own live record:
+
+- **§30.2** — 203 `sell_tongs` frames given up in one day, 0 gold banked.
+- **§22.2** — a tinker whose vendor had sold out re-admitted `buy_iron` **49 more times**,
+  each trip walking to the shop, opening the window, re-rolling its full budget and coming
+  back empty. Every trip was *correct*; the loop was not.
+
+The buy case is why the other three cannot be stretched to cover this. That tinker **walked**
+(so `NO PROGRESS` and `WEDGED WALK` both reset on its position) and **recorded** (so
+`NO OUTPUT` read it as productive). Measured on the wedge fixture: `_work_recorded` advances
+every 8 ticks while `total_reward` stays at **exactly 0.000**. An agent can be busy, mobile,
+finishing skills and completing nothing, indefinitely.
+
+| surface | what it is |
+|---|---|
+| `landed=<achieved>/<retired>+<streak>` on the per-agent status line | the LEVEL signal. `landed=0/224+224` is 224 transactions retired, none achieved, 224 in a row right now. Prints at `landed=0/0` too — the `deaths=` rule. |
+| `** <name>: NOTHING LANDS — <n> capability frames retired in a row and not one ACHIEVED, over <m> ticks (t=<tick>) — the agent is busy and completing nothing **` | the EDGE, throttled to one line per `_THRASH_TICKS`. |
+
+The signal is the retirement **reason**, which `frame_retirements` already computes and the
+worker already drains every tick — so it costs one comparison per retirement and no new state.
+`achieved` is the only reason that clears the streak, because it is the only one that means a
+transaction completed.
+
+**Reward was the obvious signal and cannot be used**, for two measured reasons.
+`Episodes.total_reward()` sums a *bounded* 500-entry deque, so it is not monotone and a
+"frozen reward" test drifts as old episodes fall out — `_run_worker`'s own `_STALL_TICKS`
+comment already rejects it. And offline it does not discriminate at all: all five healthy Lives
+run 3000 ticks with **zero** paid events, because `MockBody` has no vendor to sell to.
+
+**The threshold is the hard part, and `_STALL_TICKS` was the wrong answer** — written down as
+right, then measured. A healthy day is not a steady drip of achievements: §17's 1800-tick forge
+run banked six times as one early deposit and then five more only after t≈756. At 240 ticks
+this alarm fires repeatedly across that gap **on a run that banked 503g**. So it is derived the
+way `_STALL_TICKS` itself was — longest measured healthy silence × the same ~1.5 safety factor
+that turned 159 into 240 — giving 756 × 1.5 ≈ 1134, rounded to **1200** (5 × `_STALL_TICKS`).
+It still fires within an ordinary 1800-tick day on §30.2's shape, which achieved nothing at all.
+
+**It is provisional and rests on ONE observation.** No live log records the distribution of
+gaps between achievements, because the tape has never carried the streak. `landed=` collects
+exactly that, so the next ordinary forge day supplies the data this number should have been
+derived from — prediction in `docs/AUDIT-2026-07-29.md` §38.4, written before the run.
+
+It cannot double-report with `NO OUTPUT`: the counter advances only while frames are still
+retiring, and an agent that has stopped retiring anything is precisely what `NO OUTPUT` is for.
+
+**Not measured against:** a healthy SELL loop, which no offline fixture can produce
+(`MockVendor` models the buy side only — follow-up 34). The offline control is a buy that
+achieves. **`NOTHING LANDS` has never printed on a shard.**
+
 ## Wedge-liveness: `WEDGED WALK` (2026-08-13, follow-up 35)
 
 The third liveness alarm, and the one that closes a hole the other two shared. On 2026-08-11 a

@@ -191,8 +191,15 @@ added bound 3. So the standing count is bounds 2 and 3 live-proven, bound 1 not.
   ticks of it. Neither has printed on a shard; the prediction for `trip=`'s first run is
   written down in `docs/AUDIT-2026-07-29.md` §36.5, before the run. Note that the OTHER
   two liveness alarms are structurally blind to this failure — `NO PROGRESS` because
-  `steps` counts emitted walks, `NO OUTPUT` because a give-up records an episode (§37,
-  the second is still open) — so do not read their silence as health here.
+  `steps` counts emitted walks (§37), `NO OUTPUT` because a give-up records an episode
+  (§38) — so do not read their silence as health here.
+- **Also new (2026-08-13, follow-up 37):** `landed=<achieved>/<retired>+<streak>` on every
+  agent's line, and a `NOTHING LANDS` alarm. `landed=0/224+224` is 224 transactions
+  retired with none achieved — busy and completing nothing, the §22.2/§30.2 failure all
+  three older alarms are blind to. The alarm's 1200-tick threshold is PROVISIONAL, anchored
+  on ONE observation (§17's 756-tick gap between deposits); `landed=` exists to collect the
+  real distribution. Prediction for its first run: `docs/AUDIT-2026-07-29.md` §38.4, and it
+  names the outcome that would say the threshold is too low.
 - **Watch for, on any live run:** `!frozen` on a live frame while the character is not dead
   (the regression detector), a `+hold` whose `@age` stops climbing (the old defect wearing
   the new marker), and `FRAME OVERDUE` (bounds 1 and 2 both failed). Do NOT use the
