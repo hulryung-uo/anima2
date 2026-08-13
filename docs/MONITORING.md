@@ -257,6 +257,54 @@ Two properties that make them trustworthy, and one that limits them:
 **`FRAME RETIRED … -> giveup` has never printed on a shard.** Bound 1 is OBSERVABLE now; it is
 not exercised. Audit §8.3.
 
+## The walk's own target: `trip=` (2026-08-13, follow-up 32)
+
+Every field above describes the *frame*. None describes the **walk inside it** — and that is
+where the flagship chain's worst recorded day was lost. On 2026-08-11 a tinker retired **203
+`sell_tongs` frames, every one at age 8**, banked 0 gold and ended holding 5 unsold tongs
+(audit §30.2). `mkt_phase=sell` showed on 134 samples with `sell_stage` never written once, so
+each trip died *before its first stage* — inside `_walk_route` (§31). Every frame field read
+healthy throughout: admitted, ready, unfrozen, age 8 of a 180-tick budget.
+
+Follow-up 32 asked for `pos=`. **Its premise was wrong**: `@(x,y)` has been on the per-agent
+line since **2026-06-30** (`6f279a7`), six weeks before that day, and was on every sample of
+it. A position with nothing to compare it against is not a diagnosis. What was missing is the
+coordinate's counterpart.
+
+| surface | what it is |
+|---|---|
+| `trip=<mkt_phase>` | which market walk is in progress — `sell`, `bank`, `buy`, `toolbuy` and their `_return` legs. `trip=craft` is the idle phase between trips; `trip=none` is an agent with no market state at all; `trip=?` is a readout that failed. **There is no state that renders blank** — the `deaths=` rule, one field to the left. |
+| `to=(x,y)` \| `to=(x,y)+N` | the tile the walk is stepping toward — `route[leg]`, **not** `route[-1]`. `+N` is how many waypoints remain after it. The distinction is live: `profession.VENDOR_SPOT` is a two-leg route through a walled corridor, while `life_runner.stage_shops` produces single-waypoint ones. |
+| `d=4>2` \| `d=1<=2` | chebyshev distance to `to=`, against the reach that leg needs — `final_reach` on the last leg, **0** on intermediate ones. The comparator is printed so no reader has to subtract (the `!overdue` rule). `grep 'd=[0-9]*>'` selects every not-yet-arrived sample of a run. |
+| `stall=3/6` \| `stall=-` | `_market_walk_toward`'s no-progress counter over its give-up limit. `-` is **not** "arrived" and not zero: the counter is written on every greedy step and popped only on a leg advance or the give-up itself, so an ordinary arrival leaves `stall=0/6` behind. |
+
+What the 203-give-up day would have printed, reproduced offline by driving a real
+`CarpenterLife` into a walled approach — the live arithmetic exactly, `(n, 'sell_furniture', 8,
+180, 'giveup')` repeating:
+
+```
+Sten      carpenter  @(5,5) t=11 hp=80/80 deaths=0 trip=sell to=(10,10) d=5>2 stall=5/6 ...
+```
+
+Five tiles from a vendor he must be two from, not moving, five ticks into a six-tick give-up.
+
+Three properties, and one thing this does **not** do:
+
+- **Nothing new is written to make it readable.** Every value is a read-time projection of
+  state that already exists for a non-telemetry reason (`mkt_phase`, `cap_{ns}_route`,
+  `bs_stand`, `{tag}_leg`, `{tag}_stall`). A key written on only some paths is worse than no
+  key — the `*_leg` lesson — and the way never to have that problem is to add no key.
+- **It mirrors `_walk_route` rather than re-deriving it**: final-waypoint reach tested first,
+  then `route[leg]`, with the same per-leg reach rule. A readout that computes arrival its own
+  way will eventually disagree with the walk it reports on.
+- **It is on `_run_worker`'s line, so every runner and every agent gets it.** Mounting it on
+  `life_runner.telemetry_line` was the first attempt and could not work: that requires a Life,
+  and `run_village`'s trade blacksmith — the only production agent carrying the multi-waypoint
+  route — is a plain `Agent`. Review-caught.
+- **It cannot attribute the live failure.** It shows a blocked approach *produces* the age-8
+  signature and that the line now renders it. Which cause the live day had still needs a forge
+  day (follow-up 30). The prediction is written down in audit §36.5 *before* that run.
+
 ## Implementation
 
 | Piece | Where |
