@@ -306,9 +306,10 @@ derived from — prediction in `docs/AUDIT-2026-07-29.md` §38.4, written before
 It cannot double-report with `NO OUTPUT`: the counter advances only while frames are still
 retiring, and an agent that has stopped retiring anything is precisely what `NO OUTPUT` is for.
 
-**Not measured against:** a healthy SELL loop, which no offline fixture can produce
-(`MockVendor` models the buy side only — follow-up 34). The offline control is a buy that
-achieves. **`NOTHING LANDS` has never printed on a shard.**
+**Not measured against:** a SUSTAINED healthy sell loop. As of follow-up 34 (audit §40) an
+achieved SALE does exist offline — `MockVendor` models the sell side now — but the tinker
+sells its stock once and then has nothing to sell, so the threshold is still baselined on the
+one observation in §38.3. **`NOTHING LANDS` has never printed on a shard.**
 
 ## Wedge-liveness: `WEDGED WALK` (2026-08-13, follow-up 35)
 
