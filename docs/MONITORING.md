@@ -143,8 +143,9 @@ covers the forge pair, the supply pair, the warrior village, the artisan+mage pi
 ## Work-liveness: `eps=`, `NO OUTPUT`, `!stalled` (2026-08-03)
 
 `NO PROGRESS` is **body**-liveness — it watches reward, steps, speech AND position, so an
-agent that keeps WALKING resets it forever. That is exactly how the forge miner died in the
-open, twice. In the 1800-tick run of 2026-08-03 his ten `NO PROGRESS` pulses all read the
+agent that keeps WALKING resets it forever (and `steps` counts *emitted* walks, so an agent
+merely *attempting* to walk resets it too — see the wedge section below). That is exactly how
+the forge miner died in the open, twice. In the 1800-tick run of 2026-08-03 his ten `NO PROGRESS` pulses all read the
 identical string `for 40 ticks`, three of them before he stopped producing at all; the alarm
 carried the same text in the healthy half and the dead half, which is zero information.
 
@@ -256,6 +257,57 @@ Two properties that make them trustworthy, and one that limits them:
 
 **`FRAME RETIRED … -> giveup` has never printed on a shard.** Bound 1 is OBSERVABLE now; it is
 not exercised. Audit §8.3.
+
+## Wedge-liveness: `WEDGED WALK` (2026-08-13, follow-up 35)
+
+The third liveness alarm, and the one that closes a hole the other two shared. On 2026-08-11 a
+tinker spent a whole day unable to reach its vendor — 203 `sell_tongs` frames given up at age
+8, 0 gold banked (§30.2) — and **every instrument the runner had stayed silent**. Reproduced
+offline on that shape (a real `CarpenterLife` walled off from its vendor, 400 ticks, frozen on
+one tile): `NO PROGRESS` fires **0** times and `NO OUTPUT` fires **0** times.
+
+Both blindnesses are structural, and they are different:
+
+- **`NO PROGRESS` counts `steps`, and `steps` counts EMITTED walks, not movement.**
+  `market._market_walk_toward` returns a `Walk` on every tick of a greedy approach, so an
+  agent hammering a blocked tile bumps `steps` forever while standing still. The pulse always
+  differs, the counter resets every tick, and the alarm can never reach its threshold.
+- **`NO OUTPUT` counts recorded episodes, and a give-up is a recorded episode.** The wedge
+  retires a capability frame roughly every 8 ticks, each one a terminal outcome, so
+  work-liveness reads a permanently stuck agent as a productive one. **This is NOT fixed** —
+  see below.
+
+| surface | what it is |
+|---|---|
+| `** <name>: WEDGED WALK — <n> walk actions emitted over <m> ticks and the position never changed (t=<tick>, @(x,y)) **` | fires every `_WEDGE_TICKS` while the wedge holds. It names the TILE because the fix for a wedge is geometry, and pairs with `trip=`'s `to=`/`d=` on the status line to say what it was walking toward. |
+
+**Why it is a separate alarm rather than a fix to `NO PROGRESS`.** Simply dropping `steps`
+from the shared pulse also detects the wedge — measured, 0 → 9 fires — but it silently
+re-tunes the surviving alarm, because **a walk leg giving up does not reset the counter**: the
+position stays frozen through the give-up, the retry and the next wedge. So "a stalled leg
+cannot reach 40, `stall_limit` is 6" is false. Measured on that rejected version, a
+**transient** obstruction cleared after **42** worker ticks fires and 41 does not — a one-tick
+margin, on the alarm this file already records false-firing "ten times at exactly 40 ticks,
+three of them in the HEALTHY first half". Keeping `NO PROGRESS` byte-identical makes the change
+strictly additive: no measured threshold moves. It is also the rule `NO OUTPUT` established —
+two different failures must never share one line of text.
+
+**`_WEDGE_TICKS = 240` is derived, not picked.** It is `_STALL_TICKS`, already measured in
+`_run_worker` against the longest healthy silence any live log contains (159 ticks). Both
+alarms answer the same question — *is this stretch longer than any healthy agent explains?* —
+and this one can afford at least as much patience, because the failure it names is
+**permanent**: §30.2's wedge lasted the entire day, so detection latency costs nothing while a
+false fire costs the operator's trust. Measured: transient obstructions cleared at 42 / 60 /
+120 / 200 / 239 ticks fire **0** times and the agent recovers; a wedge that never clears fires.
+
+What it is **not** measured against: a live obstruction-duration distribution. No log records
+how long a real NPC stands on a tile.
+
+**Still open after this:** the `NO OUTPUT` blindness above (a give-up records an episode, so a
+wedge looks like work), and both alarms live only inside `village._run_worker` — an agent
+driven by any other loop has neither.
+
+**`WEDGED WALK` has never printed on a shard.**
 
 ## The walk's own target: `trip=` (2026-08-13, follow-up 32)
 

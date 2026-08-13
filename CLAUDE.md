@@ -184,11 +184,15 @@ added bound 3. So the standing count is bounds 2 and 3 live-proven, bound 1 not.
   live unless a death episode is open or the frame is overdue-and-unrepaired. Also
   unreached: the `OVERDUE_REPAIRS` cap (one close spent of three), any extension above 1
   tick, and `_clear_stale_ui`'s vendor BUY/SELL branches *at an overdue frame*.
-- **Watch for, on any live run (added 2026-08-13, follow-up 32):** `trip=` on the per-agent
-  line — `d=` frozen ABOVE its reach while `stall=` climbs to `5/6` is a wedged walk, the
-  §30.2 failure that cost a whole day and printed nothing. A healthy trip's `d=` falls and
-  ends `<=2`. `trip=` has never printed on a shard; the prediction for its first run is
-  written down in `docs/AUDIT-2026-07-29.md` §36.5, before the run.
+- **Watch for, on any live run (added 2026-08-13, follow-ups 32 and 35):** `trip=` on the
+  per-agent line — `d=` frozen ABOVE its reach while `stall=` climbs to `5/6` is a wedged
+  walk, the §30.2 failure that cost a whole day and printed nothing. A healthy trip's `d=`
+  falls and ends `<=2`. Beside it, a `WEDGED WALK` line is the same failure after 240
+  ticks of it. Neither has printed on a shard; the prediction for `trip=`'s first run is
+  written down in `docs/AUDIT-2026-07-29.md` §36.5, before the run. Note that the OTHER
+  two liveness alarms are structurally blind to this failure — `NO PROGRESS` because
+  `steps` counts emitted walks, `NO OUTPUT` because a give-up records an episode (§37,
+  the second is still open) — so do not read their silence as health here.
 - **Watch for, on any live run:** `!frozen` on a live frame while the character is not dead
   (the regression detector), a `+hold` whose `@age` stops climbing (the old defect wearing
   the new marker), and `FRAME OVERDUE` (bounds 1 and 2 both failed). Do NOT use the
