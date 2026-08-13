@@ -754,6 +754,34 @@ def _doing_work(agent) -> bool:
     return getattr(agent, "last_skill_name", None) not in _IDLE_SKILLS
 
 
+def stage_key_readout(memory, keys) -> str:
+    """`mkt_phase=sell sell_stall=3` — the keys of `keys` this memory actually has.
+
+    A named function for one reason: the SNAPSHOT is the whole of it, and a guarantee that
+    lives inline in a 90-line status block is a guarantee no test can fail.
+
+    The hazard is a check-then-get across a generator. Written inline as
+    `" ".join(f"{k}={m[k]}" for k in keys if k in m)`, the `k in m` filter and the `m[k]`
+    subscript are separated by a generator resumption — the interpreter may switch threads
+    between them. These status blocks run on a runner's MAIN thread while the worker
+    thread ticks the very agent whose memory this is, and the market FSMs pop whole key
+    groups mid-trip: `SellItemCapability._CLEANUP_KEYS` (four of the eleven keys the forge
+    pair asks for) on every trip end, and the `{tag}_stall`/`{tag}_last_pos` pair on every
+    leg advance and every give-up. A `KeyError` here is not a lost line — the runners'
+    status loops have no `except` and their workers are daemon threads, so it escapes the
+    main thread and ends the run. `docs/AUDIT-2026-07-29.md` §35.6 records this as one of
+    the two corrections follow-up 32's telemetry needed; it is a defect in the SHIPPED
+    code independently of that telemetry, which is why it is fixed rather than avoided.
+
+    `dict(memory)` first, then read only the copy. Copying a mapping runs no Python-level
+    callback between its own steps, so it cannot be interleaved the way the filter/subscript
+    pair can, and every field in the group then describes ONE instant instead of as many
+    instants as there are fields.
+    """
+    snapshot = dict(memory)
+    return " ".join(f"{k}={snapshot[k]}" for k in keys if k in snapshot)
+
+
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
                 job: str, *, chronicle: ChronicleLedger | None = None,
                 counterpart: str | None = None,
@@ -2247,7 +2275,9 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         cur = pim.econ_agent.goal_stack.current
         if cur is not None:
             capname = cur.goal.params.get("capability")
-            m = pim.econ_agent.memory
+            # ONE instant for the whole group — see `stage_key_readout`, which owns the
+            # reason and is where the guarantee is tested.
+            m = dict(pim.econ_agent.memory)
             if capname == "bank_gold":
                 bank_state = (f" bank(stage={m.get('bank_stage')} leg={m.get('bank_leg')} "
                               f"banker={m.get('bank_banker')} "
@@ -2276,7 +2306,7 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
                 stage_keys = ("mkt_phase", "bs_state", "sell_stall", "sell_stage",
                               "sell_vendor", "sell_find_wait", "sell_popup_wait",
                               "cap_craft_stage", "buy_stall", "buy_stage", "fetch_stage")
-                kv = " ".join(f"{k}={m[k]}" for k in stage_keys if k in m)
+                kv = stage_key_readout(m, stage_keys)
                 bank_state = f" {capname}({kv})" if kv else f" {capname}()"
         # The tool-gone confession (skills/harvest.py): a toolless miner makes no
         # swings, so neither relocation nor the reward stream will ever name this —

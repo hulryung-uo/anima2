@@ -17,6 +17,10 @@ probe walks against the live shard. These pin the *relationships* between the ti
 a later edit can't quietly reintroduce a route-shaped assumption the walk can't satisfy.
 """
 
+from collections.abc import Mapping
+
+import pytest
+
 from anima2.geometry import chebyshev
 from anima2.contract import Position
 from anima2.profession import TRADE_SMITH_SPOT, VENDOR_SPOT
@@ -30,6 +34,7 @@ from anima2.village import (
     MAGE_STAND,
     MAGE_VENDOR,
     PREY_SPOT,
+    stage_key_readout,
 )
 
 
@@ -213,3 +218,52 @@ def test_the_mage_can_still_reach_its_shops_while_leashed():
 
     for spot in (MAGE_VENDOR, MAGE_BANKER, MAGE_DROP):
         assert _cheb(MAGE_STAND, spot) <= MAGE_LEASH + 3, f"{spot} is out of practical reach"
+
+
+# --- the status block's own read safety ----------------------------------------------
+
+
+class _RacyMemory(Mapping):
+    """Agent memory with the race made DETERMINISTIC: the key is popped by the very
+    membership test that finds it — exactly what a worker thread popping `_CLEANUP_KEYS`
+    does if it is scheduled between a `k in m` filter and its `m[k]` subscript.
+
+    Copying it is safe (a copy goes through `keys()`/`__getitem__`, never `__contains__`),
+    so the snapshot survives and the unsnapshotted read does not. That asymmetry is the
+    whole point: a threads-and-sleeps test of this cannot fail reliably — measured on
+    CPython 3.14, 500k+ interleavings produced zero errors — and a test that cannot fail is
+    the §35.3 defect, not a proof of safety.
+    """
+
+    def __init__(self, data):
+        self._d = dict(data)
+
+    def __getitem__(self, k):
+        return self._d[k]
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def __len__(self):
+        return len(self._d)
+
+    def __contains__(self, k):
+        present = k in self._d
+        self._d.pop(k, None)   # the worker thread, in between the two halves
+        return present
+
+
+def test_stage_key_readout_snapshots_before_reading():
+    """The forge pair's stage-key group must not be a check-then-get against live agent
+    memory. Unsnapshotted this raises `KeyError`, and the runners' status loops have no
+    `except` while their workers are daemons — so it does not lose a line, it ends the run.
+
+    Kills the mutant `snapshot = dict(memory)` -> `snapshot = memory`.
+    """
+    keys = ("mkt_phase", "sell_stage", "sell_stall")
+    memory = _RacyMemory({"mkt_phase": "sell", "sell_stage": "popup", "sell_stall": 3})
+    assert stage_key_readout(memory, keys) == "mkt_phase=sell sell_stage=popup sell_stall=3"
+    # And the unguarded form this replaced really does die on the same input.
+    fresh = _RacyMemory({"mkt_phase": "sell", "sell_stage": "popup"})
+    with pytest.raises(KeyError):
+        " ".join(f"{k}={fresh[k]}" for k in keys if k in fresh)
