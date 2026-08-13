@@ -280,8 +280,25 @@ MINE_LAND_TILES: frozenset[int] = frozenset({
 })
 
 
+def _corner_top(cells: dict, x: int, y: int) -> int:
+    """ServUO `Map.GetAverageZ`'s TOP for the tile at `(x, y)`.
+
+    The server derives a land tile's surface from its FOUR corners — `(x,y)`, `(x,y+1)`,
+    `(x+1,y)`, `(x+1,y+1)` — not from the single map cell, and a LandTarget's line-of-sight
+    destination is that top plus one (`Map.cs`). Reading only `cells[(x, y)][1]` would
+    understate a slope by exactly the amount that decides whether ore is above the eye,
+    which is the whole question `max_rise` exists to answer.
+
+    Missing corners (the caller's box edge) are skipped rather than treated as 0: a zero
+    would read as a chasm and make a wall look targetable.
+    """
+    zs = [cells[p][1] for p in ((x, y), (x, y + 1), (x + 1, y), (x + 1, y + 1)) if p in cells]
+    return max(zs) if zs else 0
+
+
 def find_mine_spots(map_index: int, cx: int, cy: int, radius: int = 40,
                     reach: int = 2, spacing: int = 8, min_face: int = 4,
+                    max_rise: int = 13,
                     ) -> list[tuple[tuple[int, int], list[tuple[int, int, int, int]]]]:
     """Stand spots for a miner: open-ground tiles beside a mountain face, each
     paired with the mineable LAND tiles within mining `reach` (ServUO MaxRange=2)
@@ -294,8 +311,11 @@ def find_mine_spots(map_index: int, cx: int, cy: int, radius: int = 40,
     deliberately NOT proven here — no offline reader can (docs/WOODSMAN.md); the
     relocation walk's own stall-giveup degrades an unlucky spot gracefully.
     """
+    # +1 on the high side because `_corner_top` reads `(x+1, y+1)`: without it every
+    # stand on the box boundary silently loses corners and reads as flatter than it is.
     cells = {(x, y): (t, z) for x, y, t, z in
-             land_cells(map_index, cx - radius, cy - radius, cx + radius, cy + radius)}
+             land_cells(map_index, cx - radius, cy - radius,
+                        cx + radius + 1, cy + radius + 1)}
     mine = {p for p, (t, _) in cells.items() if t in MINE_LAND_TILES}
     # Stand candidates: NON-mineable land bordering the face (mountain slopes are
     # impassable; the flat ground beside them is where a live miner stands).
@@ -309,6 +329,30 @@ def find_mine_spots(map_index: int, cx: int, cy: int, radius: int = 40,
                      for nx in range(s[0] - reach, s[0] + reach + 1)
                      for ny in range(s[1] - reach, s[1] + reach + 1)
                      if (nx, ny) in mine]
+            # DROP ORE THAT IS ABOVE THE MINER'S EYE. A cliff face is mineable land
+            # at every height, and a stand at its FOOT is surrounded by ore it can
+            # never target: ServUO runs the line-of-sight gate in `Target.Invoke`
+            # (`Target.cs`), which is UPSTREAM of `OnTarget` -> `StartHarvesting`,
+            # so a blocked tile is refused with 500237 before `CheckResources` ever
+            # consults the ore bank. That is why such a stand reports invalid-target
+            # replies forever with `nores=0` and `banks=` frozen — it is not an
+            # exhausted vein, it is a vein the miner cannot see.
+            #
+            # Measured on the trade pool (audit §41): FIVE of the twelve stands this
+            # function returned had EVERY node 20 or more above the stand, and the
+            # three of those the 2026-08-13 run actually visited each produced a
+            # 24-sample all-invalid window with zero ore. They were 100% of the dead
+            # tail's cost and the survey handed them over as ordinary spots.
+            #
+            # `max_rise` is not tuned: ServUO puts the eye at `Mobile.Z + 14`
+            # (`Map.cs`), so 13 is "at or below eye level". The empirical boundary on
+            # this pool is 20, and ANY value from 11 to 19 yields the identical pool —
+            # every dead stand loses all its nodes and fails `min_face`, every live one
+            # keeps enough. A threshold whose exact value cannot change the answer is
+            # the kind worth having.
+            sz = _corner_top(cells, *s)
+            nodes = [n for n in nodes
+                     if _corner_top(cells, n[0], n[1]) - sz <= max_rise]
             # NEAREST-FIRST within the stand, because `nodes[0]` is not just an
             # ordering — it is the tile the miner swings at on arrival. Raster
             # order made it the top-left CORNER of the box, at chebyshev `reach`

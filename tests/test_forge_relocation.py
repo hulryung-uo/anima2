@@ -661,9 +661,13 @@ def test_the_mine_pool_is_not_smaller_than_the_survey_it_draws_from():
     from anima2.village import LUMBER_MAP, MINE_POOL_SPOTS, TRADE_MINE_SPOT
 
     found = find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT)
-    assert len(found) >= 12, (
-        f"the trade mine's survey used to return 12 stands; it now returns {len(found)}, "
-        f"so the pool size below needs re-deriving rather than assuming")
+    # This guard fired for real on 2026-08-14 and did its job: `max_rise` changed the
+    # survey, and the pool size was RE-DERIVED rather than renumbered. It went 12 -> 10
+    # stands, but 12 included five blind ones, so LIVE capacity went 7 -> 10 and the 14
+    # distinct ore banks were preserved exactly (audit §41).
+    assert len(found) >= 10, (
+        f"the trade mine's survey returns {len(found)} stands, below the 10 it was "
+        f"re-derived at on 2026-08-14 — re-derive the pool size rather than assuming")
     assert MINE_POOL_SPOTS >= len(found) - 1, (
         f"the pool caps at {MINE_POOL_SPOTS} while the survey finds {len(found)} stands "
         f"(one of which is HOME and excluded) — that discards rock the miner has already "

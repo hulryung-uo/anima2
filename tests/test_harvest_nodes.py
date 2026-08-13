@@ -317,7 +317,12 @@ def test_the_stuck_cause_split_partitions_the_failures():
     mem: dict = {}
     for cliloc in (503040, 503040, 500446, 501862, 1010481):
         _swings(mem, cliloc, count=1)
-    assert mem["harvest_stuck_by_cause"] == {"nores": 2, "inval": 2, "packfull": 1}
+    # `far` is its own bucket since 2026-08-14 (§41): 500446 means the miner is standing
+    # too far from workable ore (a WALK problem), while the 500237/501862 left in `inval`
+    # mean he cannot see or cannot mine the tile at all (a SURVEY problem). They want
+    # opposite fixes and were indistinguishable while merged. Still a PARTITION — one tick
+    # charged once — which is what this test is really for.
+    assert mem["harvest_stuck_by_cause"] == {"nores": 2, "inval": 1, "far": 1, "packfull": 1}
 
 
 def test_the_causes_are_cumulative_and_the_window_is_not():
@@ -387,7 +392,10 @@ def test_surveyed_nodes_are_nearest_first_and_survive_the_arrival_tolerance():
     from anima2.village import LUMBER_MAP, TRADE_MINE_SPOT
 
     spots = find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT)
-    assert len(spots) == 12
+    # 10 since 2026-08-14: `max_rise` drops the five cliff-foot stands whose ore sat
+    # above the miner's eye, and a live neighbour wins the spacing dedupe in their place
+    # (audit §41). The per-stand properties below are the real content and are unchanged.
+    assert len(spots) == 10
     for (sx, sy), nodes in spots:
         d = max(abs(nodes[0][0] - sx), abs(nodes[0][1] - sy))
         assert d <= 1, ((sx, sy), nodes[0], d)  # was 2 for all 12
@@ -398,15 +406,95 @@ def test_surveyed_nodes_are_nearest_first_and_survive_the_arrival_tolerance():
 
 
 def test_the_pool_still_covers_every_stand_and_its_second_bank():
-    """The re-sort must not lose coverage: same 12 stands, same 12 stand banks,
-    and the 14 distinct banks their node lists span (the 2 extra being what
-    cycling is for) all still present."""
+    """The re-sort must not lose coverage — and neither may the `max_rise` filter.
+
+    10 stands since 2026-08-14, down from 12, because five were cliff-foot stands whose
+    every node sat 20+ above the miner's eye and which ServUO refused with 500237 before
+    the ore bank was ever consulted (audit §41). **The 14 distinct node banks are
+    UNCHANGED**, which is the point: four live neighbours replaced five blind stands and
+    still span every bank the survey used to reach, so the filter cost no ore at all."""
     from anima2.uomap import find_mine_spots
     from anima2.village import LUMBER_MAP, TRADE_MINE_SPOT
 
     spots = find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT)
     banks = {(n[0] // 8, n[1] // 8) for _, nodes in spots for n in nodes}
-    assert len({(s[0] // 8, s[1] // 8) for s, _ in spots}) == 12
-    assert len(banks) == 14
+    assert len({(s[0] // 8, s[1] // 8) for s, _ in spots}) == 10
+    assert len(banks) == 14, "the filter must not cost a single ore bank"
     assert min(max(abs(a[0][0] - b[0][0]), abs(a[0][1] - b[0][1]))
                for i, a in enumerate(spots) for b in spots[i + 1:]) >= 8
+
+
+def test_no_surveyed_stand_aims_at_ore_above_the_miners_eye():
+    """The property `max_rise` exists for, pinned directly — and the one the survey had no
+    guard for when it handed the forge miner five unusable stands.
+
+    ServUO runs the line-of-sight gate in `Target.Invoke`, UPSTREAM of `OnTarget` ->
+    `StartHarvesting`. A tile the miner cannot see is refused with 500237 before
+    `CheckResources` ever consults the ore bank — so a cliff-foot stand reports
+    invalid-target replies forever with `nores=0` and `banks=` frozen. It is not an
+    exhausted vein; it is a vein the miner cannot look at.
+
+    Measured on the 2026-08-13 tape (audit §41): the three such stands the run visited each
+    produced a 24-sample all-invalid window and zero ore, and together they were the whole
+    of the dead tail — the run's `inval` went from 17% of stuck verdicts in the first third
+    to 76% in the last.
+
+    The threshold cannot change this assertion: every value from 11 to 19 yields the
+    identical pool, because each dead stand's nodes are ALL 20 or more above it and each
+    live stand keeps nodes near ground. That insensitivity is why `max_rise` is a
+    structural bound rather than a tuned constant.
+    """
+    from anima2.uomap import _corner_top, find_mine_spots, land_cells
+    from anima2.village import LUMBER_MAP, TRADE_MINE_SPOT
+
+    cx, cy, r = *TRADE_MINE_SPOT, 41
+    cells = {(x, y): (t, z) for x, y, t, z in
+             land_cells(LUMBER_MAP, cx - r, cy - r, cx + r, cy + r)}
+    for stand, nodes in find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT):
+        sz = _corner_top(cells, *stand)
+        rises = [_corner_top(cells, n[0], n[1]) - sz for n in nodes]
+        assert max(rises) <= 13, (stand, sorted(rises))
+        # ...and the stand is still worth standing on: the filter must drop NODES, never
+        # leave a stand with a face too thin to work.
+        assert len(nodes) >= 4, (stand, len(nodes))
+
+
+def test_the_max_rise_threshold_cannot_change_the_pool():
+    """A threshold whose exact value cannot change the answer is the kind worth having.
+
+    Every value from 11 to 19 yields the identical stand list, because the rise
+    distribution splits cleanly: each dropped stand's nodes are all 20+ above it. Pinned so
+    that a future edit tightening it toward the live stands, or loosening it toward the
+    dead ones, fails here rather than on a shard.
+    """
+    from anima2.uomap import find_mine_spots
+    from anima2.village import LUMBER_MAP, TRADE_MINE_SPOT
+
+    pools = {k: [s for s, _ in find_mine_spots(LUMBER_MAP, *TRADE_MINE_SPOT, max_rise=k)]
+             for k in (11, 13, 15, 17, 19)}
+    assert len({tuple(v) for v in pools.values()}) == 1, pools
+
+
+def test_corner_top_reads_all_four_corners_like_the_server_does():
+    """`_corner_top` must be ServUO's `Map.GetAverageZ` top, not the single map cell.
+
+    The server derives a land tile's surface from its FOUR corners and a LandTarget's
+    line-of-sight destination is that top plus one. Reading `cells[(x, y)][1]` alone
+    understates a slope by exactly the amount that decides whether ore sits above the eye —
+    which is the whole question `max_rise` answers — so on a rising tile the cheap read
+    would call a blind node visible.
+
+    Pinned on a hand-built map because the trade pool happens not to separate the two
+    readings: the mutant survives there, and a fixture that cannot reach the case it names
+    is not evidence (§35.3).
+    """
+    from anima2.uomap import _corner_top
+
+    # A tile whose own cell is low but whose far corner rises — the cliff edge case.
+    cells = {(5, 5): (0, 0), (5, 6): (0, 0), (6, 5): (0, 0), (6, 6): (0, 24)}
+    assert _corner_top(cells, 5, 5) == 24, "a rising corner must not be missed"
+
+    # Missing corners are SKIPPED, not read as 0 — a zero would look like a chasm and
+    # make a wall read as targetable. This is also the box-boundary behaviour.
+    assert _corner_top({(5, 5): (0, 20)}, 5, 5) == 20
+    assert _corner_top({}, 5, 5) == 0
