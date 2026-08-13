@@ -1000,6 +1000,76 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     #: a count. Goal-stack history is bounded at 128, so a count silently under-reports
     #: after an overflow; ids are monotonic, so `> _last_retired` is total.
     _last_retired = 0
+    # NOTHING LANDS — the fourth liveness alarm, follow-up 37, and the last of the four
+    # blindnesses the 2026-08-11 day exposed.
+    #
+    # The other three all answer "has this agent stopped?". None answers "is any of this
+    # WORKING?", and that is a different failure with its own live history:
+    #
+    #   * §30.2 — 203 `sell_tongs` frames given up in one day, 0 gold banked.
+    #   * §22.2 — a tinker whose vendor had sold out re-admitted `buy_iron` **49 more
+    #     times**, each trip walking to the shop, opening the window, re-rolling its full
+    #     budget and coming back empty. Every one was CORRECT; the loop was not.
+    #
+    # Neither is visible to the others, and the buy case shows why the three cannot be
+    # patched into covering it. That tinker WALKED (so `NO PROGRESS` and `WEDGED WALK`
+    # both reset on its position) and RECORDED (so `NO OUTPUT` read it as productive —
+    # measured on the wedge fixture: `_work_recorded` advances every 8 ticks while
+    # `total_reward` stays at exactly 0.000). An agent can be busy, mobile, finishing
+    # skills and completing NOTHING, indefinitely, and until now the tape said it was fine.
+    #
+    # The signal is the retirement REASON, which `frame_retirements` already computes and
+    # this loop already drains every tick — so this costs one comparison per retirement
+    # and no new state anywhere else. `achieved` is the only reason that clears it: it is
+    # the only one that means a transaction completed. `giveup` / `expired` / `replaced` /
+    # `cancelled` all mean the opposite, however healthy the agent looks from outside.
+    #
+    # REWARD WAS THE OBVIOUS SIGNAL AND IT CANNOT BE USED. Two reasons, both measured:
+    # `Episodes.total_reward()` sums a BOUNDED 500-entry deque (`memory.py`), so it is not
+    # monotone and a "frozen reward" test drifts as old episodes fall out — this file's own
+    # `_STALL_TICKS` comment already rejects it for that. And offline it does not
+    # discriminate at all: all five healthy Lives run 3000 ticks with ZERO paid events,
+    # because `MockBody` has no vendor to sell to. A signal whose healthy case cannot be
+    # constructed cannot have a threshold measured against it.
+    #
+    # THE THRESHOLD IS THE HARD PART, and `_STALL_TICKS` is the WRONG answer — measured,
+    # after writing it down as the right one. A healthy day is not a steady drip of
+    # achievements: §17's 1800-tick forge run banked SIX times and did it as one early 23g
+    # deposit and then five more only after t≈756, because the tinker was working through a
+    # single 69-ingot delivery. At 240 ticks this alarm fires repeatedly across that gap on
+    # a run that banked 503g. That is the follow-up 35 mistake exactly — a threshold
+    # inherited by analogy instead of measured — and it is caught here only because the gap
+    # happens to be written down.
+    #
+    # So it is derived the way `_STALL_TICKS` itself was: the longest measured HEALTHY
+    # silence, times the same ~1.5 safety factor that turned 159 into 240. Applied to the
+    # 756-tick gap above: 756 x 1.5 = 1134, rounded to 1200 (5 x `_STALL_TICKS`). It still
+    # fires within an ordinary 1800-tick day on §30.2's shape, which achieved NOTHING for
+    # the whole run.
+    #
+    # PROVISIONAL, and the honest statement is that it rests on ONE observation. No live
+    # log records the distribution of gaps between achievements — the tape has never
+    # carried the streak. `landed=` on the status line collects exactly that, so the next
+    # ordinary forge day supplies the data this number should have been derived from; see
+    # `docs/AUDIT-2026-07-29.md` §38 for the prediction, written before the run.
+    #
+    # It cannot double-report with `NO OUTPUT`: the counter only advances while frames are
+    # still RETIRING (a retirement inside the last `_STALL_TICKS`), and an agent that has
+    # stopped retiring anything is precisely what `NO OUTPUT` is for. One failure, one
+    # alarm — the rule `NO OUTPUT` itself established here.
+    #
+    # NOT measured against: a healthy SELL loop, which no offline fixture can produce
+    # (`MockVendor` models the buy side only — follow-up 34). The healthy control here is
+    # a buy that achieves.
+    _THRASH_TICKS = _STALL_TICKS * 5
+    _unachieved = 0
+    _thrash = 0
+    _last_retire_tick = 0
+    #: Cumulative, for `landed=`: how many capability frames retired at all, and how many
+    #: of those ACHIEVED. Counted here rather than re-derived from `retirement_tally`
+    #: because that one reads bounded history and says `>=` once 128 frames overflow it.
+    _retired_total = 0
+    _achieved = 0
     # DEATH — the fourth self-report, and the one that answers the question the other
     # three structurally cannot. Follow-up 18, named three times in
     # `docs/AUDIT-2026-07-29.md` (2026-07-30, follow-up 17, §8.6) and deferred each
@@ -1147,6 +1217,16 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             _last_retired = _fid
             print(f"  ** {agent.persona.name}: FRAME RETIRED {_cap}#{_fid} "
                   f"age={_age}/{_budget} -> {_why}{_RETIREMENT_NOTES.get(_why, '')} **")
+            # Follow-up 37's bookkeeping, on the drain that already runs — see
+            # `_THRASH_TICKS`. An ACHIEVED retirement is the only thing that clears it,
+            # because it is the only evidence a transaction ever completes.
+            _last_retire_tick = ticks_done
+            _retired_total += 1
+            if _why == "achieved":
+                _achieved += 1
+                _unachieved = _thrash = 0
+            else:
+                _unachieved += 1
         if isinstance(action, Say):
             says += 1
             last_say = action.text
@@ -1197,6 +1277,17 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             print(f"  ** {agent.persona.name}: WEDGED WALK — {_tried} walk actions "
                   f"emitted over {_still} ticks and the position never changed "
                   f"(t={ticks_done}, @({p.x},{p.y})) **")
+        # NOTHING LANDS — transactions keep retiring and none of them achieve. See
+        # `_THRASH_TICKS`. The "still retiring" clause is what keeps this from
+        # double-reporting an agent that `NO OUTPUT` already owns.
+        if _unachieved and ticks_done - _last_retire_tick < _STALL_TICKS:
+            _thrash += 1
+        else:
+            _thrash = 0
+        if _thrash and _thrash % _THRASH_TICKS == 0:
+            print(f"  ** {agent.persona.name}: NOTHING LANDS — {_unachieved} capability "
+                  f"frames retired in a row and not one ACHIEVED, over {_thrash} ticks "
+                  f"(t={ticks_done}) — the agent is busy and completing nothing **")
         # The work-liveness detector described where `_STALL_TICKS` is defined.
         # Deliberately NOT the string "NO PROGRESS": the two alarms are different
         # failures (that one is body-liveness, this one work-liveness), both stay, and
@@ -1258,8 +1349,20 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             # justification cited. Review-caught.
             #
             trip = agent_walk_readout(agent, p)
+            # `landed=<achieved>/<retired>+<streak>` — the LEVEL signal beside the
+            # `NOTHING LANDS` edge, and the measurement `_THRASH_TICKS` should have been
+            # derived from. `retired=` already tallies outcomes on the LIFE line, and
+            # §30.2's day printed `retired>=128:128g` — 128 give-ups, zero achieved —
+            # while the day still went undiagnosed, so a cumulative tally on three
+            # surfaces is demonstrably not enough. This is on EVERY agent's line, and it
+            # carries the STREAK, which no tally can show: `+30` is thirty transactions
+            # in a row that completed nothing. It prints even at `0/0`, for the `deaths=`
+            # reason two fields along — an absent field is ambiguous between "nothing
+            # retired" and "a build that could not count".
             line = (f"{agent.persona.name:<9} {job:<10} @({p.x},{p.y}) t={ticks_done} "
                     f"hp={hp_readout(obs)} deaths={_deaths} {trip} "
+                    f"landed={_achieved}/{_retired_total}"
+                    f"{f'+{_unachieved}' if _unachieved else ''} "
                     f"out+{agent.episodes.total_reward():.1f} eps={_recorded_now} "
                     f"steps={steps} says={says}")
             if _stalled >= _STALL_TICKS:

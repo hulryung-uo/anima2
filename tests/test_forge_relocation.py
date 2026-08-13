@@ -1133,3 +1133,243 @@ def test_the_wedge_count_is_rebased_per_stretch_and_printed_exactly(capsys):
     out = capsys.readouterr().out
     # Exactly the window, not 20 more: the 20 successful walks predate this stretch.
     assert f"WEDGED WALK — {WEDGE_TICKS} walk actions emitted over {WEDGE_TICKS} ticks" in out, out
+
+
+# --- follow-up 37: busy, mobile, finishing skills, completing nothing ----------------
+#
+# The three alarms above all answer "has this agent STOPPED?". None answers "is any of
+# this WORKING?", and that is a different failure with its own live record:
+#
+#   §30.2 — 203 `sell_tongs` frames given up in one day, 0 gold banked.
+#   §22.2 — a tinker whose vendor had sold out re-admitted `buy_iron` 49 more times, each
+#           trip walking to the shop, opening the window, re-rolling its budget and coming
+#           back empty. Every trip was CORRECT; the loop was not.
+#
+# The buy case is why the other three cannot be stretched to cover it: that tinker WALKED
+# (so `NO PROGRESS` and `WEDGED WALK` both reset on its position) and RECORDED (so
+# `NO OUTPUT` read it as productive). Measured on the wedge fixture: `_work_recorded`
+# advances every 8 ticks while `total_reward` stays at exactly 0.000.
+
+THRASH_TICKS = STALL_TICKS * 5  # `_THRASH_TICKS` — see `_run_worker` for the derivation
+
+
+def _vendor_windows(dry=0, stocked=0):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_mock_vendor as mv
+    d = [[mv._entry(0x22, mv.BANDAGE, 5, name="bandage")]] * dry
+    s = [[mv._entry(0x22, mv.BANDAGE, 5),
+          mv._entry(0x11, mv.IRON, 5, amount=99, name="iron ingot")]] * stocked
+    return d + s
+
+
+def _tinker_buying(windows, ticks):
+    """A real `TinkerLife` whose only reachable branch is `buy_iron`, driven through the
+    real worker against the real `MockVendor`. Returns its final status line."""
+    import sys
+    import threading
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_mock_vendor as mv
+
+    from anima2.village import _run_worker
+
+    _body, life = mv._tinker_that_can_only_buy(windows)
+    status: dict = {}
+    _run_worker(life, ticks, 0, status, threading.Lock(), "tinker")
+    return status[0]
+
+
+def test_a_loop_that_completes_nothing_is_reported(capsys):
+    """§22.2's shape: the vendor is dry, every trip is correct, and nothing lands.
+
+    The agent walks the whole time and records an episode per trip, so all three older
+    alarms are silent by construction — asserted here in the same run, because "this is
+    invisible to the others" is the entire justification for a fourth alarm.
+    """
+    line = _tinker_buying(_vendor_windows(dry=60), 2400)
+    out = capsys.readouterr().out
+    assert "NOTHING LANDS" in out and "not one ACHIEVED" in out, out
+    assert "NO OUTPUT" not in out and "NO PROGRESS" not in out and "WEDGED WALK" not in out
+    # The streak is on the line as well as in the alarm — `landed=<achieved>/<retired>+<n>`.
+    assert "landed=0/12+12" in line, line
+    # THROTTLED, one line per `_THRASH_TICKS`. A presence-only assertion cannot see the
+    # throttle being deleted, and unthrottled this state prints every tick it holds —
+    # `FRAME OVERDUE` measured 3,881 such lines in one 4,000-tick run.
+    assert 1 <= out.count("NOTHING LANDS") <= 2400 // THRASH_TICKS + 1, out.count("NOTHING LANDS")
+
+
+def test_a_life_that_completes_its_transactions_is_never_reported(capsys):
+    """THE CONTROL, and the one that decides whether this alarm is usable at all.
+
+    Offline this is the only healthy case that EXISTS: `MockVendor` models the BUY side, so
+    a buy can genuinely ACHIEVE, while no offline fixture can complete a sale (follow-up
+    34). Every Life fixture in this repo that cannot buy retires nothing but give-ups —
+    all five, measured at 3000 ticks — which is why "a healthy Life stays quiet" cannot be
+    shown with one of those.
+    """
+    line = _tinker_buying(_vendor_windows(stocked=80), 1800)
+    out = capsys.readouterr().out
+    assert "NOTHING LANDS" not in out, out
+    assert "landed=1/1" in line, line
+
+
+def test_a_long_unproductive_stretch_that_ends_in_success_is_not_a_thrash(capsys):
+    """WHY THE THRESHOLD IS NOT `_STALL_TICKS`, which is what it was first written as.
+
+    A healthy day is not a steady drip of achievements. §17's 1800-tick forge run banked
+    six times and did it as one early deposit and then five more only after t≈756 — so a
+    240-tick threshold fires repeatedly across a gap on a run that banked 503g. This
+    fixture is that shape: six consecutive give-ups spanning well over `_STALL_TICKS`, and
+    then a purchase that lands.
+
+    Kills the `_THRASH_TICKS = _STALL_TICKS` mutant, which no other test here can see.
+    """
+    line = _tinker_buying(_vendor_windows(dry=30, stocked=40), 2400)
+    out = capsys.readouterr().out
+    assert "landed=1/7" in line, line   # six give-ups, then one achieved
+    assert "NOTHING LANDS" not in out, out
+
+
+def test_an_achievement_clears_the_streak(capsys):
+    """`achieved` is the only reason that resets it, because it is the only one that means
+    a transaction completed. Eight give-ups — long enough to fire — and then a purchase:
+    the streak must be GONE from the line, not merely stop growing.
+
+    The obvious fixture (a few dry windows, then stock) pins nothing: the mock's windows
+    are consumed by a trip's own re-rolls, so three dry windows produce ONE achieved
+    retirement and no streak at all (§35.3, measured).
+    """
+    line = _tinker_buying(_vendor_windows(dry=40, stocked=40), 1800)
+    capsys.readouterr()
+    landed = line.split("landed=")[1].split()[0]
+    assert landed == "1/9", landed
+    assert "+" not in landed, f"an achieved retirement must clear the streak: {landed}"
+
+
+class _GiveupFrame:
+    """The minimum `frame_retirements` reads: a capability frame that closed FAILURE."""
+
+    class _Outcome:
+        value = "failure"
+
+    class _Goal:
+        kind = "capability"
+        params = {"capability": "buy_iron"}  # noqa: RUF012
+
+    goal = _Goal()
+    created_tick = 0
+    finished_tick = 1
+    deadline_tick = 180
+
+    def __init__(self, fid):
+        self.id = fid
+        self.outcome = self._Outcome()
+
+
+class _RetiresThenStops:
+    """Retires three give-up frames early and then nothing at all, forever.
+
+    Built by hand rather than from the mock vendor, whose window list cycles so trips never
+    stop coming — and this fixture exists precisely to reach the state where they do. It
+    keeps recording episodes so `NO OUTPUT` stays quiet: the point is that THIS alarm must
+    also stay quiet, not that some alarm fires.
+    """
+
+    class _Stack:
+        history_limit = 128
+
+        def __init__(self):
+            self.history = []
+
+    class _Body:
+        connected = True
+
+        def observe(self):
+            return _obs(cursor=False, no_metal=False)
+
+    class _Episodes:
+        def __init__(self):
+            self.total_recorded = 0
+
+        def total_reward(self):
+            return 0.0
+
+        def recent(self, n):
+            return []
+
+    persona = Persona(name="Pim")
+    memory: dict = {}  # noqa: RUF012
+
+    def __init__(self):
+        self.body = self._Body()
+        self.episodes = self._Episodes()
+        self.goal_stack = self._Stack()
+        self.n = 0
+
+    def tick(self):
+        self.n += 1
+        if self.n <= 3:
+            self.goal_stack.history.append(_GiveupFrame(self.n))
+        self.episodes.total_recorded += 1
+        return None
+
+
+def test_an_idle_agent_is_left_to_the_work_liveness_alarm(capsys):
+    """One failure, one alarm. The counter advances only while frames are STILL retiring;
+    an agent that has stopped retiring anything is what `NO OUTPUT` is for, and this must
+    not drift into reporting it too.
+
+    Reaching that state needs an agent whose retirements STOP — three give-ups and then
+    silence for far longer than the threshold. Without the guard the counter climbs from
+    the third give-up forever and fires; with it, it resets.
+    """
+    import threading
+
+    from anima2.village import _run_worker
+
+    status: dict = {}
+    _run_worker(_RetiresThenStops(), THRASH_TICKS + 400, 0, status, threading.Lock(), "tinker")
+    out = capsys.readouterr().out
+    assert "NOTHING LANDS" not in out, out
+    assert "landed=0/3+3" in status[0], status[0]
+
+
+def test_landed_prints_even_when_nothing_has_retired(capsys):
+    """The `deaths=` rule, two fields along: an absent field is ambiguous between "nothing
+    retired" and "a build that could not count one"."""
+    import threading
+
+    from anima2.village import _run_worker
+
+    class _Episodes:
+        total_recorded = 0
+
+        def total_reward(self):
+            return 0.0
+
+        def recent(self, n):
+            return []
+
+    class _Body:
+        connected = True
+
+        def observe(self):
+            return _obs(cursor=False, no_metal=False)
+
+    class _Quiet:
+        persona = Persona(name="Grimm")
+        episodes = _Episodes()
+        memory: dict = {}
+
+        def __init__(self):
+            self.body = _Body()
+
+        def tick(self):
+            return None
+
+    status: dict = {}
+    _run_worker(_Quiet(), 20, 0, status, threading.Lock(), "miner")
+    capsys.readouterr()
+    assert "landed=0/0 " in status[0], status[0]
