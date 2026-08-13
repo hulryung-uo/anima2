@@ -16,6 +16,7 @@ from anima2.contract import ItemView, JournalEntry, Observation, PlayerView, Pos
 from anima2.persona import Persona
 from anima2.skills.base import SkillContext
 from anima2.skills.harvest import BACKPACK_LAYER, Mine
+from anima2.skills.hunt import GOLD_GRAPHIC
 from anima2.skills.smelt import MineSmeltDeliver
 
 PLAYER, BP = 1, 0x50
@@ -1435,3 +1436,36 @@ def test_a_stationary_worker_with_a_few_stray_walks_is_not_a_wedge(capsys):
     # The agent IS frozen, so the alarm that owns that state must still say so — the point
     # is which alarm, not silence.
     assert "NO PROGRESS" in out, out
+
+
+def test_an_achieved_SALE_clears_the_streak_too_not_just_a_purchase(capsys):
+    """§38 could only baseline `NOTHING LANDS` against a BUY that achieves, and recorded
+    "not measured against a healthy sell loop" as a standing gap — because `MockVendor`
+    modelled only the buy side. Follow-up 34 closes the half of that gap which is
+    closable: a SALE that completes now exists offline, and the alarm treats it the same.
+
+    What this does NOT establish, and §39.x says so: a SUSTAINED healthy sell loop. The
+    tinker sells its stock once and then has nothing to sell and no iron to buy, so the
+    rest of the run is genuinely unproductive and the alarm genuinely fires. The control
+    here is the achievement, not the day.
+    """
+    import sys
+    import threading
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_mock_vendor as mv
+
+    from anima2.village import _run_worker
+
+    body, life = mv._sell_world({mv.TONGS: mv.TONGS_PRICE}, tongs=8, gold=10)
+    status: dict = {}
+    _run_worker(life, 400, 0, status, threading.Lock(), "tinker")
+    capsys.readouterr()
+    landed = status[0].split("landed=")[1].split()[0]
+    achieved = int(landed.split("/")[0])
+    assert achieved >= 1, f"the sale must count as achieved: {landed}"
+    # The goods really moved — a fixture that "achieves" without an exchange would be the
+    # §35.4 defect (crediting aiming rather than a verdict).
+    assert sum(i.amount for i in body.observe().items if i.graphic == mv.TONGS) == 0
+    assert sum(i.amount for i in body.observe().items
+               if i.graphic == GOLD_GRAPHIC) == 10 + 8 * mv.TONGS_PRICE

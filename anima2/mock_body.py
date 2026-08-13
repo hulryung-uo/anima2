@@ -27,7 +27,10 @@ from .contract import (
     PopupSelect,
     Position,
     Say,
+    SellItems,
     ShopBuy,
+    ShopSell,
+    ShopSellItem,
     Walk,
 )
 from .geometry import DIRECTION_DELTAS, chebyshev
@@ -61,6 +64,20 @@ class MockVendor:
     #: Windows opened so far — the cycle cursor, and a test's evidence of how many
     #: re-rolls actually reached the server.
     opens: int = 0
+    #: `{graphic: price}` — what this vendor BUYS from us, and what it pays. The sell side
+    #: of the shop, and follow-up 34.
+    #:
+    #: A flat map where `windows` is a list of openings, and the asymmetry is the
+    #: protocol's rather than a shortcut. A BUY window is the vendor's own stock, which
+    #: ServUO shows in partial subsets — the whole reason `windows` cycles. A SELL window
+    #: (0x9E `SellList`) is a list of OUR PACK ITEMS the vendor recognises, rebuilt from
+    #: the pack each time it opens, so there is no per-opening subset to model: what varies
+    #: between openings is what we are carrying, and the pack already says that. Modelling
+    #: it as openings would invent a failure mode the server does not have.
+    #:
+    #: Empty by default, so every fixture written before this behaves byte for byte as
+    #: before — including the popup, which only grows a SELL entry when this is non-empty.
+    buys: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -100,6 +117,11 @@ class MockBody:
     gumps: list = field(default_factory=list)
     #: An open vendor BUY window, same reason as `gumps` (forge16's wedge shape).
     shop_buy: object | None = None
+    #: An open vendor SELL window (0x9E `SellList`). Follow-up 34: without it the sell
+    #: FSM's `list` stage could never be reached offline, so the only proof this project
+    #: had that a sale can COMPLETE was a live one — and §30.2 spent a whole day on a sell
+    #: loop that never completed, with no offline control to compare against.
+    shop_sell: object | None = None
     #: An open context menu, surfaced in every observation. Needed at all because the buy
     #: FSM's popup stage is a real two-packet exchange (`PopupRequest` then `PopupSelect`)
     #: and a mock that answered neither could never reach the `window` stage.
@@ -131,12 +153,19 @@ class MockBody:
         self._journal_cursor = len(self._journal)
         return Observation(player=self.player, mobiles=mobiles, items=items,
                            new_journal=new, gumps=list(self.gumps),
-                           shop_buy=self.shop_buy, popup=self.popup)
+                           shop_buy=self.shop_buy, shop_sell=self.shop_sell,
+                           popup=self.popup)
 
     def act(self, action: Action) -> None:
         self.actions.append(action)
         if type(action).__name__ == "BuyItems" and not getattr(action, "items", None):
             self.shop_buy = None  # an empty buy list is the vendor-window cancel
+            return
+        if type(action).__name__ == "SellItems" and not getattr(action, "items", None):
+            # The sell side's own cancel — `_sell_step` sends exactly this when it finds a
+            # SELL window already open at the popup stage, and it is the exit-edge close
+            # follow-up 16 added. Modelled, or a trip that cancels looks like one that hung.
+            self.shop_sell = None
             return
         if self.vendors and self._vendor_act(action):
             return
@@ -174,14 +203,14 @@ class MockBody:
         # import time: `BUY_CLILOC` is a ServUO protocol constant that happens to live in
         # `skills/market.py`, and taking it as a parameter would make every caller repeat
         # a number the FSM already knows.
-        from .skills.market import BUY_CLILOC
+        from .skills.market import BUY_CLILOC, SELL_CLILOC
 
         if isinstance(action, PopupRequest):
             vendor = self.vendors.get(action.serial)
             if vendor is None:
                 return False
             self.popup = PopupMenu(serial=vendor.serial,
-                                   entries=[PopupEntry(index=0, cliloc=BUY_CLILOC)])
+                                   entries=self._popup_entries(vendor))
             return True
 
         if isinstance(action, PopupSelect):
@@ -189,6 +218,16 @@ class MockBody:
             if vendor is None:
                 return False
             self.popup = None
+            # WHICH entry was clicked. The buy and sell FSMs both send a `PopupSelect`
+            # and they differ only in the index they resolved from the menu, so a mock
+            # that ignored the index would open a BUY window for a sell trip — and the
+            # sell FSM would then sit in `list` until `ASK_RETRY` and give up, which is
+            # indistinguishable from the live wedge this double exists to rule out.
+            chosen = next((e.cliloc for e in self._popup_entries(vendor)
+                           if e.index == action.index), BUY_CLILOC)
+            if chosen == SELL_CLILOC:
+                self.shop_sell = self._sell_window(vendor)
+                return True
             # THIS opening's subset, then advance the cursor. A one-element `windows`
             # therefore shows the same entries forever, which is the point.
             entries = (list(vendor.windows[vendor.opens % len(vendor.windows)])
@@ -196,6 +235,14 @@ class MockBody:
             vendor.opens += 1
             self.shop_buy = ShopBuy(vendor=vendor.serial, container=vendor.container,
                                     entries=entries)
+            return True
+
+        if isinstance(action, SellItems) and action.items:
+            vendor = self.vendors.get(action.vendor)
+            if vendor is None or self.shop_sell is None:
+                return False
+            self._settle_sale(vendor, action)
+            self.shop_sell = None      # ServUO closes the window on a completed sale
             return True
 
         if isinstance(action, BuyItems) and action.items:
@@ -206,6 +253,82 @@ class MockBody:
             self.shop_buy = None       # ServUO closes the window on a completed order
             return True
         return False
+
+    def _popup_entries(self, vendor) -> list:
+        """The vendor's context menu. BUY always; SELL only when the vendor buys anything.
+
+        Conditional, so every fixture written before the sell side existed sees the exact
+        menu it saw then. It also mirrors ServUO: `VendorSellEntry` is added by
+        `BaseVendor.AddCustomContextEntries` only for a vendor with an active buy list, so
+        a vendor that buys nothing genuinely has no Sell entry to click.
+        """
+        from .skills.market import BUY_CLILOC, SELL_CLILOC
+
+        entries = [PopupEntry(index=0, cliloc=BUY_CLILOC)]
+        if vendor.buys:
+            entries.append(PopupEntry(index=1, cliloc=SELL_CLILOC))
+        return entries
+
+    def _sell_window(self, vendor) -> ShopSell:
+        """A 0x9E `SellList`: OUR pack items this vendor recognises, priced.
+
+        Built from the pack at open time, not from stored state — that is what the server
+        does, and it is why a sale that empties the pack yields an EMPTY window on the next
+        opening rather than a stale one. `_sell_step` reads that empty list as "the vendor
+        does not recognise the item" and gives up, which is a real live shape.
+        """
+        from .skills.harvest import BACKPACK_LAYER
+
+        pack = next((i.serial for i in self.items.values()
+                     if i.container == self.player.serial and i.layer == BACKPACK_LAYER),
+                    None)
+        items = [
+            ShopSellItem(serial=i.serial, graphic=i.graphic, hue=0, amount=i.amount,
+                         price=vendor.buys[i.graphic])
+            for i in self.items.values()
+            if pack is not None and i.container == pack and i.graphic in vendor.buys
+        ]
+        return ShopSell(vendor=vendor.serial, items=items)
+
+    def _settle_sale(self, vendor, action: SellItems) -> None:
+        """Take the goods, pay the coin — the mirror of `_settle_purchase`.
+
+        Only items the vendor actually BUYS are taken, and only up to the amount present:
+        a request naming a serial the vendor does not want, or more than the stack holds,
+        moves nothing. The server owns those rules and a double that invented its own
+        would be asserting a contract this project does not control — the same line
+        `_settle_purchase` draws around under-payment and stock depletion.
+        """
+        from .skills.harvest import BACKPACK_LAYER
+        from .skills.hunt import GOLD_GRAPHIC
+
+        pack = next((i.serial for i in self.items.values()
+                     if i.container == self.player.serial and i.layer == BACKPACK_LAYER),
+                    None)
+        if pack is None:
+            return
+        paid = 0
+        for serial, amount in action.items:
+            item = self.items.get(serial)
+            if (item is None or item.container != pack or amount <= 0
+                    or item.graphic not in vendor.buys):
+                continue
+            taken = min(amount, item.amount)
+            item.amount -= taken
+            paid += vendor.buys[item.graphic] * taken
+            if item.amount <= 0:
+                self.items.pop(serial, None)
+        if not paid:
+            return
+        coin = next((i for i in self.items.values()
+                     if i.graphic == GOLD_GRAPHIC and i.container == pack), None)
+        if coin is not None:
+            coin.amount += paid
+        else:
+            self._held_serial_seq += 1
+            self.items[self._held_serial_seq] = ItemView(
+                serial=self._held_serial_seq, graphic=GOLD_GRAPHIC, amount=paid,
+                pos=Position(), container=pack, layer=0, distance=0)
 
     def _settle_purchase(self, action: BuyItems) -> None:
         """Move the goods in and the coin out — the only part of a shop that a brain can

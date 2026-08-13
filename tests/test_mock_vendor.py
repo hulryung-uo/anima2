@@ -16,6 +16,7 @@ import pytest
 
 from anima2.contract import (
     BuyItems,
+    SellItems,
     ItemView,
     MobileView,
     PlayerView,
@@ -28,9 +29,17 @@ from anima2.persona import Persona
 from anima2.skills.base import SkillContext
 from anima2.skills.harvest import BACKPACK_LAYER
 from anima2.skills.hunt import GOLD_GRAPHIC
-from anima2.skills.market import OFFER_REOPEN_ATTEMPTS, is_vendor_cancel
+from anima2.skills.market import (
+    BUY_CLILOC,
+    OFFER_REOPEN_ATTEMPTS,
+    SELL_CLILOC,
+    SMITH_TONGS_GRAPHIC,
+    is_vendor_cancel,
+)
 from anima2.skills.smelt import INGOT_GRAPHICS
-from anima2.skills.tinkering import BuyIron
+from anima2.skills.tinkering import TINKERTOOLS_GRAPHICS, BuyIron
+from anima2.tinker_life import TinkerLife
+from anima2.life_runner import frame_retirements
 
 PLAYER, BP, VENDOR = 0x1, 0x50, 0xBEEF
 SPOT = (10, 10)
@@ -498,3 +507,171 @@ def test_the_dry_backoff_is_one_buy_frames_own_deadline():
         f"VENDOR_DRY_BACKOFF={VENDOR_DRY_BACKOFF} is derived from a buy frame's own "
         f"deadline, but {off} disagree. Either the constant follows, or the "
         f"derivation in its docstring is no longer true and must be rewritten.")
+
+
+# --- the SELL side: the positive control this project never had (follow-up 34) --------
+#
+# `MockVendor` modelled only the BUY side, so no offline fixture could complete a SALE.
+# The consequences were concrete, not tidiness:
+#
+#   * §30.2 spent a live day on a sell loop that never completed, with NO offline control
+#     to compare a working one against.
+#   * §38 could only baseline its `NOTHING LANDS` threshold against a BUY that achieves,
+#     and had to record "not measured against a healthy sell loop" as a standing gap.
+#   * Every Life fixture in this repo that cannot buy retires nothing but give-ups — all
+#     five, measured at 3000 ticks — so "a healthy Life stays quiet" was unshowable.
+
+TONGS = SMITH_TONGS_GRAPHIC
+TONGS_PRICE = 11
+
+
+def _sell_world(buys, tongs=8, gold=10, tool=True):
+    """A tinker standing at a vendor that buys what `buys` says, with tongs to sell."""
+    body = MockBody(player=PlayerView(serial=PLAYER, name="T", pos=Position(*SPOT, 0),
+                                      hits=80, hits_max=80, body=0x190))
+    body.items[BP] = ItemView(serial=BP, graphic=0x0E75, amount=1, pos=Position(),
+                              container=PLAYER, layer=BACKPACK_LAYER, distance=0)
+
+    def add(serial, graphic, amount):
+        body.items[serial] = ItemView(serial=serial, graphic=graphic, amount=amount,
+                                      pos=Position(), container=BP, layer=0, distance=0)
+
+    if tool:
+        add(0x900, sorted(TINKERTOOLS_GRAPHICS)[0], 1)   # closes buy_tinker_tool
+    if tongs:
+        add(0x901, TONGS, tongs)
+    add(0x800, GOLD_GRAPHIC, gold)
+    body.mobiles[VENDOR] = MobileView(serial=VENDOR, name="V", body=0x190, notoriety=1,
+                                      hits=50, hits_max=50, distance=0,
+                                      pos=Position(*SPOT, 0))
+    body.vendors[VENDOR] = MockVendor(serial=VENDOR, buys=dict(buys))
+    life = TinkerLife(body=body, persona=Persona(name="Pim"),
+                      routes={"vendor_spot": (SPOT,)})
+    life.set_leash(SPOT, 3)
+    return body, life
+
+
+def _pack(body, graphic):
+    return sum(i.amount for i in body.observe().items if i.graphic == graphic)
+
+
+def test_a_LIFE_retires_its_sell_frame_ACHIEVED_against_a_vendor_that_buys():
+    """THE POSITIVE CONTROL. A real `TinkerLife`, the real `_sell_step`, the real
+    `CapabilityGoalComplete` achievement branch — a sale that COMPLETES, offline, for the
+    first time.
+
+    Nothing is injected into memory: the FSM walks (it starts in reach), requests the
+    popup, clicks the vendor's Sell entry, reads the 0x9E list, sends `SellItems`, and the
+    frame closes through the ACHIEVEMENT branch rather than the give-up ladder.
+    """
+    body, life = _sell_world({TONGS: TONGS_PRICE}, tongs=8, gold=10)
+    row = None
+    for _ in range(200):
+        life.tick()
+        rows = frame_retirements(life)
+        if rows:
+            row = rows[0]
+            break
+    assert row is not None, "the sell frame never retired"
+    assert row[1] == "sell_tongs" and row[4] == "achieved", row
+    assert row[2] < row[3], f"it must ACHIEVE early, not ride the deadline: {row}"
+    # And the exchange really happened, at the vendor's price.
+    assert _pack(body, TONGS) == 0, "the tongs were not taken"
+    assert _pack(body, GOLD_GRAPHIC) == 10 + 8 * TONGS_PRICE
+
+
+def test_a_vendor_that_does_not_buy_the_item_is_a_give_up_not_a_sale():
+    """The sell-side mirror of §19's Healer: a vendor whose window genuinely lacks our
+    offer. `_sell_step`'s `list` stage finds no matching graphic and abandons the trip
+    rather than looping — and crucially the pack is untouched, so a give-up can never be
+    mistaken for a sale that paid nothing."""
+    body, life = _sell_world({BANDAGE: 3}, tongs=8, gold=10)
+    row = None
+    for _ in range(200):
+        life.tick()
+        rows = frame_retirements(life)
+        if rows:
+            row = rows[0]
+            break
+    assert row is not None and row[4] == "giveup", row
+    assert _pack(body, TONGS) == 8, "a give-up must not move goods"
+    assert _pack(body, GOLD_GRAPHIC) == 10, "a give-up must not move coin"
+
+
+def test_the_sell_entry_exists_only_for_a_vendor_that_buys_something():
+    """ServUO adds `VendorSellEntry` only for a vendor with an active buy list, and the
+    conditional is also what keeps every fixture written before the sell side existed
+    seeing the exact menu it saw then."""
+    body = MockBody(player=PlayerView(serial=PLAYER, name="T", pos=Position(*SPOT, 0)))
+    buyer = MockVendor(serial=VENDOR, buys={TONGS: 5})
+    seller_only = MockVendor(serial=VENDOR + 1)
+    assert [e.cliloc for e in body._popup_entries(buyer)] == [BUY_CLILOC, SELL_CLILOC]
+    assert [e.cliloc for e in body._popup_entries(seller_only)] == [BUY_CLILOC]
+
+
+def test_the_popup_index_decides_which_window_opens():
+    """Both FSMs send a `PopupSelect` and differ only in the index they resolved. A mock
+    that ignored it would open a BUY window for a sell trip, and `_sell_step` would then
+    sit in `list` until `ASK_RETRY` and give up — indistinguishable from the live wedge
+    this double exists to rule out."""
+    body, _life = _sell_world({TONGS: TONGS_PRICE})
+    body.act(PopupSelect(serial=VENDOR, index=1))          # the Sell entry
+    assert body.shop_sell is not None and body.shop_buy is None
+    assert [i.graphic for i in body.shop_sell.items] == [TONGS]
+    body.shop_sell = None
+    body.act(PopupSelect(serial=VENDOR, index=0))          # the Buy entry
+    assert body.shop_buy is not None and body.shop_sell is None
+
+
+def test_the_sell_window_is_rebuilt_from_the_pack_every_opening():
+    """A 0x9E list is OUR pack, not stored state — so a sale that empties the pack yields
+    an EMPTY window next time rather than a stale one. `_sell_step` reads that as "the
+    vendor does not recognise the item" and gives up, which is a real live shape."""
+    body, _life = _sell_world({TONGS: TONGS_PRICE}, tongs=8)
+    body.act(PopupSelect(serial=VENDOR, index=1))
+    first = body.shop_sell
+    assert [(i.graphic, i.amount) for i in first.items] == [(TONGS, 8)]
+    body.act(SellItems(vendor=VENDOR, items=[(i.serial, i.amount) for i in first.items]))
+    assert body.shop_sell is None, "a completed sale closes the window"
+    body.act(PopupSelect(serial=VENDOR, index=1))
+    assert body.shop_sell.items == [], "the second opening must reflect the empty pack"
+
+    # ...and rebuilt even when one is ALREADY open. The sale above closes the window, so
+    # a fixture that only re-opens after a completed sale cannot tell "rebuilt" from
+    # "kept whatever was there" — a mutant survived exactly that gap (§35.3).
+    body2, _l2 = _sell_world({TONGS: TONGS_PRICE}, tongs=4)
+    body2.act(PopupSelect(serial=VENDOR, index=1))
+    assert [(i.graphic, i.amount) for i in body2.shop_sell.items] == [(TONGS, 4)]
+    next(i for i in body2.items.values() if i.graphic == TONGS).amount = 2
+    body2.act(PopupSelect(serial=VENDOR, index=1))   # no cancel in between
+    assert [(i.graphic, i.amount) for i in body2.shop_sell.items] == [(TONGS, 2)], \
+        "an opening must reflect the pack NOW, not the pack when it first opened"
+
+
+def test_an_empty_sell_list_is_the_window_cancel():
+    """`_sell_step` sends `SellItems(items=[])` when it finds a window already open — the
+    exit-edge close follow-up 16 added. Modelled, or a trip that cancels cleanly looks
+    like one that hung."""
+    body, _life = _sell_world({TONGS: TONGS_PRICE})
+    body.act(PopupSelect(serial=VENDOR, index=1))
+    assert body.shop_sell is not None
+    body.act(SellItems(vendor=VENDOR, items=[]))
+    assert body.shop_sell is None
+    assert _pack(body, TONGS) == 8, "a cancel must not sell anything"
+
+
+def test_the_sale_takes_only_what_the_vendor_buys_and_only_what_is_there():
+    """The server owns these rules; the double must not invent its own. An item the vendor
+    does not want, and an amount beyond the stack, both move nothing extra — the same line
+    `_settle_purchase` draws around under-payment and stock depletion."""
+    body, _life = _sell_world({TONGS: TONGS_PRICE}, tongs=3, gold=0)
+    body.act(PopupSelect(serial=VENDOR, index=1))
+    tool = next(i for i in body.items.values()
+                if i.graphic in TINKERTOOLS_GRAPHICS)
+    tongs = next(i for i in body.items.values() if i.graphic == TONGS)
+    body.act(SellItems(vendor=VENDOR, items=[(tool.serial, 1),      # not bought
+                                             (tongs.serial, 99)]))  # more than we hold
+    assert _pack(body, GOLD_GRAPHIC) == 3 * TONGS_PRICE, "paid for the wrong quantity"
+    assert _pack(body, TONGS) == 0
+    assert any(i.graphic in TINKERTOOLS_GRAPHICS for i in body.items.values()), \
+        "the vendor took a tool it does not buy"
