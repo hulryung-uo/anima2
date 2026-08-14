@@ -813,7 +813,8 @@ def agent_walk_readout(agent, pos) -> str:
 
 
 def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threading.Lock,
-                job: str, *, chronicle: ChronicleLedger | None = None,
+                job: str, *, narrate: bool = False,
+                chronicle: ChronicleLedger | None = None,
                 counterpart: str | None = None,
                 session_events: list[ChronicleEvent] | None = None) -> None:
     # Local for CONSISTENCY with the ten other in-function `life_runner` imports in
@@ -827,6 +828,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # `monitor_ports`) are module-level too, so "every other one is local" was wrong in
     # both halves. One import per worker, not per tick.
     from .life_runner import frame_retirements, hp_readout
+    from .narrate import intent as agent_intent
 
     steps = says = 0
     ticks_done = 0
@@ -1021,6 +1023,13 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     #: a count. Goal-stack history is bounded at 128, so a count silently under-reports
     #: after an overflow; ids are monotonic, so `> _last_retired` is total.
     _last_retired = 0
+    #: The narration a human reads (`anima2/narrate.py`). `_said` is the SHORT line still
+    #: owed to the game journal: it waits for a tick the agent spent doing nothing, because
+    #: spending a tick on speech would skip an agent tick and silently distort every
+    #: per-tick instrument that reads `new_journal` — the mining cause split counts one
+    #: sample per tick and would merge two swings' verdicts into one.
+    _intent = ""
+    _said = ""
     # NOTHING LANDS — the fourth liveness alarm, follow-up 37, and the last of the four
     # blindnesses the 2026-08-11 day exposed.
     #
@@ -1248,6 +1257,26 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                 _unachieved = _thrash = 0
             else:
                 _unachieved += 1
+        if narrate:
+            _short, _detail, _key = agent_intent(agent, obs)
+            if _key != _intent:
+                # Into the TAPE, with tick and tile, because the point is not only to be
+                # readable live: a post-hoc reader reconstructing why an agent did
+                # something is exactly what §41 needed a whole workflow to do from bare
+                # counters. `~~` rather than `**` so narration and alarms grep apart.
+                print(f"  ~~ {agent.persona.name} t={ticks_done} @({p.x},{p.y}) "
+                      f"{_short} | {_detail}")
+                _intent, _said = _key, _short
+            if _said and action is None:
+                # A tick the agent chose to spend on nothing — speech is free here, and
+                # only here. See `narrate.py` for why this is a hard constraint.
+                try:
+                    agent.body.act(Say(text=_said[:120]))
+                    says += 1
+                    last_say = _said
+                except Exception:  # noqa: BLE001 — narration must never break the run
+                    pass
+                _said = ""
         if isinstance(action, Say):
             says += 1
             last_say = action.text
@@ -2073,7 +2102,8 @@ def _run_online_village(
 
 def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
                     ticks: int = 1200, account_prefix: str = "animapair",
-                    monitor: bool = False, carpenter_tick_every: int = 3,
+                    monitor: bool = False, narrate: bool = False,
+                    carpenter_tick_every: int = 3,
                     woodsman_knobs: dict[str, Any] | None = None,
                     carpenter_knobs: dict[str, Any] | None = None) -> None:
     """Bjorn supplies Sten: a lumberjack hauls boards to a carpenter's drop point.
@@ -2256,7 +2286,8 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     for i, (role, agent) in enumerate(agents):
         budget = ticks * getattr(agent, "tick_budget_scale", 1)
         t = threading.Thread(target=_run_worker,
-                             args=(agent, budget, i, status, lock, role), daemon=True)
+                             args=(agent, budget, i, status, lock, role),
+                             kwargs={"narrate": narrate}, daemon=True)
         threads.append(t)
         t.start()
         time.sleep(0.7)
@@ -2323,7 +2354,7 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
 
 def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
                    ticks: int = 1200, account_prefix: str = "animaforge",
-                   monitor: bool = False,
+                   monitor: bool = False, narrate: bool = False,
                    knobs: dict[str, Any] | None = None) -> None:
     """The FLAGSHIP pair: Grimm mines and delivers iron, Pim turns it into tongs.
 
@@ -2482,7 +2513,8 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
     for i, (role, agent) in enumerate((("miner", miner), ("tinker", pim))):
         budget = ticks * getattr(agent, "tick_budget_scale", 1)
         t = threading.Thread(target=_run_worker,
-                             args=(agent, budget, i, status, lock, role), daemon=True)
+                             args=(agent, budget, i, status, lock, role),
+                             kwargs={"narrate": narrate}, daemon=True)
         threads.append(t)
         t.start()
         time.sleep(0.7)
@@ -3710,6 +3742,12 @@ def main() -> None:
     ap.add_argument("--monitor", action="store_true",
                     help="serve a read-only web view of each agent (loopback only); "
                          "the URL per agent is printed at startup")
+    ap.add_argument("--narrate", action="store_true",
+                    help="say what each agent is doing and WHY — a `~~` line per intent "
+                         "change into the log (tick + tile + evidence), and a short clause "
+                         "spoken in-game so it shows in the client view under --monitor. "
+                         "Costs no agent tick: speech only rides a tick the agent spent "
+                         "idle. See anima2/narrate.py and docs/OBSERVATIONS.md")
     ap.add_argument("--forum", action="store_true", help="post each villager's day to uotavern")
     ap.add_argument("--chatter", action="store_true", help="LLM cognition: speak in character while working")
     # Opt-in, unset by default: zero effect on any currently-passing roster unless
@@ -3780,7 +3818,7 @@ def main() -> None:
         k = _route_knobs(parsed_knobs, ("tinker",), runner="--forge-pair",
                          default_role="tinker")
         run_forge_pair(host=args.host, port=args.port, ticks=args.ticks,
-                       monitor=args.monitor, knobs=k["tinker"])
+                       monitor=args.monitor, narrate=args.narrate, knobs=k["tinker"])
         return
 
     if args.supply_pair:
@@ -3788,7 +3826,7 @@ def main() -> None:
         k = _route_knobs(parsed_knobs, ("woodsman", "carpenter"),
                          runner="--supply-pair", default_role=None)
         run_supply_pair(host=args.host, port=args.port, ticks=args.ticks,
-                        monitor=args.monitor,
+                        monitor=args.monitor, narrate=args.narrate,
                         woodsman_knobs=k["woodsman"], carpenter_knobs=k["carpenter"])
         return
 

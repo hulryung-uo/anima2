@@ -1473,3 +1473,102 @@ def test_an_achieved_SALE_clears_the_streak_too_not_just_a_purchase(capsys):
     assert sum(i.amount for i in body.observe().items if i.graphic == mv.TONGS) == 0
     assert sum(i.amount for i in body.observe().items
                if i.graphic == GOLD_GRAPHIC) == 10 + 8 * mv.TONGS_PRICE
+
+
+# --- narration: what the agent is doing, and WHY ------------------------------------
+
+
+def test_narration_reports_intent_changes_not_every_tick(capsys):
+    """The throttle, which the first version did not have.
+
+    `intent`'s DETAIL carries the frame's age and the distance still to walk, and both move
+    every tick — so "has the rendering changed" is not "has the intent changed". Unthrottled
+    it emitted 120 lines in 120 ticks. This file has been burned by exactly that twice
+    already (`FRAME OVERDUE` measured 3,881 identical lines in one 4,000-tick run), so the
+    key is the phase and the destination and nothing that ticks.
+    """
+    import sys
+    import threading
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_life_frame_hold import _sale_life
+
+    from anima2.village import _run_worker
+
+    _body, life = _sale_life()
+    _run_worker(life, 120, 0, {}, threading.Lock(), "carpenter", narrate=True)
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.strip().startswith("~~")]
+    assert lines, "narration was requested and produced nothing"
+    assert len(lines) < 40, f"narration is per-tick spam: {len(lines)} lines in 120 ticks"
+    # It carries the evidence a watcher checks against the screen: tick, tile, and the
+    # reason — not just a label.
+    assert any("walking to (10,10)" in ln for ln in lines), lines[:3]
+    assert any("t=" in ln and "@(" in ln for ln in lines)
+
+
+def test_narration_is_off_by_default_and_never_raises(capsys):
+    """Opt-in, and unable to break a run. `intent` is read-only over duck-typed objects —
+    stand-ins in tests and live gates do not implement a Life's full surface — so it
+    degrades to a token rather than raising, the same rule every readout in this loop
+    follows."""
+    import threading
+
+    from anima2.narrate import intent
+    from anima2.village import _run_worker
+
+    class _Episodes:
+        total_recorded = 0
+
+        def total_reward(self):
+            return 0.0
+
+        def recent(self, n):
+            return []
+
+    class _Body:
+        connected = True
+
+        def observe(self):
+            return _obs(cursor=False, no_metal=False)
+
+    class _Bare:
+        persona = Persona(name="Grimm")
+        episodes = _Episodes()
+        memory: dict = {}  # noqa: RUF012
+
+        def __init__(self):
+            self.body = _Body()
+
+        def tick(self):
+            return None
+
+    _run_worker(_Bare(), 20, 0, {}, threading.Lock(), "miner")
+    assert "~~" not in capsys.readouterr().out, "narration must be opt-in"
+
+    # An object with none of the attributes narration reads.
+    short, detail, key = intent(object(), None)
+    assert short and detail and key, (short, detail, key)
+
+
+def test_narration_explains_the_miners_own_loop():
+    """A miner has no capability frames at all (`landed=0/0` all day, which is correct and
+    reads as broken), so its intent has to come from its own phase machine. Each phase
+    answers the watcher's question — why is he walking away from the rock?"""
+    from anima2.contract import Position
+    from anima2.narrate import intent
+
+    class _A:
+        memory = {"smelt_phase": "deliver", "smithy_drop": (2609, 474)}  # noqa: RUF012
+
+    class _O:
+        class player:
+            pos = Position(2600, 490, 0)
+
+    short, detail, key = intent(_A(), _O())
+    assert "smith" in short and "(2609, 474)" in detail and key == "mine:deliver"
+
+    _A.memory = {"smelt_phase": "mine", "harvest_relocating": True,
+                 "harvest_relocate_to": (2591, 500)}
+    short, detail, key = intent(_A(), _O())
+    assert "dead" in short and "(2591, 500)" in detail and key.startswith("mine:relocate")
