@@ -67,6 +67,10 @@ Triage, in this order, because it is the order of increasing cost:
 An entry is only closed by evidence, and "I changed something and it feels better" is not
 evidence — §25 diagnosed the mine pool that way and §26 had to retract it.
 
+How a chosen entry is built and closed — fixture, mutants, single source, what
+the fast loop may not do, what a live run is for — is
+[`IMPLEMENTATION.md`](IMPLEMENTATION.md).
+
 ---
 
 ## Entries

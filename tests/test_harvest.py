@@ -524,6 +524,60 @@ def test_reply_less_ticks_carry_no_verdict_and_do_not_dilute():
     recent = mem["harvest_recent_stuck"]
     assert sum(recent) == 10 and len(recent) == 10, (
         "silence must append nothing — the legacy sampler's 0-on-no-reply dilution")
+    from anima2.contract import WalkTo
+    assert mem.get("harvest_silent", 0) < mine._silence_relocate_limit()
+    lag = mine.step(_ctx(items=[_item(0x222, PICKAXE, container=BACKPACK)], memory=mem))
+    assert not isinstance(lag.action, WalkTo), "a 10-tick lag burst must not relocate"
+
+
+def test_a_silent_stand_relocates_before_a_hundred_ticks():
+    # follow-up 40: (2583, 500) swung 116 times with win=None and never hopped.
+    from anima2.contract import WalkTo
+
+    mine = Mine()
+    mem: dict = {}
+    pickaxe = _item(0x222, PICKAXE, container=BACKPACK)
+    limit = mine._silence_relocate_limit()
+    assert limit == 48  # two windows of 24; below 113, above the 10-tick lag test
+    relocated_at = None
+    for i in range(limit + 5):
+        res = mine.step(_ctx(items=[pickaxe], memory=mem))
+        if isinstance(res.action, WalkTo):
+            relocated_at = i + 1
+            break
+    assert relocated_at == limit
+    assert mem.get("harvest_silent") == 0  # the hop clears the counter
+
+
+def test_a_verdict_resets_the_silence_counter():
+    from anima2.contract import WalkTo
+
+    mine = Mine()
+    mem: dict = {}
+    pickaxe = _item(0x222, PICKAXE, container=BACKPACK)
+    limit = mine._silence_relocate_limit()
+    for _ in range(limit - 2):
+        mine.step(_ctx(items=[pickaxe], memory=mem))
+    assert mem["harvest_silent"] == limit - 2
+    _swing_reply(mine, mem, 503040)
+    assert mem.get("harvest_silent", 0) == 0
+    for _ in range(limit - 2):
+        res = mine.step(_ctx(items=[pickaxe], memory=mem))
+        assert not isinstance(res.action, WalkTo)
+
+
+def test_chop_does_not_relocate_on_silence():
+    # §35.2: dropping a grove is the end of the trade. Follow-up 40 is miner-only.
+    from anima2.contract import WalkTo
+    from anima2.skills import Chop
+
+    chop = Chop()
+    assert chop._silence_relocate_limit() == 0
+    mem: dict = {"harvest_nodes": [(101, 100, 0, 0xCCA)]}
+    axe = _item(0x222, 0x0F43, container=BACKPACK)
+    for _ in range(60):
+        res = chop.step(_ctx(items=[axe], memory=mem))
+        assert not isinstance(res.action, WalkTo)
 
 
 def test_completed_relocation_moves_the_delivery_return_spot():
@@ -661,3 +715,30 @@ def test_pool_arrival_within_one_tile_still_installs_nodes():
     mine.step(SkillContext(obs=obs, persona=Persona(name="Grimm"), memory=mem))
     assert mem["harvest_nodes"] == [(151, 89, 12, 0)]
     assert not mem.get("harvest_relocating")
+
+
+def test_one_tile_short_pool_arrival_rehomes_delivery_to_the_stand():
+    # Arrival can be one tile short; the return spot must still be the surveyed
+    # stand, not the apron tile. Otherwise every later haul walks back to the
+    # short tile and mines whatever is there (audit §42.3).
+    from anima2.skills.smelt import MineSmeltDeliver
+
+    mem: dict = {"smithy_drop": (90, 90), "miner_home": (100, 100),
+                 "harvest_spot_pool": [((150, 90), [(151, 89, 12, 0)])]}
+    mine = MineSmeltDeliver()
+    window = len(Mine().probe_offsets) * Mine().stuck_window_rotations
+    from collections import deque
+    mem["harvest_recent_stuck"] = deque([1] * window, maxlen=window)
+    pickaxe = _item(0x222, PICKAXE, container=BACKPACK)
+    mine.step(SkillContext(
+        obs=Observation(player=PlayerView(serial=1, pos=Position(100, 100, 0)),
+                        items=[pickaxe]),
+        persona=Persona(name="Grimm"), memory=mem))
+    assert mem.get("harvest_relocate_target") == (150, 90)
+    obs = Observation(player=PlayerView(serial=1, pos=Position(151, 91, 0)),
+                      items=[pickaxe])
+    mine.step(SkillContext(obs=obs, persona=Persona(name="Grimm"), memory=mem))
+    mine.step(SkillContext(obs=obs, persona=Persona(name="Grimm"), memory=mem))
+    assert mem["miner_home"] == (150, 90)
+    assert mem.get("harvest_relocated_stand") is None  # consumed
+    assert "harvest_relocated_to" not in mem

@@ -52,11 +52,14 @@ from .skill_tuning import DELIVER_THRESHOLD_CANDIDATES, ParamSpec, ParamTuner
 from .skills import MineSmeltDeliver
 from .skills.market import walk_readout
 from .skills.base import Status
-from .uomap import find_mine_spots, find_tree_clusters
+from .uomap import find_mine_spots, find_tree_clusters, play_map
 
-# Minoc-area woods (map 1), near the mining camp — keeps the village compact.
+# Minoc-area woods, near the mining camp — keeps the village compact.
 # Each lumberjack gets a distinct grove (a stand spot + the trees in reach).
 FOREST_BASE = (2520, 450)
+#: Fallback facet when no observation exists yet. The authority is
+#: `Observation.map_index` via `play_map` / `_survey_map` (follow-up 41).
+#: 1 = Trammel in the contract; a body on Felucca (0) must not keep surveying 1.
 LUMBER_MAP = 1
 #: Relocation stands pre-surveyed for the forge miner — each gets its own forge at
 #: staging, so this is a provisioning cap, not a wander limit (the blind compass walk
@@ -92,6 +95,26 @@ LUMBER_MAP = 1
 #: relocating instead of working", diagnosed for one profession and never connected to the
 #: other.
 MINE_POOL_SPOTS = 12
+
+
+def _survey_map(*bodies, fallback: int = LUMBER_MAP) -> int:
+    """Facet for `find_mine_spots` / `find_tree_clusters`: the body's own map.
+
+    `LUMBER_MAP` is only the fallback. A logged-in body with `last_obs` wins,
+    so a Felucca character is not surveyed against Trammel statics (follow-up 41).
+    """
+    for body in bodies:
+        if body is None:
+            continue
+        obs = getattr(body, "last_obs", None)
+        if obs is None:
+            observe = getattr(body, "observe", None)
+            if callable(observe):
+                obs = observe()
+        if obs is not None:
+            return play_map(obs, fallback=fallback)
+    return fallback
+
 
 #: Where a SOLO woodsman works. The multi-profession village keeps its lumberjacks in
 #: the Minoc woods above to stay compact, but those woods are thin — a live survey found
@@ -1702,7 +1725,8 @@ def _run_online_village(
     spots = iter(s for s in MINING_SPOTS if not has_trade_pair or s != TRADE_MINE_SPOT)
     fish_spots = iter(FISHING_SPOTS)
     smith_spots = iter(BLACKSMITH_SPOTS)
-    groves = iter(find_tree_clusters(LUMBER_MAP, *FOREST_BASE))
+    groves = iter(find_tree_clusters(
+        _survey_map(*(body for body, _, _ in online)), *FOREST_BASE))
     trade_miner_placed = trade_smith_placed = not has_trade_pair
     plan: list[dict] = []
     for body, prof, persona in online:
@@ -2148,13 +2172,6 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     FURNITURE = SellFurniture.sold_graphic
 
     print(f"raising a supply pair at {host}:{port}")
-    groves = find_tree_clusters(LUMBER_MAP, *YEW_FOREST)
-    if not groves:
-        print(f"no grove found near {YEW_FOREST}; aborting")
-        return
-    (gx, gy), trees = groves[0]
-    print(f"grove: stand ({gx},{gy}) with {len(trees)} trees in reach")
-
     bodies = {}
     seats = _monitor_ports(monitor, ["woodsman", "carpenter"])
     for role, acct in (("woodsman", f"{account_prefix}w{fresh_suffix()}"),
@@ -2173,6 +2190,17 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
             if hasattr(b, "close"):
                 b.close()
         return
+
+    facet = _survey_map(bodies.get("woodsman"), bodies.get("carpenter"))
+    groves = find_tree_clusters(facet, *YEW_FOREST)
+    if not groves:
+        print(f"no grove found near {YEW_FOREST} on map {facet}; aborting")
+        for b in bodies.values():
+            if hasattr(b, "close"):
+                b.close()
+        return
+    (gx, gy), trees = groves[0]
+    print(f"grove: map={facet} stand ({gx},{gy}) with {len(trees)} trees in reach")
 
     login_throttle(GM_RELOGIN_COOLDOWN_S)
     gm = GmControl.spawn(host, port).__enter__()
@@ -2446,13 +2474,14 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         # one per 8x8 HarvestBank cell, each with its OWN forge ([Add Forge):
         # smelting needs FORGE_REACH=2, and a relocated miner without a forge in
         # reach silently stops smelting (ore piles up, deliveries never trigger).
-        mine_spots = find_mine_spots(LUMBER_MAP, mx, my)
+        facet = _survey_map(bodies["miner"])
+        mine_spots = find_mine_spots(facet, mx, my)
         home_nodes = next((n for s, n in mine_spots if s == (mgx, mgy)),
                           mine_spots[0][1] if mine_spots else None)
         spot_pool = [(s, n) for s, n in mine_spots if s != (mgx, mgy)][:MINE_POOL_SPOTS]
         for (px, py), _nodes in spot_pool:
             gm.command_at("[Add Forge", px + 1, py + 1, mgz)
-        print(f"mine survey: home face {len(home_nodes or [])} tiles, "
+        print(f"mine survey: map={facet} home face {len(home_nodes or [])} tiles, "
               f"pool {[s for s, _ in spot_pool]}")
         gm.command_on('[Set Name "Grimm"', serials["miner"])
         # The tinker at the calibrated smith stand with its tool and NOTHING else.
@@ -2607,6 +2636,9 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         recent = miner.memory.get("harvest_recent_stuck")
         if recent is not None and len(recent) > 0:
             grimm_flag += f" win={sum(recent)}/{len(recent)}"
+        silent = miner.memory.get("harvest_silent")
+        if silent:
+            grimm_flag += f" silent={silent}"
         # WHY the window is full, which `win=` alone cannot say. The three causes
         # want three different fixes — `nores` is an exhausted bank (relocate),
         # `inval` is a tile we cannot hit at all (cycle to another node; the whole
@@ -2783,15 +2815,14 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
     from .skills.woodwork import AXE_GRAPHICS, BOARD_GRAPHIC, LOG_GRAPHIC
     from .woodsman_life import WoodsmanLife
 
-    groves = find_tree_clusters(LUMBER_MAP, *forest)
-    if not groves:
-        print(f"no grove found near {forest}; aborting")
-        return
-    (sx, sy), trees = groves[0]
-    print(f"grove: stand ({sx},{sy}) with {len(trees)} trees in reach "
-          f"({len(groves)} groves near {forest})")
-
     def stage(gm, serial, body) -> Staged:
+        facet = _survey_map(body)
+        groves = find_tree_clusters(facet, *forest)
+        if not groves:
+            raise RuntimeError(f"no grove found near {forest} on map {facet}")
+        (sx, sy), trees = groves[0]
+        print(f"grove: map={facet} stand ({sx},{sy}) with {len(trees)} trees in reach "
+              f"({len(groves)} groves near {forest})")
         prof = PROFESSIONS["lumberjack"]
         wx, wy, wz = gm.stage(serial, sx, sy, skills=prof.skills,
                               items=list(prof.items))

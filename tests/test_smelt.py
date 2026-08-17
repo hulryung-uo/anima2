@@ -12,6 +12,7 @@ from anima2.contract import (
     TargetObject,
     Use,
     Walk,
+    WalkTo,
 )
 from anima2.persona import Persona
 from anima2.skills import MineAndSmelt, MineSmeltDeliver
@@ -408,3 +409,98 @@ def test_deliver_giveup_suppresses_immediate_retrigger_until_more_ingots_accumul
     MineSmeltDeliver().step(_ctx(more_items, memory=mem, pos=Position(100, 100, 0)))
     assert mem["smelt_phase"] == "deliver"
     assert "deliver_giveup_ingots" not in mem
+
+
+# --- follow-up 42: do not resume mining short of a stand (audit §42.3) ------------
+#
+# Live tile, 2026-08-14: home stand (2611, 474), resume at (2609, 475) — chebyshev 2,
+# the smithy apron, no ore. The return leg's greedy stall used to return None, which
+# `step()` treated as arrival. These coordinates are the prediction, not a sketch.
+
+_HOME_STAND = (2611, 474)
+_SMITHY_APRON = Position(2609, 475, 0)
+_HOME_FACE = [(2612, 473, 0, 0)]
+
+
+def test_return_stall_on_the_smithy_apron_does_not_resume_mining():
+    items = [_backpack(), _pickaxe(), _forge()]
+    mem = {
+        "smithy_drop": (2609, 474),
+        "smelt_phase": "return",
+        "miner_home": _HOME_STAND,
+        "harvest_nodes": list(_HOME_FACE),
+        "return_stall": 5,
+        "return_last_pos": (2609, 475),
+    }
+    res = MineSmeltDeliver().step(_ctx(items, memory=mem, pos=_SMITHY_APRON))
+    assert mem["smelt_phase"] == "return"
+    assert isinstance(res.action, WalkTo)
+    assert (res.action.x, res.action.y) == _HOME_STAND
+
+
+def test_return_may_resume_one_tile_short_when_the_stand_has_nodes():
+    # Same slack relocation uses for a walled stand. chebyshev 1 is a stand;
+    # chebyshev 2 is the apron the live run mined.
+    items = [_backpack(), _pickaxe(), _forge()]
+    mem = {
+        "smithy_drop": (2609, 474),
+        "smelt_phase": "return",
+        "miner_home": _HOME_STAND,
+        "harvest_nodes": list(_HOME_FACE),
+    }
+    res = MineSmeltDeliver().step(_ctx(items, memory=mem, pos=Position(2610, 474, 0)))
+    assert mem["smelt_phase"] == "mine"
+    assert isinstance(res.action, Use) and res.action.serial == PICKAXE_SERIAL
+
+
+def test_return_two_tiles_short_is_not_a_stand_even_with_nodes():
+    # Mutant: near_enough = 2 would treat the live apron as arrival.
+    items = [_backpack(), _pickaxe(), _forge()]
+    mem = {
+        "smithy_drop": (2609, 474),
+        "smelt_phase": "return",
+        "miner_home": _HOME_STAND,
+        "harvest_nodes": list(_HOME_FACE),
+    }
+    res = MineSmeltDeliver().step(_ctx(items, memory=mem, pos=_SMITHY_APRON))
+    assert mem["smelt_phase"] == "return"
+    assert not isinstance(res.action, Use)
+
+
+def test_delivery_waits_for_an_in_flight_relocation_to_reach_a_stand():
+    items = [_backpack(), _pickaxe(), _forge(), _ingot(0x777, amount=10)]
+    mem = {
+        "smithy_drop": SMITHY,
+        "harvest_relocating": True,
+        "harvest_relocate_target": (150, 90),
+        "harvest_pending_nodes": [(151, 89, 12, 0)],
+        "harvest_relocate_last_pos": (120, 100),
+    }
+    res = MineSmeltDeliver().step(_ctx(items, memory=mem, pos=Position(120, 100, 0)))
+    assert mem.get("smelt_phase", "mine") == "mine"
+    assert mem["miner_home"] == (150, 90)
+    assert mem["harvest_relocating"] is True
+    # Old code left for the smithy this tick (`Walk` toward SMITHY). A relocate
+    # monitor is idle or a `WalkTo` — never a greedy step at the drop.
+    assert not isinstance(res.action, Walk)
+
+
+def test_return_route_that_cannot_reach_home_relocates_instead_of_mining_here():
+    items = [_backpack(), _pickaxe(), _forge()]
+    mem = {
+        "smithy_drop": (2609, 474),
+        "smelt_phase": "return",
+        "miner_home": _HOME_STAND,
+        "harvest_nodes": list(_HOME_FACE),
+        "return_routing": True,
+        "return_route_last_pos": (2609, 475),
+        "return_route_stall": 5,
+        "return_route_retries": 3,
+        "harvest_spot_pool": [((2592, 500), [(2593, 499, 0, 0)])],
+    }
+    res = MineSmeltDeliver().step(_ctx(items, memory=mem, pos=_SMITHY_APRON))
+    assert mem["smelt_phase"] == "mine"
+    assert isinstance(res.action, WalkTo)
+    assert (res.action.x, res.action.y) == (2592, 500)
+    assert mem.get("harvest_relocating")
+    assert not isinstance(res.action, Use)

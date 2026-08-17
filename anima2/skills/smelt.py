@@ -35,7 +35,7 @@ miner (and the offline demo) behaves exactly as before.
 
 from __future__ import annotations
 
-from ..contract import Drop, PickUp, Position, TargetObject, Use, Walk
+from ..contract import Drop, PickUp, Position, TargetObject, Use, Walk, WalkTo
 from ..geometry import chebyshev, direction_toward
 from .base import SkillContext, SkillResult, Status
 from .harvest import Mine
@@ -174,14 +174,26 @@ class MineSmeltDeliver(MineAndSmelt):
     `ctx.memory["smithy_drop"]` (a ground `Drop` reaches 2 tiles, and stopping
     short avoids needing to step onto whatever occupies that tile — usually
     the blacksmith itself), `Drop` every ingot pile there one at a time, walk
-    back to the spot mining started from, then resume. A delivery leg that
-    wedges permanently (see `_walk_toward`) gives up rather than retrying
-    forever, and the mine-phase trigger backs off until the pack holds more
-    ingots than it did at give-up, so a blocked corridor costs one failed trip,
-    not an endless commute. **Opt-in**: with no `smithy_drop` in scratch
-    memory, `step()` falls straight through to `MineAndSmelt.step()` — today's
-    behaviour, byte for byte, so the offline demo and every existing miner
-    (and test) is unaffected.
+    back to the surveyed stand, then resume. A delivery leg that wedges
+    permanently (see `_walk_toward`) gives up rather than retrying forever,
+    and the mine-phase trigger backs off until the pack holds more ingots
+    than it did at give-up, so a blocked corridor costs one failed trip, not
+    an endless commute.
+
+    The return leg is the other way around: a greedy stall is **not** arrival.
+    Audit §42.3 watched the miner flip `ph=mine` on the smithy apron
+    (`(2609, 475)`, chebyshev 2 from home `(2611, 474)`) the instant the
+    return walk gave up, then swing at empty ground until the stuck window
+    relocated him. `_return_step` only yields `None` on the stand (exact tile,
+    or one tile short when `harvest_nodes` are installed — the same slack
+    relocation itself uses). A wedged greedy walk re-issues `WalkTo`; a route
+    that still cannot reach the stand relocates to a surveyed one rather than
+    mining the apron. An in-flight relocation also holds delivery until that
+    stand is reached, so a haul mid-hop cannot send him home to the condemned
+    tile. **Opt-in**: with no `smithy_drop` in scratch memory, `step()` falls
+    straight through to `MineAndSmelt.step()` — today's behaviour, byte for
+    byte, so the offline demo and every existing miner (and test) is
+    unaffected.
 
     The drop point is plumbed in by the village wiring exactly like a
     lumberjack's grove or a fisher's water tile (`agent.memory["smithy_drop"]
@@ -197,6 +209,10 @@ class MineSmeltDeliver(MineAndSmelt):
     #: Consecutive no-progress walking ticks before a delivery/return leg gives
     #: up (mirrors `GoTo.stall_limit` — the greedy mover has no A*).
     stall_limit: int = 6
+    #: How many times a stalled return `WalkTo` is re-issued before the stand
+    #: is abandoned. Mirrors `GoTo.walkto_max_retries`. Exhaustion relocates
+    #: rather than mining wherever the walk died (audit §42.3).
+    return_route_retries: int = 3
 
     def diagnose(self, ctx: SkillContext) -> str | None:
         """`None` iff `can_run` (inherited from `Harvest`: a pickaxe or a
@@ -236,20 +252,34 @@ class MineSmeltDeliver(MineAndSmelt):
         # time this skill runs, so `return` walks back to exactly the tile
         # `Mine`'s probing/forge reach is calibrated for.
         ctx.memory.setdefault("miner_home", (obs.player.pos.x, obs.player.pos.y))
+        # A pool relocate commits to a surveyed stand the moment the walk
+        # starts, not on arrival. Delivering mid-hop used to leave miner_home
+        # on the condemned tile, so the return mined the smithy apron
+        # (audit §42.3).
+        if ctx.memory.get("harvest_relocating"):
+            target = ctx.memory.get("harvest_relocate_target")
+            if target is not None:
+                ctx.memory["miner_home"] = (int(target[0]), int(target[1]))
         # A completed relocation (previous tick, inside super().step's harvest
         # machinery) condemned the old stand spot — the delivery return leg must
-        # come back HERE from now on, not to the dead ground it left. Without
+        # come back to the STAND, not the one-tile-short arrival tile
+        # (`Harvest.near_enough`) and not the dead ground it left. Without
         # this, every haul ends with a walk back to the condemned tile, a full
         # re-confession window, and a rotated-direction re-relocation: a
         # random-walk between hauls (see `Harvest._clear_relocate`).
         moved = ctx.memory.pop("harvest_relocated_to", None)
         if moved is not None:
-            ctx.memory["miner_home"] = moved
+            stand = ctx.memory.pop("harvest_relocated_stand", None)
+            ctx.memory["miner_home"] = stand or moved
         phase = ctx.memory.get("smelt_phase", "mine")
 
         # Only leave for delivery between mining swings, same as the mine→smelt
         # guard above — an open cursor is answered by Mine's own probe logic.
-        if phase == "mine" and obs.pending_target is None:
+        # An in-flight relocation is the other half of "arrive at a stand
+        # before resuming": finishing the hop first means the return has a
+        # stand to walk back to.
+        if (phase == "mine" and obs.pending_target is None
+                and not ctx.memory.get("harvest_relocating")):
             ingots = self._ingot_count(ctx)
             # `deliver_giveup_ingots` (set by `_walk_toward` when a delivery leg
             # wedges permanently) blocks an immediate re-trigger with the exact
@@ -274,6 +304,11 @@ class MineSmeltDeliver(MineAndSmelt):
             result = self._return_step(ctx)
             if result is not None:
                 return self._payout(ctx, result)
+            if ctx.memory.pop("return_abandoned", None):
+                # The stand is unreachable from here. Mining the apron is the
+                # defect; hop to a surveyed stand instead.
+                ctx.memory["smelt_phase"] = "mine"
+                return self._payout(ctx, self._start_relocate(ctx, 0.0))
             ctx.memory["smelt_phase"] = "mine"
 
         return self._payout(ctx, super().step(ctx))
@@ -346,24 +381,90 @@ class MineSmeltDeliver(MineAndSmelt):
         return SkillResult(Status.RUNNING, PickUp(serial=pile.serial, amount=pile.amount), reward)
 
     def _return_step(self, ctx: SkillContext) -> SkillResult | None:
-        """Walk back to `miner_home`, or `None` once there (resume mining)."""
+        """Walk back to `miner_home`, or `None` once on that stand.
+
+        A greedy stall is not arrival — `_walk_toward` returning `None` used
+        to flip `smelt_phase` to `mine` two tiles short of the home stand
+        (audit §42.3). That path now issues `WalkTo` and stays in `return`.
+        """
         home = ctx.memory.get("miner_home")
         if home is None:
             return None  # nothing recorded (shouldn't happen) — just resume from here
+        if self._at_return_stand(ctx, home):
+            self._clear_return_walk(ctx)
+            return None
+        if ctx.memory.get("return_routing"):
+            return self._return_route_step(ctx, home)
+        walked = self._walk_toward(ctx, home[0], home[1], "return")
+        if walked is not None:
+            return walked
+        return self._begin_return_route(ctx, home)
+
+    def _at_return_stand(self, ctx: SkillContext, home: tuple) -> bool:
+        """True iff this tile is the stand, or one tile short of a noded one.
+
+        One-tile slack matches `Harvest._relocate_step`'s `near_enough` for a
+        walled face. Two tiles is the live apron: `(2609, 475)` is chebyshev 2
+        from `(2611, 474)` and has no ore. `harvest_nodes` only *enables* the
+        slack — it does not mean "any rock in reach", because home-face nodes
+        can sit inside MaxRange=2 of the smithy apron.
+        """
         here = ctx.obs.player.pos
         hx, hy = home
-        if chebyshev(here, Position(hx, hy, here.z)) == 0:
-            ctx.memory.pop("return_stall", None)
-            ctx.memory.pop("return_last_pos", None)
+        near = 1 if ctx.memory.get("harvest_nodes") else 0
+        return chebyshev(here, Position(hx, hy, here.z)) <= near
+
+    @staticmethod
+    def _clear_return_walk(ctx: SkillContext) -> None:
+        for key in (
+            "return_stall", "return_last_pos", "return_routing",
+            "return_route_last_pos", "return_route_stall", "return_route_retries",
+        ):
+            ctx.memory.pop(key, None)
+
+    def _begin_return_route(self, ctx: SkillContext, home: tuple) -> SkillResult:
+        here = ctx.obs.player.pos
+        ctx.memory["return_routing"] = True
+        ctx.memory.pop("return_stall", None)
+        ctx.memory.pop("return_last_pos", None)
+        ctx.memory["return_route_last_pos"] = (here.x, here.y)
+        ctx.memory["return_route_stall"] = 0
+        ctx.memory["return_route_retries"] = 0
+        return SkillResult(Status.RUNNING, WalkTo(x=int(home[0]), y=int(home[1])), 0.0)
+
+    def _return_route_step(self, ctx: SkillContext, home: tuple) -> SkillResult | None:
+        """Monitor a return `WalkTo`. `None` only on the stand, or when abandoned."""
+        if self._at_return_stand(ctx, home):
+            self._clear_return_walk(ctx)
             return None
-        return self._walk_toward(ctx, hx, hy, "return")
+        here = ctx.obs.player.pos
+        cur = (here.x, here.y)
+        last = ctx.memory.get("return_route_last_pos")
+        if last is None or cur != last:
+            ctx.memory["return_route_last_pos"] = cur
+            ctx.memory["return_route_stall"] = 0
+            return SkillResult(Status.RUNNING, None)
+        stall = ctx.memory.get("return_route_stall", 0) + 1
+        ctx.memory["return_route_stall"] = stall
+        if stall < self.stall_limit:
+            return SkillResult(Status.RUNNING, None)
+        retries = ctx.memory.get("return_route_retries", 0) + 1
+        ctx.memory["return_route_retries"] = retries
+        ctx.memory["return_route_stall"] = 0
+        if retries <= self.return_route_retries:
+            return SkillResult(Status.RUNNING, WalkTo(x=int(home[0]), y=int(home[1])), 0.0)
+        self._clear_return_walk(ctx)
+        ctx.memory["return_abandoned"] = True
+        return None
 
     def _walk_toward(self, ctx: SkillContext, tx: int, ty: int, tag: str,
                      reward: float = 0.0) -> SkillResult | None:
         """One greedy step toward `(tx, ty)`, `stall_limit`-bounded like `GoTo`.
 
-        `None` means wedged — give up this leg (the caller advances the phase
-        anyway rather than retrying into the same obstruction forever).
+        `None` means wedged. The deliver caller advances the phase (give up
+        the haul, walk home). The return caller must not — that `None` used
+        to resume mining on the smithy apron (audit §42.3); it now issues
+        `WalkTo` instead.
         """
         here = ctx.obs.player.pos
         cur = (here.x, here.y)

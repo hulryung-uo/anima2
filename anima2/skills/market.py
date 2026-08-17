@@ -42,21 +42,17 @@ Phase 3 item 2 (DESIGN.md §10): the blacksmith side of ``ore -> ingot -> dagger
 (`SpeechEventArgs.HasKeyword`, what `VendorAI.cs`'s "*vendor sell*"/Banker's
 "*bank*" cases check) only ever sees a non-empty `Keywords` array when the
 *client* sends an **encoded** speech packet with pre-matched keyword IDs
-embedded — real UO clients do this transparently by matching typed text
-against `speech.mul` before sending (confirmed against ClassicUO's
-`Send_UnicodeSpeechRequest`/`Send_ASCIISpeechRequest`, which always call
-`Speeches.GetKeywords(text)` first). Plain text sent through anima-core's
-`Say` (`build_say`/`build_unicode_say` — no `speech.mul` parsing, by design;
-see their own doc comments) is *never* encoded, so ServUO's own packet
-handlers (`AsciiSpeech`/`UnicodeSpeech`, `Server/Network/PacketHandlers.cs`)
-always pass an **empty** keyword array for it — `HasKeyword` can never be
-true. This was live-caught: an earlier speech-keyword version of this skill
-said "vendor sell"/"bank" (visible in its own journal — the server still
-*echoes* unmatched speech) but the vendor/banker never responded at all. The
-context-menu path sidesteps this entirely — `PopupRequest`/`PopupSelect` and
-the 0xBF/0x14 parse were already fully implemented Rust-side (just not yet
-mirrored into `contract.py`, the same lockstep gap `ShopBuy`/`ShopSell`/
-`BuyItems`/`SellItems` had), so no Rust changes were needed here either.
+embedded. Real UO clients do this by matching typed text against `speech.mul`
+before sending (ClassicUO `Speeches.GetKeywords`). This skill's first version
+said "vendor sell"/"bank" through plain `Say` and the NPCs never answered —
+the body did not encode keywords then, so ServUO's `UnicodeSpeech` always
+passed an empty array. The context-menu path (`PopupRequest`/`PopupSelect`)
+was live-caught as the one that works, and it is still the one this skill
+uses: it is live-proven on the forge pair, and a speech rewrite would need
+its own fixture. The *body* now loads `speech.mul` and encodes matching
+`Action::Say` as 0xAD (anima-client 2026-08-17); the brain still must not
+parse that file (DESIGN.md §2). The original cause is retired in the body.
+The path here does not switch on that alone.
 
 `BlacksmithMarket(Blacksmith)` adds a `sell`/`sell_return` and `bank`/
 `bank_return` phase pair on top of `Blacksmith`'s own MAKE-loop/fetch state

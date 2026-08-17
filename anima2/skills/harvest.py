@@ -198,6 +198,14 @@ class Harvest(Skill):
     #: a test (`oreAndStone` 8x8), so the base stays off rather than guessing for
     #: wood and water.
     bank_cell_size: int = 0
+    #: How many full stuck-windows of *no verdict at all* relocate a stand.
+    #: 0 = off (Chop: a silent grove is not a reason to drop the trees, §35.2).
+    #: Outcome-only sampling appends nothing on silence, so a stand that never
+    #: replies never fills `harvest_recent_stuck` and `_start_relocate` cannot
+    #: fire — follow-up 40, 113 ticks at (2583, 500), `win=None`. Mine sets 2:
+    #: above the 10-tick lag burst the dilution test allows, below that
+    #: stranding. `harvest_silent` is the counter; `silent=` prints it.
+    silence_relocate_windows: int = 0
 
     @property
     def node_exhausted_clilocs(self) -> frozenset[int]:
@@ -221,6 +229,13 @@ class Harvest(Skill):
         """
         return (self.no_resource_clilocs | self.invalid_target_clilocs
                 | {NODE_DEPLETED_CLILOC})
+
+    def _silence_relocate_limit(self) -> int:
+        """Ticks of no-verdict swinging that relocate. 0 means the lever is off."""
+        if not self.silence_relocate_windows:
+            return 0
+        window = max(1, len(self.probe_offsets)) * self.stuck_window_rotations
+        return window * self.silence_relocate_windows
 
     def can_run(self, ctx: SkillContext) -> bool:
         return self._tool(ctx) is not None or self._backpack(ctx) is not None
@@ -344,6 +359,7 @@ class Harvest(Skill):
                 sample = (1 if stuck_this_tick else 0) \
                     if obs.pending_target is None else None
             if sample is not None:
+                ctx.memory["harvest_silent"] = 0
                 # The stuck-STREAK distribution, audit follow-up 28's open question.
                 #
                 # §28 measured that ~94% of a dead stand's cost is swinging, so the
@@ -443,6 +459,13 @@ class Harvest(Skill):
                     recent = deque(recent or (), maxlen=window)
                 recent.append(sample)
                 ctx.memory["harvest_recent_stuck"] = recent
+            elif self.silence_relocate_windows and (
+                self._tool(ctx) is not None or obs.pending_target is not None
+            ):
+                # No verdict, but we are swinging. A stand that never replies
+                # used to feed the window nothing (follow-up 40).
+                ctx.memory["harvest_silent"] = (
+                    int(ctx.memory.get("harvest_silent", 0) or 0) + 1)
 
         # 1) Cursor open → target the resource. If the Control plane gave us exact
         #    node(s) (x, y, z, graphic) — required for statics like trees — target
@@ -473,6 +496,9 @@ class Harvest(Skill):
         if recent is not None and len(recent) == recent.maxlen and (
             sum(recent) / len(recent) >= self.stuck_rate_threshold
         ):
+            return self._start_relocate(ctx, reward)
+        silent_limit = self._silence_relocate_limit()
+        if silent_limit and int(ctx.memory.get("harvest_silent", 0) or 0) >= silent_limit:
             return self._start_relocate(ctx, reward)
 
         tool = self._tool(ctx)
@@ -527,6 +553,7 @@ class Harvest(Skill):
         spot's own tiles haven't been sampled yet.
         """
         ctx.memory["harvest_recent_stuck"] = None
+        ctx.memory["harvest_silent"] = 0
         # ...and the streak with it. A run of consecutive stuck replies means "how dead
         # did THIS vein look", so carrying it across a relocation measures the wrong
         # thing entirely: the first live sample reported `recov=24(1)` — a recovery from
@@ -586,7 +613,7 @@ class Harvest(Skill):
                 ctx.memory["harvest_idx"] = 0
             else:
                 self._drop_condemned_nodes(ctx, abandoned=False)
-            self._clear_relocate(ctx)
+            self._clear_relocate(ctx, reached_stand=True)
             return None
         cur = (here.x, here.y)
         last = ctx.memory.get("harvest_relocate_last_pos")
@@ -608,15 +635,24 @@ class Harvest(Skill):
         return SkillResult(Status.RUNNING, None)
 
     @staticmethod
-    def _clear_relocate(ctx: SkillContext) -> None:
+    def _clear_relocate(ctx: SkillContext, *, reached_stand: bool = False) -> None:
         # Leave a one-shot note of where the walk ended for any WRAPPING skill
         # that keeps its own return spot (`MineSmeltDeliver.miner_home`): a
         # delivery leg that walks back to the OLD stand spot walks back to the
         # very ground relocation just condemned, re-confesses it dead (~one
         # full window) and relocates again in a rotated direction — a
         # random-walk between every haul. Consumed via `pop` by whoever cares.
+        #
+        # On a real arrival, also name the SURVEYED stand. Relocation itself
+        # counts one tile short as arrived (`near_enough`); that short tile is
+        # not a stand, and walking back to it is how a return resumes on the
+        # smithy apron (audit §42.3). A stall-giveup must not claim the target
+        # it failed to reach — `miner_home` then stays the tile we ended on.
+        target = ctx.memory.get("harvest_relocate_target")
         ctx.memory["harvest_relocated_to"] = (
             ctx.obs.player.pos.x, ctx.obs.player.pos.y)
+        if reached_stand and target is not None:
+            ctx.memory["harvest_relocated_stand"] = (int(target[0]), int(target[1]))
         for key in (
             "harvest_relocating", "harvest_relocate_target",
             "harvest_relocate_last_pos", "harvest_relocate_stall",
@@ -740,6 +776,7 @@ class Mine(Harvest):
     #: ServUO `Mining.cs`: `oreAndStone.BankWidth = BankHeight = 8`, grid origin
     #: (0, 0) — the same 8 `uomap.find_mine_spots` spaces its stands by.
     bank_cell_size = 8
+    silence_relocate_windows = 2
 
 
 class Chop(Harvest):

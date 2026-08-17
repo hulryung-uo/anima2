@@ -296,6 +296,19 @@ def _corner_top(cells: dict, x: int, y: int) -> int:
     return max(zs) if zs else 0
 
 
+def play_map(obs=None, *, fallback: int = 1) -> int:
+    """The facet a survey must use: the one the body is standing on.
+
+    `Observation.map_index` is 0=Felucca, 1=Trammel. A hardcoded `LUMBER_MAP = 1`
+    while the character is on Felucca is follow-up 41 — mine stands happen to
+    match across those two files, tree statics need not. `fallback` is only
+    for the moment before the first observation exists.
+    """
+    if obs is not None:
+        return int(obs.map_index)
+    return int(fallback)
+
+
 def find_mine_spots(map_index: int, cx: int, cy: int, radius: int = 40,
                     reach: int = 2, spacing: int = 8, min_face: int = 4,
                     max_rise: int = 13,

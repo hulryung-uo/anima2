@@ -292,4 +292,5 @@ family, tiered (Haiku/Sonnet/Opus); **never in the fast loop**. Consult the
 ## Key references
 `../anima` (v1: personas, planner, Foundry kernel, wiki flywheel), `../uowiki`
 (semantic memory + MCP tools), `../anima-client/docs/DESIGN.md` (the body + the
-original contract sketch), `../servuo` (local test shard).
+original contract sketch), `../servuo` (local test shard). How a change is
+chosen, built, and closed: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).

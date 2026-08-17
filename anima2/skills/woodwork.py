@@ -19,7 +19,7 @@ Live-verified: 20 logs → 20 boards in one `Use(axe)` + `TargetObject(pile)`.
 
 from __future__ import annotations
 
-from ..contract import Drop, PickUp, Position, TargetObject, Use, Walk
+from ..contract import Drop, PickUp, Position, TargetObject, Use, Walk, WalkTo
 from ..geometry import chebyshev, direction_toward
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import AXE_GRAPHICS, BACKPACK_LAYER, owned_tool
@@ -306,6 +306,12 @@ class DeliverBoards(Skill):
     #: Consecutive no-progress walking ticks before a deliver/return leg gives up
     #: (mirrors `MineSmeltDeliver.stall_limit` / `GoTo.stall_limit`).
     stall_limit: int = 6
+    #: How many times a stalled return `WalkTo` is re-issued. Mirrors
+    #: `MineSmeltDeliver.return_route_retries`. Exhaustion is still not
+    #: arrival — finishing short after N retries is the same defect delayed
+    #: (audit §46). The capability deadline is the bound; this skill keeps
+    #: issuing `WalkTo`.
+    return_route_retries: int = 3
     #: The item art(s) this deliver hauls + drops (a SET, summed over pack piles).
     #: Boards by default (byte-identical to Brick 6); a tinker tool deliver
     #: overrides it with its own tool graphics (Brick 10).
@@ -347,6 +353,10 @@ class DeliverBoards(Skill):
             "cap_deliver_last_pos",
             "cap_deliver_return_stall",
             "cap_deliver_return_last_pos",
+            "cap_deliver_return_routing",
+            "cap_deliver_return_route_last_pos",
+            "cap_deliver_return_route_stall",
+            "cap_deliver_return_route_retries",
         ):
             ctx.memory.pop(key, None)
         return True
@@ -409,22 +419,80 @@ class DeliverBoards(Skill):
         return SkillResult(Status.RUNNING, PickUp(serial=pile.serial, amount=pile.amount))
 
     def _return_step(self, ctx: SkillContext) -> SkillResult | None:
-        """Walk back to the return tile, or `None` once there (or wedged) — the
-        goal then finishes. Mirrors `MineSmeltDeliver._return_step`."""
+        """Walk back to the return tile, or `None` once there.
+
+        A greedy stall is not arrival — `_walk_toward` returning `None` used
+        to finish the goal short of the grove (the miner form is audit §42.3).
+        That path now issues `WalkTo` and stays on the return leg. Exhausted
+        `WalkTo` retries are the same fact delayed; they also stay on the leg.
+        """
         home = self._home_point(ctx)
         if home is None:
             return None
+        if self._at_return_stand(ctx, home):
+            self._clear_return_walk(ctx)
+            return None
+        if ctx.memory.get("cap_deliver_return_routing"):
+            return self._return_route_step(ctx, home)
+        walked = self._walk_toward(ctx, home[0], home[1], "cap_deliver_return")
+        if walked is not None:
+            return walked
+        return self._begin_return_route(ctx, home)
+
+    def _at_return_stand(self, ctx: SkillContext, home: tuple) -> bool:
         here = ctx.obs.player.pos
         hx, hy = home
-        if chebyshev(here, Position(hx, hy, here.z)) == 0:
-            ctx.memory.pop("cap_deliver_return_stall", None)
-            ctx.memory.pop("cap_deliver_return_last_pos", None)
+        near = 1 if ctx.memory.get("harvest_nodes") else 0
+        return chebyshev(here, Position(hx, hy, here.z)) <= near
+
+    @staticmethod
+    def _clear_return_walk(ctx: SkillContext) -> None:
+        for key in (
+            "cap_deliver_return_stall", "cap_deliver_return_last_pos",
+            "cap_deliver_return_routing", "cap_deliver_return_route_last_pos",
+            "cap_deliver_return_route_stall", "cap_deliver_return_route_retries",
+        ):
+            ctx.memory.pop(key, None)
+
+    def _begin_return_route(self, ctx: SkillContext, home: tuple) -> SkillResult:
+        here = ctx.obs.player.pos
+        ctx.memory["cap_deliver_return_routing"] = True
+        ctx.memory.pop("cap_deliver_return_stall", None)
+        ctx.memory.pop("cap_deliver_return_last_pos", None)
+        ctx.memory["cap_deliver_return_route_last_pos"] = (here.x, here.y)
+        ctx.memory["cap_deliver_return_route_stall"] = 0
+        ctx.memory["cap_deliver_return_route_retries"] = 0
+        return SkillResult(Status.RUNNING, WalkTo(x=int(home[0]), y=int(home[1])))
+
+    def _return_route_step(self, ctx: SkillContext, home: tuple) -> SkillResult | None:
+        if self._at_return_stand(ctx, home):
+            self._clear_return_walk(ctx)
             return None
-        return self._walk_toward(ctx, hx, hy, "cap_deliver_return")
+        here = ctx.obs.player.pos
+        cur = (here.x, here.y)
+        last = ctx.memory.get("cap_deliver_return_route_last_pos")
+        if last is None or cur != last:
+            ctx.memory["cap_deliver_return_route_last_pos"] = cur
+            ctx.memory["cap_deliver_return_route_stall"] = 0
+            return SkillResult(Status.RUNNING, None)
+        stall = ctx.memory.get("cap_deliver_return_route_stall", 0) + 1
+        ctx.memory["cap_deliver_return_route_stall"] = stall
+        if stall < self.stall_limit:
+            return SkillResult(Status.RUNNING, None)
+        ctx.memory["cap_deliver_return_route_retries"] = (
+            ctx.memory.get("cap_deliver_return_route_retries", 0) + 1)
+        ctx.memory["cap_deliver_return_route_stall"] = 0
+        # The miner relocates when this counter exhausts. A board deliver has
+        # no stand pool, so it keeps issuing `WalkTo`. Returning `None` here
+        # used to finish the goal on the handover tile.
+        return SkillResult(Status.RUNNING, WalkTo(x=int(home[0]), y=int(home[1])))
 
     def _walk_toward(self, ctx: SkillContext, tx: int, ty: int, tag: str) -> SkillResult | None:
         """One greedy step toward `(tx, ty)`, `stall_limit`-bounded like
-        `MineSmeltDeliver._walk_toward`. `None` means wedged — give up this leg."""
+        `MineSmeltDeliver._walk_toward`. `None` means wedged — the deliver
+        caller gives up the haul; the return caller must not treat that as
+        home (audit §42.3 / §46).
+        """
         here = ctx.obs.player.pos
         cur = (here.x, here.y)
         stall_key, pos_key = f"{tag}_stall", f"{tag}_last_pos"

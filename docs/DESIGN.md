@@ -674,3 +674,4 @@ Still open:
 - **Papers/ideas:** Voyager (skill library + automatic curriculum, arXiv 2305.16291); Generative Agents (Stanford Smallville — memory/reflection/social); AlphaStar / OpenAI Five (structured interface > pixels).
 - **Knowledge base:** `../uowiki` (companion wiki + MCP `wiki_search`/`wiki_read_page`/`wiki_file_report`).
 - **Server for testing:** local ServUO shard (`../servuo`).
+- **How a change is chosen, built, and closed:** [`IMPLEMENTATION.md`](IMPLEMENTATION.md).

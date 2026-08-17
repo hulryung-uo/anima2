@@ -11,7 +11,7 @@ readiness gates and the carpenter's fetch-before-buy registry preference.
 """
 
 from anima2.capabilities import CAPABILITIES
-from anima2.contract import Drop, ItemView, Observation, PickUp, PlayerView, Position
+from anima2.contract import Drop, ItemView, Observation, PickUp, PlayerView, Position, WalkTo
 from anima2.persona import Persona
 from anima2.skills.base import SkillContext
 from anima2.skills.carpentry import FetchBoards
@@ -142,3 +142,65 @@ def test_fetch_ready_needs_ground_boards_and_a_starved_pack():
     # Pack already has a craftable stock (>=19) -> not ready (don't over-fetch).
     assert not _fetch_ready(_ctx([_backpack(), ground, _item(0x900, BOARD_GRAPHIC, amount=19)],
                                  memory={}, goal_id=None))
+
+
+def test_deliver_return_stall_does_not_finish_short_of_the_grove():
+    # Same shape as follow-up 42: greedy stall used to yield None, which finished
+    # the goal wherever the woodsman stood. Home is a grove, drop is the handover.
+    skill = DeliverBoards()
+    home = (100, 100)
+    mem = {
+        "carpenter_drop": DROP,
+        "lumber_home": home,
+        "cap_deliver_goal_id": 71,
+        "cap_deliver_start_boards": 19,
+        "cap_deliver_needed": 19,
+        "cap_deliver_delivered": 19,
+        "cap_deliver_boards_remaining": 0,
+        "cap_deliver_return_stall": 5,
+        "cap_deliver_return_last_pos": (5, 5),
+    }
+    res = skill.step(_ctx([_backpack()], memory=mem, pos=Position(5, 5, 0)))
+    assert mem.get("cap_deliver_finished_goal_id") != 71
+    assert isinstance(res.action, WalkTo)
+    assert (res.action.x, res.action.y) == home
+
+
+def test_deliver_return_exhausted_walkto_does_not_finish_short_of_the_grove():
+    # Audit §46 leftover: after return_route_retries the old path yielded None
+    # and finished on the handover tile. Same defect as the greedy stall, delayed.
+    skill = DeliverBoards()
+    home = (100, 100)
+    mem = {
+        "carpenter_drop": DROP,
+        "lumber_home": home,
+        "cap_deliver_goal_id": 71,
+        "cap_deliver_start_boards": 19,
+        "cap_deliver_needed": 19,
+        "cap_deliver_delivered": 19,
+        "cap_deliver_boards_remaining": 0,
+        "cap_deliver_return_routing": True,
+        "cap_deliver_return_route_last_pos": (5, 5),
+        "cap_deliver_return_route_stall": 5,
+        "cap_deliver_return_route_retries": skill.return_route_retries,
+    }
+    res = skill.step(_ctx([_backpack()], memory=mem, pos=Position(5, 5, 0)))
+    assert mem.get("cap_deliver_finished_goal_id") != 71
+    assert isinstance(res.action, WalkTo)
+    assert (res.action.x, res.action.y) == home
+
+
+def test_deliver_return_arriving_home_still_finishes():
+    skill = DeliverBoards()
+    mem = {
+        "carpenter_drop": DROP,
+        "lumber_home": DROP,
+        "cap_deliver_goal_id": 71,
+        "cap_deliver_start_boards": 19,
+        "cap_deliver_needed": 19,
+        "cap_deliver_delivered": 19,
+        "cap_deliver_boards_remaining": 0,
+    }
+    res = skill.step(_ctx([_backpack()], memory=mem, pos=Position(*DROP, 0)))
+    assert mem["cap_deliver_finished_goal_id"] == 71
+    assert res.action is None

@@ -48,6 +48,47 @@ def test_mine_land_tiles_mirror_the_shard_source_exactly():
     assert land == MINE_LAND_TILES
 
 
+def test_play_map_reads_the_body_facet_not_the_fallback():
+    from anima2.contract import Observation, PlayerView, Position
+    from anima2.uomap import play_map
+
+    assert play_map(None, fallback=1) == 1
+    assert play_map(None, fallback=0) == 0
+    felucca = Observation(player=PlayerView(serial=1, pos=Position()), map_index=0)
+    trammel = Observation(player=PlayerView(serial=1, pos=Position()), map_index=1)
+    assert play_map(felucca, fallback=1) == 0
+    assert play_map(trammel, fallback=0) == 1
+
+
+def test_survey_map_prefers_the_body_observation():
+    from anima2.contract import Observation, PlayerView, Position
+    from anima2.village import LUMBER_MAP, _survey_map
+
+    class _Body:
+        def __init__(self, map_index):
+            self.last_obs = Observation(
+                player=PlayerView(serial=1, pos=Position()), map_index=map_index)
+
+    assert _survey_map() == LUMBER_MAP
+    assert _survey_map(_Body(0)) == 0
+    assert _survey_map(_Body(1), fallback=0) == 1
+
+
+def test_survey_map_observes_when_the_body_has_no_cached_obs():
+    # Production forge-pair bodies are ResilientIpcBody: no last_obs attribute.
+    # Follow-up 41's production path is observe(), not the LUMBER_MAP fallback.
+    from anima2.contract import Observation, PlayerView, Position
+    from anima2.village import LUMBER_MAP, _survey_map
+
+    class _Live:
+        def observe(self):
+            return Observation(
+                player=PlayerView(serial=1, pos=Position()), map_index=0)
+
+    assert _survey_map(_Live()) == 0
+    assert _survey_map(_Live()) != LUMBER_MAP
+
+
 def test_find_mine_spots_rediscovers_the_live_calibrated_trade_stand():
     # The trade corridor's mine stand (2611,474) was hand-calibrated live in
     # Phase 3. The surveyor, working from map data alone, must rank exactly that
@@ -67,3 +108,21 @@ def test_find_mine_spots_rediscovers_the_live_calibrated_trade_stand():
     for i, a in enumerate(coords):
         for b in coords[i + 1:]:
             assert max(abs(a[0] - b[0]), abs(a[1] - b[1])) >= 8
+
+
+@pytest.mark.skipif(
+    not (uomap.UO_DATA / "map0LegacyMUL.uop").exists()
+    or not (uomap.UO_DATA / "map1LegacyMUL.uop").exists(),
+    reason="both client map files not present",
+)
+def test_trade_mine_stands_match_across_felucca_and_trammel():
+    # Audit §41.6 / follow-up 41: the mine pool is identical on both facets, which
+    # is why a wrong LUMBER_MAP did not cause the 2026-08-14 dead tail. The test
+    # pins that claim so a later map-data change cannot silently make the
+    # fallback safe for trees and unsafe for ore (or the reverse).
+    from anima2.uomap import find_mine_spots
+
+    felucca = [s for s, _ in find_mine_spots(0, 2611, 474, radius=40)]
+    trammel = [s for s, _ in find_mine_spots(1, 2611, 474, radius=40)]
+    assert felucca == trammel
+    assert felucca[0] == (2611, 474)
