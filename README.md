@@ -1,174 +1,150 @@
 # anima2
 
-> *Anima (Latin: soul)* — a real character living in Britannia.
+> *Anima* (Latin: soul) — a real character living in Britannia.
 
-An **autonomous AI agent that plays Ultima Online** — the **Brain** that drives a
-body. A clean redesign of [`anima`](https://github.com/hulryung-uo/anima) (v1), built on top of
-[`anima-core`](https://github.com/hulryung-uo/anima-client) (the new Rust headless UO client).
+An autonomous AI agent that **plays Ultima Online**. This repo is the **brain**:
+it reads a structured world, decides, and emits actions. The body is
+[`anima-core`](https://github.com/hulryung-uo/anima-client) — a Rust headless
+UO client. The brain never parses packets or touches a socket.
 
-> **New here? Read [`docs/DESIGN.md`](docs/DESIGN.md)** — the full design & handoff
-> doc (what anima2 is, why, architecture, roadmap, what to reuse from v1). This
-> project is resumable from that doc alone.
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-## The idea
+[Design](docs/DESIGN.md) ·
+[How we change it](docs/IMPLEMENTATION.md) ·
+[Autonomy roadmap](docs/AUTONOMY-ROADMAP.md) ·
+[Watch a run](docs/MONITORING.md)
 
-anima2 perceives UO through a structured **Observation/Action contract** (never
-pixels, never raw packets), decides with a **hierarchy of deterministic skills +
-planner + LLM cognition**, remembers, talks in character, and **improves** by
-accumulating skills and following a curriculum. It is the *driver*; `anima-core`
-is the *car*.
+![The anima-core body anima2 drives — live ServUO, real UO art](https://raw.githubusercontent.com/hulryung-uo/anima-client/main/docs/img/screenshot.png)
+
+*The body this brain drives: isometric UO, journal, and HUD, served from the
+same session the agent already owns. `--monitor` attaches a read-only view to
+that session; it is not a second login.*
+
+## Highlights
+
+- **Structured play, not pixels.** The brain consumes an Observation and emits
+  an Action. No screenshots, no packet parsing — the same split AlphaStar used
+  against StarCraft.
+- **Two-rate loop.** Fast loop (~100–250ms): reflexes, planner, skills. Always
+  alive. Slow loop: LLM cognition that *steers* — goals, talk, reflection.
+  The model is never in the hot path.
+- **Profession lives, not scripted errands.** Warrior, mage, woodsman,
+  carpenter, and tinker hunt or work, restock, bank, and report when a rule
+  and a gate disagree.
+- **A real economy, on the shard.** Three supply chains coordinate only through
+  items on the ground. The flagship is miner → tinker tongs: the one
+  positive-margin loop at vendor prices.
+- **Agents cannot write their own score.** Foundry is an independent fitness
+  kernel (MAP-Elites, eval harness). Live claims are proven on ServUO, with
+  predictions written down before the day.
+
+## Why this shape
+
+Sandbox UO has no reward gradient worth training on, and an LLM per tick is
+too slow and too expensive to keep a character alive. So the stack is
+**priors + a skill library + a curriculum first**; evolution tunes bottlenecks
+later. Three planes stay separate: **Play** (the contract), **Control** (GM
+scenario fixtures), **Director** (what to learn next). Control lives outside
+both brain and body.
+
+This is a from-scratch redesign of [`anima`](https://github.com/hulryung-uo/anima)
+(v1). v1 is mined for personas, Foundry, and wiki lessons — not copied as
+structure. The *why* behind each of those choices is
+[`docs/DESIGN.md`](docs/DESIGN.md).
 
 ```
-   Director / Curriculum   (what to learn next)
-            │
-   anima2  BRAIN  ── Observation/Action ──▶  anima-core  BODY (Rust)
+                    Director / curriculum
+                              │
+   anima2  BRAIN  ── Observation / Action ──▶  anima-core  BODY
    reflexes · planner · skills · LLM · memory · persona
 ```
 
-- **Fast loop (~100–250ms):** perceive → reflexes → planner → skill → act. No LLM. Always alive.
-- **Slow loop (seconds–min, async):** LLM sets goals, handles social/novelty, reflects, proposes new skills. Steers; never blocks.
+## What works today
 
-## Status
+Live-verified on a real ServUO shard, not only offline tests:
 
-**Autonomy track begun:** the roadmap has been re-centered on turning the
-staged worker into a self-sustaining UO player; see
-[`docs/AUTONOMY-ROADMAP.md`](docs/AUTONOMY-ROADMAP.md). The A1–A4 survival and continuity
-vertical is live-verified: the agent retreats and bandages wounds, cures poison,
-quarantines ordinary work while dead, accepts only a verified free resurrection,
-discovers a healer from server waypoints without a staged coordinate, recovers
-its uniquely attributed corpse, and resumes the same Goal after death or an
-abrupt IPC bridge restart. B1 is also live-verified: nested goals preserve exact
-parent identity and observed progress across success and deadline expiry, while
-stale or adversarial cognition cannot overwrite the active stack. B2 now turns
-trusted curriculum milestones into exact, profession-bound work goals behind a
-separate `--curriculum-goals` opt-in; arbitrary/cross-profession proposals fail
-closed and work FSMs only yield at safe observation-confirmed boundaries. B3
-adds a separate immutable capability registry and a sealed, deadline-bounded
-`blacksmith/bank_gold` Goal whose exact shipped adapter can bank but cannot
-craft, sell, or load a model-named skill. B4 connects that boundary to real
-cognition: an opt-in selector may emit only strict JSON for `idle` or an
-observation-ready opaque capability id; Agent still rechecks and seals it.
-B5 adds a separately leased `blacksmith/sell_daggers` operation. Its success
-requires goal-scoped proof of the exact vendor offer, dagger removal, quoted
-gold arrival, and safe return before the selector proceeds to `bank_gold`.
-B6 adds `blacksmith/craft_daggers`: it can use only the owned backpack hammer
-and iron, verifies every live craft-gump reply, attributes successful and
-failed ingot consumption to the active goal, closes the UI, and replenishes the
-pack to one five-dagger sale batch. B7 makes `bank_gold` repeatable: each goal
-freezes the exact pack piles and the settled bank baseline, owns the matching
-pickup/drop actions, and succeeds only after equal pack and bank deltas plus a
-safe return. The production village now repeats sale → bank → craft instead of
-stopping after the first bank balance, and Chronicle records each goal once.
-B8 adds `blacksmith/buy_ingots` — the self-provisioning keystone: the sell side
-inverted (gold leaves, iron ingots arrive), so the loop replenishes its own
-finite crafting metal with earned gold instead of stalling for a GM to re-gift
-ingots. It buys only iron (never the vendor's other stock), spends exactly the
-live-quoted price, and is ready only when iron is below one sale batch and the
-gold is there to afford it. This required making the body contract's BUY window
-carry per-item `serial/graphic/amount` (symmetric with the SELL window, so the
-brain matches an offer by graphic and buys by serial); the contract advanced to
-schema 16 (additive ClassicUO coverage) and the brain moved in lockstep. Its
-tool-replacement sibling `buy_smith_tool` closes the loop's last GM dependency —
-it buys one replacement tongs (via the same graphic-parametrized resolver) when
-the smith's hammer wears out, so both finite crafting inputs (iron and the tool)
-now replenish through normal vendor play.
+| | |
+| --- | --- |
+| **Survive** | Retreat and bandage, cure poison, stay inert while dead, accept a verified resurrection, find a healer from server waypoints, recover the attributed corpse, resume the same goal after death or a killed IPC bridge. |
+| **Work** | Nested goals keep parent identity; a sealed capability registry means cognition can only pick opaque, observation-ready ids. Craft, sell, buy, and bank are deadline-bounded transactions with observation-checked success. |
+| **Live a profession** | Five Lives on one orchestrator. The tinker is the flagship: buy iron or fetch delivered ingots, craft tongs, sell, bank, replace a worn tool. |
+| **Trade with others** | Tinker → mage (gold), lumberjack → carpenter (boards), miner → tinker (iron / tongs). Coordination is items on the ground — no private channel. The last of those is the one positive-margin loop. |
+| **Watch** | `--monitor` serves a read-only client view per agent (`http://127.0.0.1:8801/`). `--narrate` makes the character say *what* and *why*. |
+| **Measure** | Independent GM-read fitness, a repeatable eval harness, a MAP-Elites archive. A tie against random search is reported as a tie. |
 
-**Phase 6 (the living village) — complete, all six items live-verified.**
-**Phase 7 item 1 (profession-conditional pool routing + fishing `nodes_pool`
-threading) — live-verified.** **Autonomy B8 (verified iron + tool acquisition) —
-live-verified.** 1106 tests green, ruff clean. The Python
-brain drives **live ServUO characters** through the `anima-agent` IPC bridge, from
-a single agent up to a working **village** of profession-holding agents. Every
-milestone below is verified against a real ServUO shard with a non-vacuous live
-gate — differential where applicable, provenance-aware, cross-process-read — not
-just an offline test.
+Phases 2–6 of the original roadmap are complete (cognition and memory,
+economy, learning stack, measurement, living village). The autonomy track
+and the next Foundry rerun are governed by
+[`docs/AUTONOMY-ROADMAP.md`](docs/AUTONOMY-ROADMAP.md) — a larger evolution
+budget is not the next milestone.
 
-| Phase | What landed | Verified |
-|-------|-------------|----------|
-| **2** — cognition + memory | Observation/Action contract, episodic memory, reflection loop, wiki semantic memory | ✅ closed out |
-| **3** — economy & interaction | Miner→blacksmith ingot trade, sell-to-vendor + bank the gold, hunt/loot corpses, A\* navigation | ✅ all 4 items |
-| **4** — the learning stack | Wiki write loop (LLM-judged discrepancy reports), cognition cost tiering, skill library, UCB1 bandit tuning, automatic curriculum | ✅ all 5 items |
-| **5** — measurement & evolution | Independent "agents can't lie" fitness oracle, repeatable eval harness, MAP-Elites archive, config-space evolution loop | ✅ all 4 items |
-| **6** — the living village | Persistent lives (insights survive the session), inter-agent relationship chronicle, forum as continuing chronicle, richer eval scenarios (fisher + cognition-aware), and the decisive evolution-vs-random rerun (honest result: random won at this budget) | ✅ all 6 items |
+## Quick start
 
-A few of the live proofs, to give the flavor of the verification culture:
-
-- **The economy loop closes into gold, end to end.** A miner mines, smelts, and
-  hauls ingots to a co-located blacksmith that has run its own stock dry; the
-  blacksmith picks them up, crafts, sells the surplus daggers to a vendor
-  (right-click context menu → `SellItems`), and banks the proceeds — every gold
-  piece provably a sale (starting gold GM-deleted). See `live_trade.py` /
-  `live_market.py`.
-- **A\* navigation, proven differentially.** `GoTo` delegates to the bridge's
-  route driver; a forced-greedy control run wedges on a rock-blocked Minoc-ridge
-  course a straight line can't cross, while the real `GoTo` crosses it both ways
-  (round trip). See `live_navigate.py`.
-- **Evolution is measured, not asserted.** A config-space MAP-Elites loop runs
-  against a random-search baseline on an identical budget, scored by an
-  independent GM-read fitness oracle the agent's own code can never write — and a
-  tie is reported honestly as a tie, not dressed up as a win.
-- **The village remembers.** Reflection insights persist to disk so a brand-new
-  process resumes a persona's inner life before its first tick; a chronicle
-  ledger records real inter-agent events (who delivered to whom), cross-checked
-  against an independent episode-transcript oracle; and forum posts are grounded
-  in those real events (a qwen-written entry named its blacksmith partner by
-  exact persona name, from a real confirmed delivery).
-
-See [`docs/PHASE6.md`](docs/PHASE6.md) for the current work breakdown and
-[`docs/DESIGN.md`](docs/DESIGN.md) §10 for the full roadmap.
-
-## Run it
+**Offline** needs Python 3.12+ and [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest -q                       # 1106 passing (offline; uses MockBody + a fake bridge)
-python -m anima2                # offline demo: a miner walks to work, then wanders
-
-# Live (needs a running UO server + the built bridge):
-( cd ../anima-client && cargo build -p anima-net )
-python -m anima2.live 127.0.0.1 2594 animatest animatest --goto 3720 2216
-#   add --llm to use Claude cognition (needs ANTHROPIC_API_KEY + pip install -e ".[llm]")
-
-# A working village (Control-plane staged; defaults: 2 miners, 1 each of the rest,
-#   60 ticks) — a roster with both a miner and a blacksmith co-locates the first
-#   of each at a calibrated trade spot, wires up ingot delivery, and stages a
-#   vendor + banker so the paired blacksmith can sell/bank too:
-python -m anima2.village
-#   add --curriculum-goals to drive profession work from admitted catalog Goals
-#   add --capability-goals to let the paired blacksmith select verified operations
-#   add --account-prefix freshname for an isolated first-run village/account set
-#   add --chatter for LLM in-character speech + goal:goto (needs a Replicate key in
-#     anima v1's config.yaml, or REPLICATE_API_TOKEN — no extra pip install)
-#   add --forum to post each villager's day to uotavern (needs ANIMA_FORUM_API_KEY,
-#     or the forum key in anima v1's config.yaml)
-#   add --hunters N to include the hunter profession (opt-in, default 0)
-#   add --llm-tiers {anthropic,replicate,stub} for role-tiered cognition (chatter +
-#     reflection) via build_tiered_clients — supersedes --chatter when both are given
-
-# Single-skill live proofs (GM stages the scenario, then the brain works it):
-python -m anima2.live_mine      # mines ore, Mining skill rises
-python -m anima2.live_smelt     # mines then smelts ore into ingots, end to end
-python -m anima2.live_reflect   # LLM cognition + reflection, wiki-grounded prompts
-python -m anima2.live_trade     # 2-agent inter-agent economy proof: miner -> blacksmith
-python -m anima2.live_market    # blacksmith sells daggers to a vendor, banks the gold
-python -m anima2.live_hunt      # bare-handed hunter kills weak creatures, loots corpses
-python -m anima2.live_navigate  # differential proof: greedy wedges, WalkTo-delegated GoTo crosses (round trip)
-python -m anima2.live_survival  # A1: flee, self-bandage, and observed HP recovery
-python -m anima2.live_recovery  # A2: poison cure + death/resurrection/corpse/Goal continuity
-python -m anima2.live_reconnect # A3: kill the live bridge, reconnect, and resume the same GoTo
-python -m anima2.live_waypoint_recovery # A4: discover healer E5, resurrect, recover corpse, resume Goal
-python -m anima2.live_goal_stack # B1: interrupt, deadline, cognition isolation, resume same Goal
-python -m anima2.live_bank_goal  # B3: invalid-goal differential + exact 100-gold bank transaction
-python -m anima2.live_repeat_bank_goal # B7: second deposit over an existing bank balance
-python -m anima2.live_buy_goal    # B8: buy iron from a vendor — exact quoted spend, iron arrives, only iron
-python -m anima2.live_toolbuy_goal # B8: buy a replacement smith tool (tongs) when the smith holds none
+uv run pytest -q          # MockBody + a fake bridge; no shard
+uv run ruff check .
+uv run python -m anima2   # a miner walks to work, then wanders
 ```
+
+**Live** needs a running UO shard (local ServUO on `:2594` is the usual
+fixture), classic UO data files, and the IPC bridge from the sibling repo:
+
+```bash
+( cd ../anima-client && cargo build -p anima-net )
+
+# One character:
+uv run python -m anima2.live 127.0.0.1 2594 animatest animatest --goto 3720 2216
+
+# Flagship day — miner delivers iron, tinker turns it into tongs:
+uv run python -m anima2.village --forge-pair --ticks 1800 --monitor --narrate
+# Grimm  http://127.0.0.1:8801/    Pim  http://127.0.0.1:8802/
+```
+
+LLM cognition is opt-in (`--llm`, `--chatter`, `--llm-tiers`) and needs
+`ANTHROPIC_API_KEY` plus `uv pip install -e ".[llm]"`. The forge pair does
+not. Schema version is checked at handshake: a mismatch with the bridge
+aborts before a character is driven.
+
+More village shapes (`--carpenter`, `--woodsman`, `--supply-pair`,
+`--pipeline`) and the single-skill live gates (`python -m anima2.live_mine`,
+`live_trade`, `live_bank_goal`, …) are in the module docstrings. How to
+*watch* a day: [`docs/MONITORING.md`](docs/MONITORING.md). How to *write down*
+what looked wrong: [`docs/OBSERVATIONS.md`](docs/OBSERVATIONS.md).
+
+## Documentation
+
+The project is meant to be resumable from docs, not from chat history.
+
+| Doc | What it is |
+| --- | --- |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Source of truth: what anima2 is, the decision history, architecture, contract, learning plan |
+| [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) | How a change is chosen, built, and closed (fixture first, one lever, prediction before a live day) |
+| [`docs/AUTONOMY-ROADMAP.md`](docs/AUTONOMY-ROADMAP.md) | From staged worker to a character that keeps living without GM props |
+| [`docs/AUDIT-2026-07-29.md`](docs/AUDIT-2026-07-29.md) | Live evidence: what a run actually proved, and what it did not |
+| [`docs/MONITORING.md`](docs/MONITORING.md) | Read-only spectator view, status-line vocabulary, liveness alarms |
+| Profession notes | [`SWORD-WARRIOR`](docs/SWORD-WARRIOR.md) · [`MAGE`](docs/MAGE-AND-PIPELINE.md) · [`WOODSMAN`](docs/WOODSMAN.md) · [`CARPENTER`](docs/CARPENTER.md) |
+
+Phase write-ups (`docs/PHASE2.md` … `PHASE7.md`) are the closed historical
+record. [`docs/HISTORY.md`](docs/HISTORY.md) is the narrative through them.
 
 ## Family
 
 | Project | Role |
-|---------|------|
-| [`anima-core`](https://github.com/hulryung-uo/anima-client/tree/main/crates/anima-core) | Body — UO protocol, world, assets, path (Rust, headless) |
-| [`anima-client`](https://github.com/hulryung-uo/anima-client) | Cross-platform client wrapping anima-core (+ web renderer) |
-| [`anima`](https://github.com/hulryung-uo/anima) (v1) | Original Python AI player + Foundry evolution (mined for assets/lessons) |
+| --- | --- |
+| [`anima-core`](https://github.com/hulryung-uo/anima-client/tree/main/crates/anima-core) | **Body** — UO protocol, world, assets, path (Rust, headless) |
+| [`anima-client`](https://github.com/hulryung-uo/anima-client) | Cross-platform client around that core (web renderer + desktop) |
+| [`anima`](https://github.com/hulryung-uo/anima) (v1) | Original Python player + Foundry; mined for assets and lessons |
 | **anima2** | **Brain** — this project |
+| [`uowiki`](https://github.com/hulryung-uo/uowiki) | Semantic memory / textbook the slow loop can consult |
+
+## Contributing
+
+Issues and pull requests are welcome. For a code change, start from
+[`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md): name a fact, pin it with a
+test that fails on the old code, change one lever, write the prediction
+before spending a live day. Do not pick work from a stale “Next:” pointer
+or a larger evolution budget — that criterion is in AUTONOMY-ROADMAP §E.
