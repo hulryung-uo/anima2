@@ -322,23 +322,43 @@ def test_a_held_frame_that_gives_up_closes_on_the_fsms_own_ladder():
     assert _history(life) == [("sell_furniture", "failure")]
 
 
-def test_a_held_frame_is_bounded_by_its_own_deadline():
-    """Bound 2, the backstop: a frame that never gives up is EXPIRED by
-    `GoalStack.expire_due` at `default_deadline_ticks` — reachable at all only because
-    the mode is held, since `expire_due` runs solely inside `Agent.tick` and is compared
-    against that agent's own counter. Frozen, the deadline is unreachable by
-    construction: 180 econ ticks never arrive when the econ agent stops at 5."""
+def test_a_finished_unachieved_craft_closes_on_the_ladder_not_the_deadline():
+    """Follow-up 15, live on forge-20260818-0003.
+
+    `craft_tongs#4` reached `cap_craft_stage=finished` with 3 tongs of a batch of 5,
+    pack iron 0, and 22 ingots on the ground. `want=fetch_iron` and `ready=['fetch_iron']`
+    the whole way. The frame had no give-up marker, so bound 2 spent the remaining
+    ~270 ticks and only then did fetch land in 8. Craft now writes the same
+    `cap_run_finished_goal_id` sell/bank/buy already did, so this world is bound 1.
+
+    Bound 2 still exists, but not on a finished craft and not on a starved
+    FSM (that is bound 3 / overdue). The remaining vehicle is a fetch that
+    finishes empty — `_expiring_fetch_life` below.
+    """
     body, life, frame = _expiring_craft_life()
     budget = frame.deadline_tick - frame.created_tick
     for _ in range(budget * 3):
         life.tick()
         if life.econ_agent.goal_stack.current is None:
             break
-    assert _history(life) == [("craft_tongs", "expired")], (
-        "the deadline is the hold's backstop and it must actually be reached")
-    assert life.econ_agent.ticks <= budget + 2, (
-        f"the frame outlived its {budget}-tick budget in the clock that budget is "
-        f"counted in ({life.econ_agent.ticks} economy ticks)")
+    assert _history(life) == [("craft_tongs", "failure")], (
+        "a terminal-but-unachieved craft must close on the ladder, not sit to 300")
+    assert life.econ_agent.ticks < budget, (
+        f"bound 1 must beat the {budget}-tick deadline; got {life.econ_agent.ticks}")
+    # The delivery was already there. After the ladder, fetch must actually run.
+    from anima2.skills.smelt import INGOT_GRAPHICS
+    iron = sorted(INGOT_GRAPHICS)[0]
+    body.items[0x200] = ItemView(
+        serial=0x200, graphic=iron, amount=22,
+        pos=Position(6, 5, 0), container=None, layer=0, distance=1)
+    pack_iron = 0
+    for _ in range(80):
+        life.tick()
+        pack_iron = sum(i.amount for i in body.items.values()
+                        if i.graphic == iron and i.container == BP)
+        if pack_iron > 0:
+            break
+    assert pack_iron > 0, "fetch_iron never ran — the 2026-08-18 dead window is back"
 
 
 def _wedged_buy_life():
@@ -376,16 +396,14 @@ def _wedged_buy_life():
 
 
 def _expiring_craft_life(*, surface: bool = False):
-    """A frame only `expire_due` can close — the bound-2 vehicle, after follow-up 19.
+    """A tinker craft frame whose material vanishes mid-batch.
 
-    A CRAFT frame, because `CraftItemCapability` writes no `cap_run_finished_goal_id`
-    and so still has no give-up ladder: the buy families do now, which is the whole
-    point of that follow-up. The material vanishes mid-craft, so the FSM cannot achieve
-    and cannot self-close, and the frame rides its full budget to the deadline.
+    Follow-up 15 gave craft the same `cap_run_finished_goal_id` marker the buy
+    families got in follow-up 19: once the FSM reaches `finished` without a
+    full batch, bound 1 closes the frame. This fixture is therefore the craft
+    GIVE-UP vehicle. Bound 2/3 for craft need the FSM starved as well
+    (`_starved_craft_life`), matching the live overdue gate.
 
-    This is the same recipe the LIVE bound-3 gate stages (`live_frame_overdue_gate.py`:
-    a tinker on its craft spot with `craft_tongs` the only branch its rule can reach),
-    which is the reason to trust it: the shape is one a shard has actually produced.
     `surface` injects the unowned gump the overdue repair is supposed to close.
     """
     from anima2.skills.tinkering import INGOT_GRAPHICS, TinkerTongs
@@ -406,6 +424,20 @@ def _expiring_craft_life(*, surface: bool = False):
     return body, life, frame
 
 
+def _starved_craft_life(*, surface: bool = False):
+    """Bound-2/3 vehicle: Survive starves the craft FSM so it never reaches `finished`.
+
+    Follow-up 15 closed the no-gump `_expiring_craft_life` through bound 1. An
+    overdue craft still needs the live gate's starve — `Survive` is skills[0]
+    of the capability planner, so a wounded tinker's economy agent ticks while
+    its FSM does not, and no run-finished marker is written.
+    """
+    body, life, frame = _expiring_craft_life(surface=surface)
+    body.items[0x950] = _item(0x950, BANDAGE_GRAPHIC, 40)
+    body.player.hits = 20
+    return body, life, frame
+
+
 def test_an_overdue_frame_is_reached_by_a_plain_world_and_never_pins_the_life():
     """The hold's THIRD bound, and the reason it has to exist.
 
@@ -415,7 +447,7 @@ def test_an_overdue_frame_is_reached_by_a_plain_world_and_never_pins_the_life():
     work agent never ticked again, and the Life emitting nothing at all — which is
     strictly worse than the zombie frame the hold was written to fix.
     """
-    body, life, frame = _expiring_craft_life(surface=True)
+    body, life, frame = _starved_craft_life(surface=True)
     budget = frame.deadline_tick - frame.created_tick
     overdue_at = released_at = None
     for tick in range(1, budget * 3):
@@ -444,11 +476,12 @@ def test_an_overdue_frame_gets_the_stale_ui_repair_pointed_at_it_and_then_retire
     `_clear_stale_ui`'s no-goal precondition exists because "a mid-transaction gump
     belongs to a live goal". A frame that has burned its ENTIRE budget without once
     reaching a safe yield point has forfeited that premise — it is exactly the case the
-    repair should be allowed to touch — so the wedge RESOLVES instead of being reported
-    forever: the gump closes, `deadline_can_expire` comes back, and the frame expires on
-    the economy agent's very next tick, leaving a clean stack.
+    repair should be allowed to touch — so the wedge's SURFACE resolves: the
+    gump closes. After follow-up 15 a starved craft is still `started and not
+    terminal`, so `_craft_can_yield` stays false and the frame remains — the
+    live overdue gate's documented worst case, "a stale frame, but alive".
     """
-    body, life, frame = _expiring_craft_life(surface=True)
+    body, life, frame = _starved_craft_life(surface=True)
     budget = frame.deadline_tick - frame.created_tick
     for _ in range(budget * 3):
         life.tick()
@@ -456,9 +489,12 @@ def test_an_overdue_frame_gets_the_stale_ui_repair_pointed_at_it_and_then_retire
             break
     assert not body.gumps, "the surface that blocked every yield was never closed"
     assert getattr(life, "_stale_ui_closes", 0) == 1, "and closed exactly once"
-    assert _history(life) == [("craft_tongs", "expired")], (
-        "with the surface gone the frame must actually retire, not sit stale forever")
-    assert life.frame_overdue is False and life.holding_frame is False
+    # Follow-up 15 + starve: the FSM never reaches `finished`, so closing the
+    # gump does not make `_craft_can_yield` true (`started and not terminal`).
+    # That is the live gate's documented worst case — a stale frame, but alive.
+    assert life.econ_agent.goal_stack.current is not None
+    assert life.frame_overdue is True
+    assert _history(life) == []
 
 
 def _starved_fsm_life():
@@ -643,7 +679,7 @@ def test_telemetry_names_an_overdue_frame_instead_of_leaving_it_to_arithmetic():
     two numbers on the line, and review-caught nobody makes that comparison. `!overdue`
     rides ALONGSIDE the other two markers, so the released stale frame reads
     `!frozen!overdue` — nobody is ticking it, and it is past its budget."""
-    body, life, frame = _expiring_craft_life(surface=True)
+    body, life, frame = _starved_craft_life(surface=True)
     budget = frame.deadline_tick - frame.created_tick
     line = telemetry_line(life, "tinker", body.observe())
     assert "!overdue" not in line, f"a frame inside its budget is not overdue: {line}"
@@ -743,20 +779,55 @@ def test_a_real_give_up_ladder_is_reported_as_bound_1():
     assert "retired=1:1g" in telemetry_line(life, "carpenter", body.observe())
 
 
+def _expiring_fetch_life():
+    """A fetch_iron frame that finishes empty: the pile vanishes after admission.
+
+    Fetch writes `cap_fetch_finished_goal_id` but not `cap_run_finished_goal_id`,
+    so `CapabilityGoalComplete` has neither branch and `expire_due` closes it —
+    bound 2. This is the production path bound 2 still owns after follow-up 15
+    gave craft the sell/bank/buy marker. The pile sits past `PICKUP_REACH` so
+    admission walks rather than lifts; popping it then cannot accidentally
+    achieve the fetch.
+    """
+    from anima2.skills.craft import PICKUP_REACH
+    from anima2.skills.smelt import INGOT_GRAPHICS
+
+    iron = sorted(INGOT_GRAPHICS)[0]
+    body = _body(_item(0x900, sorted(TINKERTOOLS_GRAPHICS)[0]))
+    pile = ItemView(
+        serial=0x200, graphic=iron, amount=22,
+        pos=Position(5 + PICKUP_REACH + 2, 5, 0), container=None, layer=0,
+        distance=PICKUP_REACH + 2)
+    body.items[pile.serial] = pile
+    life = TinkerLife(body=body, persona=Persona(name="Pim"), routes={})
+    # Pin the wander: a wide leash walks onto the pile during econ_grace and
+    # the admission tick lifts it, so there is nothing left to vanish.
+    life.set_leash((5, 5), 0)
+    frame = _run_to_admission(life)
+    assert frame is not None and frame.goal.params.get("capability") == "fetch_iron"
+    body.items.pop(pile.serial)
+    return body, life, frame
+
+
 def test_a_deadline_retirement_is_reported_as_bound_2_not_bound_1():
-    """The control that makes the give-up label mean something: the same reporter over
-    `_wedged_buy_life`, where a BUY frame has no give-up ladder at all and only
-    `expire_due` can close it."""
+    """The control that makes the give-up label mean something: a fetch that
+    finished empty can yield, never wrote the run-finished marker, and
+    `expire_due` closes it — bound 2.
+
+    Craft cannot be this control after follow-up 15: a finished craft is bound 1,
+    and a starved started craft cannot yield, so it goes overdue instead of
+    expiring (the live gate's worst case).
+    """
     from anima2.life_runner import frame_retirements, retirement_tally
 
-    body, life, frame = _expiring_craft_life()
+    body, life, frame = _expiring_fetch_life()
     budget = frame.deadline_tick - frame.created_tick
     for _ in range(budget * 3):
         life.tick()
         if life.econ_agent.goal_stack.current is None:
             break
     rows = frame_retirements(life)
-    assert len(rows) == 1 and rows[0][1] == "craft_tongs"
+    assert len(rows) == 1 and rows[0][1] == "fetch_iron"
     assert rows[0][4] == "expired", rows
     assert rows[0][2] >= budget, f"bound 2 closes AT the deadline, not before: {rows}"
     assert retirement_tally(life) == "retired=1:1x"

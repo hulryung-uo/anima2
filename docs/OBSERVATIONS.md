@@ -18,9 +18,15 @@ and until now there was nowhere to put it.
 ## How to produce the raw material
 
 ```
-python -m anima2.village --forge-pair --ticks 1800 --monitor --narrate \
-    > ~/anima-logs/forge-$(date +%Y%m%d-%H%M).log 2>&1
+./scripts/run_forge_pair.sh
+# equivalent core:
+# PYTHONUNBUFFERED=1 uv run python -m anima2.village --forge-pair --ticks 1800 --monitor --narrate
 ```
+
+Logs land under `.logs/forge-TIMESTAMP.log` (and `~/anima-logs/` when writable).
+Watch without Chrome: Safari on the printed `watch:` URLs, or
+`uv run python -m anima2.monitor_watch` (writes `.logs/monitor-*.log`).
+Do not open `anima-desktop` on the same characters — that kicks the agent.
 
 - `--monitor` serves the read-only client view per agent (`http://127.0.0.1:8801/`), so the
   character can be watched playing.
@@ -75,4 +81,35 @@ the fast loop may not do, what a live run is for — is
 
 ## Entries
 
-_(none yet — this file was created 2026-08-14, with `--narrate`.)_
+### 2026-08-18  Late-day sell returns walked to an early craft tile and gave up at age 11
+- **Saw:** After a productive morning of sells from `@(2611,473)`, Pim settled
+  at craft_spot `@(2609,474)`. Every late `sell_return` still targeted
+  `(2611,473)` at `d=2>0`, and sell/bank frames gave up at age 11/14 with
+  the gold already taken.
+- **It said:** `trip=sell_return to=(2611,473) d=2>0 stall=5/6` (20 samples);
+  `FRAME RETIRED sell_tongs#… age=11/180 -> giveup` ×15; bank age-14 ×5;
+  day ended `want=fetch_iron admitted=sell_tongs@9/180` on that wedge.
+- **Where:** `~/anima-logs/forge-20260818-0039.log`, Pim t≈1241–1800.
+- **Why it looked wrong:** the sale had already worked. The hold was
+  finishing a return to a frozen `bs_stand` from the first craft tile of
+  the day (`setdefault`), not a failed vendor trip. §34.6 already refused
+  anchoring home to `craft_spot` alone.
+- **Later the same day (verify tape):** `.logs/forge-20260818-0100.log` —
+  banked 1553g; **0** stale `sell_return`; **0** age-11 sell giveups;
+  49× sell `age=5 -> achieved`. §48 live-closed.
+
+### 2026-08-18  A finished craft sat on the iron the miner had already delivered
+- **Saw:** Pim standing at the forge with 3 tongs, pack iron 0, and a pile of
+  ingots at his feet, for the better part of a craft budget, twice.
+- **It said:** `want=fetch_iron` `admitted=craft_tongs@26/300` …
+  `@296/300` `ready=['fetch_iron']` `pim_sees=12` then 22, then
+  `FRAME RETIRED craft_tongs#4 age=300/300 -> expired`. Fetch landed in 8
+  ticks (`iron=20`). Same shape on `craft_tongs#34`.
+- **Where:** `~/anima-logs/forge-20260818-0003.log`, Pim t≈105–402 and
+  t≈1057–1063. Coordinates `(2611, 473)`.
+- **Why it looked wrong:** the rule already wanted fetch and the gate was
+  ready. The hold was finishing a craft that had already finished. §6.4
+  waited on an empty drop; this time the delivery was there.
+- **Later the same day (verify tape):** `forge-20260818-0039` —
+  `craft_tongs#17 age=22/300 -> giveup`, `fetch_iron#18 age=4/180 ->
+  achieved`; 0× craft `300/300 expired`. Follow-up 15 craft live-closed.

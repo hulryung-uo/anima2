@@ -8,7 +8,7 @@ Read [`DESIGN.md`](DESIGN.md) for *what this is* and *why*. Read
 [`OBSERVATIONS.md`](OBSERVATIONS.md) for the input side of a new finding.
 This file is only *how a change is chosen, built, and closed*.
 
-Last updated: 2026-08-17.
+Last updated: 2026-08-18.
 
 ---
 
@@ -32,27 +32,38 @@ that can steer a Life, which is a design question, not a wiring one.
 Do **not** burn a multi-hour live GM budget to discover a defect that a
 hand-built observation can name.
 
-### Current queue (2026-08-17)
+### Current queue (2026-08-18)
+
+Live-scored 2026-08-18:
+
+| Item | Score | Tape |
+|---|---|---|
+| Follow-up 42 / §43.4 apron | PASS | `forge-20260818-0003` |
+| Follow-up 40 / §44.3 `silent=` | Instrument PASS | same |
+| Follow-up 41 / §45.2 `map=` | PASS | same |
+| Follow-up 15 (craft) live | **PASS** — giveup@22, fetch@4; 0× `300/300 expired` | `forge-20260818-0039` |
+| Stale `bs_stand` (§48) live | **PASS** — 0× stale `sell_return`; 0× age-11 sell giveup; 49× sell@5 achieved | `.logs/forge-20260818-0100` |
 
 Closed offline, live-unverified:
 
 | Item | What | Where |
 |---|---|---|
-| Follow-up 42 | Return must reach a stand before mining | `skills/smelt.py`, audit §43 |
-| Follow-up 40 | A stand that produces no verdicts must relocate | `skills/harvest.py`, audit §44 |
-| Follow-up 41 | Survey the facet the body is on | `uomap.play_map`, audit §45 |
 | DeliverBoards sibling of 42 | Return stall / exhausted WalkTo is not arrival | `skills/woodwork.py`, audit §46 |
 
 Still open, do not start without a fixture or a written prediction:
 
-- Follow-up 40/42/41 **live** — one ordinary `--forge-pair` day. Predictions
-  are in §43.4, §44.4, §45.4.
+- Follow-up 15 remainder — fetch / process / deliver still have no
+  `cap_run_finished_goal_id`. Bound 2's reporter now stands on fetch.
 - Genome axes → Life knobs — design, not a splat. `profession` is identity
   and the allowlist refuses it.
 - Foundry eval measuring a Life — `foundry/eval.py::_build_agent` still
   builds a bare `Agent`.
 - Retreat / rest timing as knobs — the capability manifest forbids
   per-instance survival state on purpose.
+
+Live watch: `./scripts/run_forge_pair.sh` (Safari + `.logs/`) or
+`uv run python -m anima2.monitor_watch` — not Chrome, not `anima-desktop`
+(`docs/MONITORING.md`).
 
 ---
 
@@ -161,10 +172,18 @@ uv run pytest tests/test_smelt.py tests/test_harvest.py tests/test_uomap.py test
 Live, flagship pair (prediction already written for the next day):
 
 ```
-python -m anima2.village --forge-pair --ticks 1800 --monitor --narrate \
-    > ~/anima-logs/forge-$(date +%Y%m%d-%H%M).log 2>&1
+./scripts/run_forge_pair.sh
+# or:
+PYTHONUNBUFFERED=1 uv run python -m anima2.village --forge-pair --ticks 1800 --monitor --narrate \
+    2>&1 | tee .logs/forge-$(date +%Y%m%d-%H%M).log
 ```
+
+Watch with Safari or `uv run python -m anima2.monitor_watch` — not Chrome, and
+not `anima-desktop` (second login kicks the agent). See `docs/MONITORING.md`.
 
 Watch the tape for: `ph=mine` on the smithy apron `(2609, 475)` (should
 be gone), `silent=` climbing to a hop on a no-verdict stand, and
 `mine survey: map=N` matching the body's `Observation.map_index`.
+For the stale-`bs_stand` prediction (§48.3): no late-day
+`trip=sell_return to=(2611,473) d=2>0` while Pim stands at `(2609,474)`,
+and no age-11 sell giveup cluster after successful sales.

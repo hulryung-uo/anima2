@@ -420,11 +420,17 @@ class BlacksmithMarket(Blacksmith):
             return super().step(ctx)  # opt-in: no market configured — plain Blacksmith
 
         obs = ctx.obs
-        # Same stand tile `Blacksmith._fetch_step` walks back to — a market
-        # trip and an ingot fetch both resume the MAKE loop from the same spot.
-        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
+        # Home for a market return is where THIS trip left from. A bare
+        # `setdefault` froze the first craft tile of the day; a later sell
+        # from a drifted stand then returned to a stale tile at reach 0
+        # (forge-20260818-0039: `trip=sell_return to=(2611,473) d=2>0` after
+        # selling from `(2609,474)`, age-11 giveups with the gold already
+        # taken). Pin when a trip OPENS; leave it alone mid-trip / on return.
         phase = ctx.memory.get("mkt_phase", "craft")
         tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
+        if phase in {"sell", "sell_return", "bank", "bank_return"}:
+            ctx.memory.setdefault(
+                "bs_stand", (obs.player.pos.x, obs.player.pos.y))
 
         # Only break away from crafting between cycles: never while a gump is
         # open (never answer it with a walk/click instead) and never mid an
@@ -446,12 +452,14 @@ class BlacksmithMarket(Blacksmith):
                          or tick - ctx.memory.get("sell_giveup_tick", -10**9) >= self.giveup_cooldown_ticks)):
                 ctx.memory.pop("sell_giveup_daggers", None)
                 ctx.memory.pop("sell_giveup_tick", None)
+                ctx.memory["bs_stand"] = (obs.player.pos.x, obs.player.pos.y)
                 phase = ctx.memory["mkt_phase"] = "sell"
             elif (banker is not None and self._pack_gold(ctx) >= self.bank_threshold
                     and (self._pack_gold(ctx) > ctx.memory.get("bank_giveup_gold", -1)
                          or tick - ctx.memory.get("bank_giveup_tick", -10**9) >= self.giveup_cooldown_ticks)):
                 ctx.memory.pop("bank_giveup_gold", None)
                 ctx.memory.pop("bank_giveup_tick", None)
+                ctx.memory["bs_stand"] = (obs.player.pos.x, obs.player.pos.y)
                 phase = ctx.memory["mkt_phase"] = "bank"
 
         if phase == "sell":
@@ -1588,6 +1596,39 @@ WALK_PHASES: Mapping[str, tuple[str, str, int]] = {
 }
 
 
+#: Chebyshev radius matching the tinker/carpenter craft gates. Used only to decide
+#: whether a market trip is still opening FROM the forge (refresh `bs_stand`) or
+#: already standing at a vendor/bank (keep a seeded home). Inlined rather than
+#: importing `craft_spot_within` — `capabilities` imports this module.
+_BS_STAND_CRAFT_RADIUS = 3
+
+
+def _refresh_bs_stand_on_trip_open(ctx: SkillContext) -> None:
+    """Pin home to where THIS trip left from — when still at the craft stand.
+
+    A bare `setdefault` froze the first craft tile of the day; a later sell from
+    a drifted stand returned to a stale reach-0 tile and age-11-gave-up after
+    the gold was already taken (forge-20260818-0039). Unconditional overwrite
+    on every capability open is wrong too: vendor-sequence tests (and any open
+    that already stands at the shop) would replace a seeded `bs_stand` with the
+    vendor tile and make `*_return` a no-op. Refresh only with no pin yet, or
+    while inside `craft_spot`'s radius.
+    """
+    here = (ctx.obs.player.pos.x, ctx.obs.player.pos.y)
+    spot = ctx.memory.get("craft_spot")
+    at_craft = (
+        isinstance(spot, (tuple, list))
+        and len(spot) == 2
+        and all(type(value) is int for value in spot)
+        and max(abs(here[0] - spot[0]), abs(here[1] - spot[1]))
+        <= _BS_STAND_CRAFT_RADIUS
+    )
+    if at_craft or ctx.memory.get("bs_stand") is None:
+        ctx.memory["bs_stand"] = here
+    else:
+        ctx.memory.setdefault("bs_stand", here)
+
+
 def walk_readout(memory: Mapping[str, Any], pos) -> str:
     """`trip=sell to=(2610,474)+1 d=4>0 stall=3/6` — where a market trip's WALK is.
 
@@ -1818,12 +1859,16 @@ class SellItemCapability(BlacksmithMarket):
             return self._payout(ctx, SkillResult(Status.RUNNING))
 
         obs = ctx.obs
-        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
         route = [tuple(point) for point in ctx.memory["cap_sell_route"]]
         phase = ctx.memory.get("mkt_phase", "craft")
         tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
+        # Pin home on OPEN only — see `_refresh_bs_stand_on_trip_open`.
         if phase not in {"sell", "sell_return"}:
+            _refresh_bs_stand_on_trip_open(ctx)
             phase = ctx.memory["mkt_phase"] = "sell"
+        else:
+            ctx.memory.setdefault(
+                "bs_stand", (obs.player.pos.x, obs.player.pos.y))
 
         if phase == "sell":
             result = self._sell_step(ctx, route)
@@ -2225,11 +2270,14 @@ class BankGold(BlacksmithMarket):
         if ctx.memory.get("cap_bank_finished_goal_id") == goal_id:
             return self._payout(ctx, SkillResult(Status.RUNNING))
 
-        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
         phase = ctx.memory.get("mkt_phase", "craft")
         tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
         if phase not in {"bank", "bank_return"}:
+            _refresh_bs_stand_on_trip_open(ctx)
             phase = ctx.memory["mkt_phase"] = "bank"
+        else:
+            ctx.memory.setdefault(
+                "bs_stand", (obs.player.pos.x, obs.player.pos.y))
 
         if phase == "bank":
             result = self._bank_step(ctx, route)
@@ -2400,12 +2448,15 @@ class BuyMaterialCapability(BlacksmithMarket):
             return self._payout(ctx, SkillResult(Status.RUNNING))
 
         obs = ctx.obs
-        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
         route = [tuple(point) for point in ctx.memory["cap_buy_route"]]
         phase = ctx.memory.get("mkt_phase", "craft")
         tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
         if phase not in {"buy", "buy_return"}:
+            _refresh_bs_stand_on_trip_open(ctx)
             phase = ctx.memory["mkt_phase"] = "buy"
+        else:
+            ctx.memory.setdefault(
+                "bs_stand", (obs.player.pos.x, obs.player.pos.y))
 
         if phase == "buy":
             result = self._buy_step(ctx, route)
@@ -2606,12 +2657,15 @@ class BuyToolCapability(BlacksmithMarket):
             return self._payout(ctx, SkillResult(Status.RUNNING))
 
         obs = ctx.obs
-        ctx.memory.setdefault("bs_stand", (obs.player.pos.x, obs.player.pos.y))
         route = [tuple(point) for point in ctx.memory["cap_toolbuy_route"]]
         phase = ctx.memory.get("mkt_phase", "craft")
         tick = ctx.memory["mkt_tick"] = ctx.memory.get("mkt_tick", 0) + 1
         if phase not in {"toolbuy", "toolbuy_return"}:
+            _refresh_bs_stand_on_trip_open(ctx)
             phase = ctx.memory["mkt_phase"] = "toolbuy"
+        else:
+            ctx.memory.setdefault(
+                "bs_stand", (obs.player.pos.x, obs.player.pos.y))
 
         if phase == "toolbuy":
             result = self._toolbuy_step(ctx, route)

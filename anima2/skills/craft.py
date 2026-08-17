@@ -762,6 +762,14 @@ class CraftItemCapability(Blacksmith):
             return SkillResult(Status.RUNNING)
         ctx.memory["cap_craft_finished_goal_id"] = ctx.goal_id
         ctx.memory["cap_craft_stage"] = "finished"
+        # Neutral run-finished marker for `CapabilityGoalComplete`, the same
+        # one sell/bank/buy write at the end of their return leg. Without it a
+        # terminal-but-unachieved craft (3 tongs of a batch of 5, iron gone)
+        # sat admitted until its 300-tick deadline while fetch_iron was ready
+        # and the delivery sat on the ground: forge-20260818-0003 craft_tongs#4
+        # (and #34), follow-up 15, audit §6.4. Achievement still wins when the
+        # batch is complete — can_run answers that branch first.
+        ctx.memory["cap_run_finished_goal_id"] = ctx.goal_id
         start_pos = ctx.memory.get("cap_craft_start_pos")
         if start_pos == (ctx.obs.player.pos.x, ctx.obs.player.pos.y):
             ctx.memory["cap_craft_returned_goal_id"] = ctx.goal_id

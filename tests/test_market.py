@@ -571,6 +571,57 @@ def test_sell_wedged_walk_gives_up_and_advances_the_phase():
     assert "sell_stall" not in mem
     assert isinstance(res.action, Walk)
     assert mem["sell_giveup_daggers"] == 5  # backoff floor recorded — see below
+    assert mem["bs_stand"] == (50, 50), "mid-trip must not repin home"
+
+
+def test_opening_a_sell_trip_repins_bs_stand_to_where_it_left():
+    """forge-20260818-0039: setdefault froze an early craft tile.
+
+    Pim sold from (2609,474) with `bs_stand` still (2611,473), then
+    `trip=sell_return to=(2611,473) d=2>0` gave up at age 11 after the gold
+    was already taken. Opening a trip must overwrite the stale pin.
+    """
+    items = [_backpack(), _dagger(0x700, amount=5)]
+    mem = {
+        "vendor_spot": VENDOR, "mkt_phase": "craft",
+        "bs_stand": (2611, 473),
+    }
+    ctx = _ctx(items, memory=mem, pos=Position(2609, 474, 0))
+    BlacksmithMarket().step(ctx)
+    assert mem["mkt_phase"] == "sell"
+    assert mem["bs_stand"] == (2609, 474)
+
+
+def test_capability_sell_repins_bs_stand_on_open_not_mid_return():
+    """Same pin on the capability wrapper — the forge-pair path.
+
+    Needs `craft_spot`: an open already at the vendor must keep a seeded
+    home (vendor-sequence tests), so refresh is gated on craft radius.
+    """
+    from anima2.skills.tinkering import TONGS_GRAPHIC, SellTongs
+
+    items = [_backpack(), ItemView(
+        serial=0x700, graphic=TONGS_GRAPHIC, amount=5,
+        pos=Position(), container=0x50, layer=0, distance=0)]
+    mem = {
+        "vendor_spot": VENDOR, "mkt_phase": "craft",
+        "craft_spot": (2609, 474),
+        "bs_stand": (2611, 473),
+        "cap_sell_goal_id": 17,
+        "cap_sell_route": (VENDOR,),
+        "cap_sell_start_daggers": 5,
+        "cap_sell_start_gold": 0,
+    }
+    ctx = _ctx(items, memory=mem, pos=Position(2609, 474, 0), goal_id=17)
+    SellTongs().step(ctx)
+    assert mem["mkt_phase"] == "sell"
+    assert mem["bs_stand"] == (2609, 474)
+    # Mid-return must keep the pin the trip opened with.
+    mem["mkt_phase"] = "sell_return"
+    mem["bs_stand"] = (2609, 474)
+    ctx = _ctx(items, memory=mem, pos=Position(2610, 473, 0), goal_id=17)
+    SellTongs().step(ctx)
+    assert mem["bs_stand"] == (2609, 474)
 
 
 def test_sell_backoff_prevents_an_immediate_retrigger_after_a_give_up():

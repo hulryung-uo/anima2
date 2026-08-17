@@ -8,8 +8,42 @@ $ python -m anima2.village --pipeline --monitor
   animam153595: the mage    watch: http://127.0.0.1:8802/
 ```
 
-Open either URL and you see the real UO client — terrain, sprites, journal — rendered
-from that agent's live session. `--monitor` works the same for `--warriors N`.
+### How to watch (prefer an app, not Chrome)
+
+1. **Flagship day helper** (logs + watcher + Safari)::
+
+   ```
+   ./scripts/run_forge_pair.sh
+   ```
+
+   Writes `PYTHONUNBUFFERED` output to `.logs/forge-TIMESTAMP.log` (and
+   `~/anima-logs/` when that directory is writable), starts
+   `python -m anima2.monitor_watch` against the monitor ports, and opens
+   **Safari** on the watch URLs when a GUI is available. It never opens Chrome.
+
+2. **Project watcher app** (no browser required)::
+
+   ```
+   uv run python -m anima2.monitor_watch --ports 8801,8802
+   ```
+
+   Polls `/scene.json`, prints a one-line status per agent, and appends every
+   sample to `.logs/monitor-TIMESTAMP.log` (or `$ANIMA_LOG_DIR`). This is the
+   durable observation path when LaunchServices cannot open a browser (agent
+   sandboxes often cannot).
+
+3. **Safari on the URL** — `open -a Safari http://127.0.0.1:8801/` — same
+   renderer as Chrome would show; prefer Safari so the watch habit is not
+   "whatever the default browser is."
+
+**Do not use `anima-desktop` to watch agents.** That Tauri app logs a *second*
+session into the shard. ServUO disposes the older session for the same
+character, which kicks the agent — the opposite of watching
+(see "Why it is not a second login" below). `anima-desktop` is for human play.
+
+Open either monitor URL (or the watcher) and you see the real UO client —
+terrain, sprites, journal — rendered from that agent's live session.
+`--monitor` works the same for `--warriors N`.
 
 ## Why it is not a second login
 
@@ -431,6 +465,8 @@ Three properties, and one thing this does **not** do:
 | `ANIMA_MONITOR_PORT`, publish per command | `crates/anima-net/src/bin/agent.rs` |
 | `monitor_port=` passthrough | `anima2/ipc_body.py` |
 | `--monitor`, port allocation | `anima2/village.py` (`_monitor_ports`) |
+| Non-Chrome watcher + durable sample log | `anima2/monitor_watch.py` |
+| Flagship day runner (logs + Safari + watcher) | `scripts/run_forge_pair.sh` |
 
 Two subtleties are load-bearing:
 

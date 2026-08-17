@@ -429,6 +429,7 @@ def test_craft_capability_builds_exact_five_item_batch_and_closes_gump():
     assert mem["cap_craft_ingots_used"] == 15
     assert mem["cap_craft_finished_goal_id"] == 17
     assert mem["cap_craft_returned_goal_id"] == 17
+    assert mem["cap_run_finished_goal_id"] == 17
 
 
 def test_craft_capability_never_answers_a_foreign_gump_or_fetches_ground_metal():
@@ -648,6 +649,7 @@ def test_craft_capability_aborts_on_an_unattributable_mixed_inventory_delta():
 
     skill.step(_ctx(items=malformed, memory=mem, goal_id=17))
     assert mem["cap_craft_stage"] == "finished"
+    assert mem["cap_run_finished_goal_id"] == 17
 
 
 @pytest.mark.parametrize("abort_kind", ["limit", "server_error"])
@@ -716,6 +718,7 @@ def test_craft_close_reopen_without_a_gump_eventually_reaches_safe_yield():
     assert mem["cap_craft_stage"] == "finished"
     assert mem["cap_craft_finished_goal_id"] == 17
     assert mem["cap_craft_returned_goal_id"] == 17
+    assert mem["cap_run_finished_goal_id"] == 17
 
 
 @pytest.mark.parametrize(
@@ -745,6 +748,7 @@ def test_craft_limit_abort_reaches_a_safe_yield(limit_key):
         if mem.get("cap_craft_stage") == "finished":
             break
     assert mem["cap_craft_stage"] == "finished"
+    assert mem["cap_run_finished_goal_id"] == 17
 
 
 def test_craft_last_allowed_attempt_success_wins_over_the_attempt_limit():

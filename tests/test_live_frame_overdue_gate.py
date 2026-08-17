@@ -142,14 +142,15 @@ def test_the_gate_reaches_bound_three_on_the_path_it_drives_live():
 
 
 def test_the_one_tick_race_is_why_this_gate_needs_forced_state():
-    """The control, and the honest near-miss: a frame that CAN yield leaves on bound 2.
+    """The control, and the honest near-miss: a stepped craft now leaves on bound 1.
 
-    `expire_due` fires at `ticks >= deadline_tick`; `frame_overdue` needs
-    `ticks > deadline_tick`. So with no surface and an FSM that is being stepped — an
-    ordinary craft run, which aborts at `max_goal_steps` (240) well inside its 300-tick
-    budget and closes its own gump — the deadline wins by one tick and bound 3 never
-    runs. This is what the 2026-08-03 forge run produced at 292/300 and 177/180, and it
-    is why waiting for bound 3 to happen by itself is not a plan.
+    Follow-up 15 gave craft the same `cap_run_finished_goal_id` sell/bank/buy
+    already wrote. An FSM that is being stepped therefore closes on the
+    give-up ladder as soon as it reaches `finished` — well inside the 300-tick
+    budget, one tick before `frame_overdue` could ever be true. Bound 2 used
+    to do this job (the 2026-08-03 292/300 `craft_tongs`); it no longer does
+    on a finished craft. Bound 3 still needs the starve, because a stepped
+    craft never sits to the deadline.
     """
     body, life = _tinker_on_its_craft_spot()
     frame = _reach_the_craft_frame(life)
@@ -163,13 +164,15 @@ def test_the_one_tick_race_is_why_this_gate_needs_forced_state():
         if life.econ_agent.goal_stack.current is None:
             retired_at = (tick, life.econ_agent.ticks)
             break
-    assert retired_at is not None, "bound 2 did not close this frame either"
+    assert retired_at is not None, "the stepped craft never closed"
     assert watch.overdue_at is None, (
-        "a yieldable frame must expire ON its deadline, one tick before `frame_overdue` "
-        "could ever be true — if this fires the race has changed and the gate's whole "
-        "staging argument needs redoing")
+        "a stepped craft must give up INSIDE its budget, one tick before "
+        "`frame_overdue` could ever be true — if this fires the race has "
+        "changed and the gate's whole staging argument needs redoing")
+    assert retired_at[1] < budget, (
+        f"bound 1 must beat the {budget}-tick deadline; got econ {retired_at[1]}")
     assert [(f.goal.params.get("capability"), f.outcome.value)
-            for f in life.econ_agent.goal_stack.history] == [("craft_tongs", "expired")]
+            for f in life.econ_agent.goal_stack.history] == [("craft_tongs", "failure")]
     assert watch.flags()["went_overdue"] is False
     assert getattr(life, "_stale_ui_closes", 0) == 0
 
@@ -205,11 +208,12 @@ def test_the_extra_tick_is_the_repair_and_the_gate_can_tell_the_difference():
 def test_a_run_whose_fsm_kept_stepping_cannot_pass_the_staging_self_check():
     """`fsm_starved` is the flag that makes a pass mean something.
 
-    If the capability FSM is still being stepped it answers its own gump, and any
-    overdue that follows was reached some other way than the one the gate's argument
-    describes. Same world, no wound: the FSM runs to `max_goal_steps`, `cap_craft_steps`
-    climbs, and the self-check refuses the run — even though the injected gump still
-    blocks every yield and `frame_overdue` does fire.
+    If the capability FSM is still being stepped it reaches `finished` and
+    follow-up 15's marker closes the frame on bound 1 — even with an injected
+    gump, because the give-up branch of `CapabilityGoalComplete` does not
+    consult `can_yield`. Same world, no wound: `cap_craft_steps` climbs, the
+    self-check refuses the run, and bound 3 never fires. Overdue now requires
+    the starve; a blocking surface alone is not enough.
     """
     body, life = _tinker_on_its_craft_spot()
     frame = _reach_the_craft_frame(life)
@@ -219,9 +223,9 @@ def test_a_run_whose_fsm_kept_stepping_cannot_pass_the_staging_self_check():
 
     assert len(watch.craft_steps_seen) > 1, "this world no longer steps the FSM at all"
     assert watch.flags()["fsm_starved"] is False
-    # And it really did reach the bound — so the self-check is doing work no other flag
-    # does, rather than being entailed by a failure somewhere else.
-    assert watch.flags()["went_overdue"] is True
+    assert watch.flags()["went_overdue"] is False
+    assert [(f.goal.params.get("capability"), f.outcome.value)
+            for f in life.econ_agent.goal_stack.history] == [("craft_tongs", "failure")]
 
 
 def test_the_watch_never_credits_a_moment_it_did_not_see():
@@ -256,7 +260,8 @@ def test_each_staging_act_is_load_bearing(surface, starve, teleport, expected):
 
     Without the TELEPORT the tinker's own rule still wants `craft_tongs`, so the mode is
     economy on the rule's account and there is no hold to release. Without the SURFACE
-    and the STARVE together the frame yields and bound 2 takes it.
+    and the STARVE together the FSM keeps stepping and follow-up 15's ladder takes
+    the frame (bound 1) before it can go overdue.
     """
     body, life = _tinker_on_its_craft_spot()
     frame = _reach_the_craft_frame(life)

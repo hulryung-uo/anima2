@@ -1467,6 +1467,40 @@ write while showing the obvious one-liner silently disarms a warrior for 180 tic
 four diagnoses survived; three of four FIXES did not, and none of those shipped.
 1555 -> 1572 tests, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §34.
 
+**A forge day scored the apron/silence/facet predictions and named follow-up 15
+on the ground (2026-08-18).** `PYTHONUNBUFFERED=1 --forge-pair --ticks 1800
+--monitor --narrate`, tape `~/anima-logs/forge-20260818-0003.log`. Banked
+**1138g** (+1220g net), miner alive and still delivering at t=1800,
+`retired=101:99a/2x`. §43.4 / §45.2 PASS; §44.3's `silent=` printed and the
+hop that fired was a nores window, not a 48-tick silence. The tape's own
+defect: two `craft_tongs` frames at **300/300 expired** with
+`want=fetch_iron` and 12–22 ingots already on the ground — §6.4's
+terminal-but-unachieved craft, except this time the miner had already
+delivered. Fetch then landed in 8 and 6 ticks. Craft now writes
+`cap_run_finished_goal_id` at `finished`, the same marker sell/bank/buy
+already had (follow-up 19). Fetch / process / deliver still do not.
+1641 tests, ruff clean. Detail: `docs/AUDIT-2026-07-29.md` §47.
+
+**The craft marker is live-closed; the same day named stale `bs_stand`
+(2026-08-18, second tape).** `forge-20260818-0039`: banked **1448g**
+(+1565g net), `retired>=128:106a/22g`, **0** craft `300/300 expired`,
+`craft_tongs#17 age=22/300 -> giveup` then `fetch_iron#18` achieved in 4.
+Late day: 20× `trip=sell_return to=(2611,473) d=2>0` while Pim stood at
+`(2609,474)`, 15× sell age-11 giveups and 5× bank age-14 after the gold
+was already taken — `setdefault` had frozen the first craft tile.
+`_refresh_bs_stand_on_trip_open` refreshes home when a trip opens at the
+craft stand; mid-trip does not. Offline only until the §48.3 prediction
+is scored. Detail: audit §47.5 / §48.
+
+**Stale `bs_stand` is live-closed (2026-08-18, third tape).**
+`.logs/forge-20260818-0100.log`: banked **1553g** (+1635g net),
+`retired>=128:126a/2g`. §48.3 **PASS** — **0** stale
+`sell_return to=(2611,473) d=2>0`, **0** sell age-11 giveups, all 49
+sells `age=5 -> achieved`. Day ended on `buy_iron` at the craft spot,
+not the old return wedge. Watch without Chrome:
+`./scripts/run_forge_pair.sh` / `python -m anima2.monitor_watch`
+(`docs/MONITORING.md`). Detail: audit §48.4.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion
