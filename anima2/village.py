@@ -155,6 +155,28 @@ def grove_spot_pool(groves, home: tuple[int, int], *,
     return pool
 
 
+def harvest_aim_readout(memory, obs) -> str:
+    """`tree=(x,y) d=N` for the node Chop will swing at, or empty.
+
+    woodsman-20260822-1225: the first hop left `(518, 1042)` for `(517, 1093)`
+    (`reloc=` PASS, `pool=` 12→11) and then swung 270 ticks with `logs=0` and
+    no `win=`. Two causes look identical from that tape — the old grove still
+    installed (d≈51) versus new trees that do not answer (d≤2) — and 500446
+    is not in Chop's sample set, so too-far is silent. This readout splits them.
+    """
+    nodes = memory.get("harvest_nodes")
+    if not nodes or obs is None:
+        return ""
+    player = getattr(obs, "player", None)
+    pos = getattr(player, "pos", None)
+    if pos is None:
+        return ""
+    idx = int(memory.get("harvest_idx", 0) or 0) % len(nodes)
+    x, y = int(nodes[idx][0]), int(nodes[idx][1])
+    d = max(abs(x - pos.x), abs(y - pos.y))
+    return f" tree=({x},{y}) d={d}"
+
+
 #: `data/insights.jsonl` relative to the process's cwd — mirrors `curriculum.
 #: py`'s `_DEFAULT_MILESTONES_LOG`/`skill_library.py`'s `_DEFAULT_LEDGER`
 #: convention exactly (created lazily, gitignored). PHASE6.md item 1.
@@ -2898,6 +2920,7 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
         if mem.get("harvest_relocating"):
             tgt = mem.get("harvest_relocate_target")
             line += f" reloc={tgt}" if tgt else " reloc"
+        line += harvest_aim_readout(mem, obs)
         # When a process_logs goal holds the stack, show the completion bookkeeping the
         # achievement check reads — "not achieved" has several distinct causes, and this
         # block earned its place in a real debugging round (commit c49c444).

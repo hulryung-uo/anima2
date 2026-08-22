@@ -34,7 +34,7 @@ hand-built observation can name.
 
 ### Current queue (2026-08-22)
 
-Live-scored (no further live days until resumed):
+Live-scored:
 
 | Item | Score | Tape |
 |---|---|---|
@@ -44,6 +44,7 @@ Live-scored (no further live days until resumed):
 | Follow-up 15 (craft) live | **PASS** | `forge-20260818-0039` |
 | Stale `bs_stand` (§48) live | **PASS** | `.logs/forge-20260818-0100` |
 | Chop cursor vs process_logs (§49) live | **PASS** | `.logs/woodsman-20260818-1941` |
+| Dry Yew grove hop (§51) live | **PASS hop / FAIL resume** | `.logs/woodsman-20260822-1225` |
 
 Closed offline, live-unverified:
 
@@ -51,7 +52,7 @@ Closed offline, live-unverified:
 |---|---|---|
 | DeliverBoards sibling of 42 | Return stall / exhausted WalkTo is not arrival | `skills/woodwork.py`, audit §46 |
 | Follow-up 15 remainder | fetch / process / deliver write `cap_run_finished_goal_id` | `skills/carpentry.py`, `skills/woodwork.py` |
-| Dry Yew grove hop (§51) | `Chop` fills the relocate window on 500493; woodsman runners seed a grove pool | `skills/harvest.py`, `village.py` |
+| Silent second grove (§51.3) | After a hop, `win=` vanishes and logs stay 0 — `tree=`/`d=` splits stale nodes from a mute stand | `village.py::harvest_aim_readout` |
 
 Still open, do not start without a fixture or a written prediction:
 
@@ -61,7 +62,6 @@ Still open, do not start without a fixture or a written prediction:
   builds a bare `Agent`.
 - Retreat / rest timing as knobs — the capability manifest forbids
   per-instance survival state on purpose.
-- Live days paused by request (2026-08-22).
 
 Live watch: `./scripts/run_forge_pair.sh` (Safari + `.logs/`) or
 `uv run python -m anima2.monitor_watch` — not Chrome, not `anima-desktop`

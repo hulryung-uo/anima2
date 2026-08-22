@@ -294,3 +294,19 @@ def test_grove_spot_pool_skips_home_and_stops_at_the_cap():
     capped = grove_spot_pool(many, (100, 100))
     assert len(capped) == GROVE_POOL_SPOTS
     assert (100, 100) not in {s for s, _ in capped}
+
+
+def test_harvest_aim_readout_splits_a_stale_grove_from_a_silent_new_one():
+    """woodsman-20260822-1225: after `reloc=(517, 1093)` the tape cannot tell
+    whether Chop still aimed at the home trees. `d=` is that split."""
+    from anima2.contract import Observation, PlayerView, Position
+    from anima2.village import harvest_aim_readout
+
+    home_trees = [(518, 1041, 0, 0xCCA), (519, 1040, 0, 0xCCA)]
+    new_trees = [(517, 1092, 0, 0xCCA), (516, 1093, 0, 0xCCA)]
+    here = Observation(player=PlayerView(serial=1, pos=Position(517, 1093, 0)))
+    stale = {"harvest_nodes": home_trees, "harvest_idx": 0}
+    fresh = {"harvest_nodes": new_trees, "harvest_idx": 0}
+    assert harvest_aim_readout(stale, here) == " tree=(518,1041) d=52"
+    assert harvest_aim_readout(fresh, here) == " tree=(517,1092) d=1"
+    assert harvest_aim_readout({}, here) == ""

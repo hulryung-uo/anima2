@@ -107,6 +107,20 @@ the fast loop may not do, what a live run is for — is
   respawn (`Lumberjacking.cs`). Cycling `harvest_idx` on 500493 never
   hops, `Chop.no_resource_clilocs` was empty so the relocate window never
   saw the dry grove, and the runner never seeded `harvest_spot_pool`.
+- **Later (verify tape):** `.logs/woodsman-20260822-1225.log` — `pool 12`,
+  `win=` climbed, `reloc=(517, 1093)`, `pool=` 12→11. Logs did not resume.
+  §51 live-closed as hop PASS / resume FAIL.
+
+### 2026-08-22  The hop landed and Bjorn chopped nothing for 270 ticks
+- **Saw:** After a productive morning (+280g, 18/18 frames), Bjorn walked
+  from Yew `(518, 1042)` to `(517, 1093)` and stood there swinging until
+  BUDGET SPENT, `logs=0 boards=10`.
+- **It said:** `reloc=(517, 1093)` t=243–317; arrived t=326; then no `win=`;
+  `NO PROGRESS` 40…240; `[BUDGET SPENT · STALLED 366]`. `pool=11`.
+- **Where:** `.logs/woodsman-20260822-1225.log`. Account `animawood369135`.
+- **Why it looked wrong:** the hop the 1941 tape asked for fired. The new
+  stand did not yield, and Chop's window does not sample 500446, so too-far
+  versus a mute tile cannot be told apart. Next tape needs `tree=`/`d=`.
 
 ### 2026-08-18  Late-day sell returns walked to an early craft tile and gave up at age 11
 - **Saw:** After a productive morning of sells from `@(2611,473)`, Pim settled
