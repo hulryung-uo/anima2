@@ -29,8 +29,9 @@ ready step keeps making more of what it already has and never finishes anything.
 **Its tool is consumable, and the world runs out.** A blade is lost to a specific event
 and a reagent pouch empties predictably, but an axe simply breaks mid-swing, and a grove
 thins until swinging at it earns nothing. The first is handled here (`fetch_hatchet` for
-one lying on the ground, else `buy_hatchet`); the second is not a decision this rule can
-make, and is left to `Harvest`'s own windowed stuck-rate relocation.
+one lying on the ground, else `buy_hatchet`); the second is `Harvest`'s windowed
+stuck-rate relocation, which `Chop` now fills on lumberjacking's own 500493 and
+which the woodsman runners seed with a surveyed grove pool.
 """
 
 from __future__ import annotations

@@ -1270,11 +1270,15 @@ def _process_ready(ctx: SkillContext) -> bool:
         # this holds and there's no working tool, buy_hatchet fires instead.
         and _pack_graphic(ctx, LOG_GRAPHIC) > 0
         and _owned_tool(ctx, AXE_GRAPHICS) is not None
-        # An idle UI, not mid a market trip — mirrors `_craft_ready` (this is a
-        # produce step, checked before a goal is admitted, so it must not require
-        # a goal_id the way the goal-scoped `_process_can_yield` does).
+        # Not mid a market trip. A leftover target CURSOR is not dirt here:
+        # Chop's last `Use(axe)` opens the same HarvestTarget ProcessLogs
+        # answers with `TargetObject(log)`, and ServUO's lumberjacking handler
+        # accepts an `IAxe` (pack logs) on that cursor. woodsman-20260818-1926:
+        # 20 logs, axe worn, `want=process_logs admitted=None ready=[]` for 585
+        # ticks because this clause mirrored `_craft_ready`'s idle-UI list and
+        # refused the gesture the skill already handles. Gump/popup/shop still
+        # refuse — those are not the conversion cursor.
         and ctx.memory.get("mkt_phase", "craft") == "craft"
-        and obs.pending_target is None
         and not obs.gumps
         and obs.popup is None
         and obs.shop_buy is None

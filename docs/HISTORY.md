@@ -1501,6 +1501,12 @@ not the old return wedge. Watch without Chrome:
 `./scripts/run_forge_pair.sh` / `python -m anima2.monitor_watch`
 (`docs/MONITORING.md`). Detail: audit §48.4.
 
+**Chop leftover cursor live-closed; FU15 remainder closed offline
+(2026-08-18 / 2026-08-22).** §49: woodsman admits `process_logs` with
+Chop's harvest cursor (`.logs/woodsman-20260818-1941`). §50: fetch /
+process / deliver write `cap_run_finished_goal_id` like craft — offline
+only; live days paused by request.
+
 **Next (forward pointer corrected 2026-08-02):** NOT Phase 7 item 2. The `--genomes 20`
 evolution-vs-random rerun is DEFERRED by CLAUDE.md's "Two roadmaps, one decision",
 which is the authority on what runs next — it applies AUTONOMY-ROADMAP.md §E's criterion

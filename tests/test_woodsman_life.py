@@ -6,7 +6,7 @@ other two had: its TOOL breaks mid-swing, and its value has to be carried along 
 chain (tree -> log -> board -> gold) before any of it is gold at all.
 """
 
-from anima2.contract import ItemView, Observation, PlayerView, Position
+from anima2.contract import ItemView, Observation, PlayerView, Position, TargetCursor
 from anima2.persona import Persona
 from anima2.skills.harvest import BACKPACK_LAYER
 from anima2.skills.hunt import GOLD_GRAPHIC
@@ -39,9 +39,9 @@ def _axe():
     return _item(0x900, HATCHET)
 
 
-def _obs(items, *, dead=False):
+def _obs(items, *, dead=False, pending_target=None):
     return Observation(player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0), dead=dead),
-                       items=list(items))
+                       items=list(items), pending_target=pending_target)
 
 
 def test_a_tooled_woodsman_with_nothing_to_carry_chops():
@@ -161,6 +161,28 @@ def test_the_switch_keeps_the_inherited_hysteresis():
         assert life.mode == "hunt"
     life.tick()
     assert life.mode == "economy" and life.target_cap == "sell_boards"
+
+
+def test_a_chop_leftover_cursor_does_not_block_process_logs_admission():
+    # woodsman-20260818-1926: Chop left pending_target, 20 logs, axe yes,
+    # want=process_logs admitted=None ready=[] for the rest of a 600-tick day.
+    # The skill already answers that cursor; admission was the odd one out.
+    from anima2.warrior_life import ECON_GRACE
+
+    cursor = TargetCursor(target_type=1, cursor_id=7, cursor_flag=0)
+    obs = _obs([_backpack(), _axe(), _item(0x904, LOG_GRAPHIC, 20)],
+               pending_target=cursor)
+    life = WoodsmanLife(body=_MockBody([obs] * (ECON_GRACE + 8)),
+                        persona=Persona(name="Bjorn"), routes=dict(ROUTES))
+    admitted = None
+    for _ in range(ECON_GRACE + 6):
+        life.tick()
+        cur = life.econ_agent.goal_stack.current
+        if cur is not None:
+            admitted = cur.goal.params.get("capability")
+            break
+    assert life.mode == "economy" and life.target_cap == "process_logs"
+    assert admitted == "process_logs"
 
 
 # --- the reserve is one number, shared ----------------------------------------------

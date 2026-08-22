@@ -308,6 +308,11 @@ class FetchBoards(Skill):
             return result
         # No ground board pile remains nearby (or the walk to one wedged) — done.
         ctx.memory["cap_fetch_finished_goal_id"] = goal_id
+        # Neutral run-finished marker for `CapabilityGoalComplete` — same as
+        # craft/sell/bank/buy. Without it a finished-empty fetch sat until its
+        # deadline (bound 2) while the next want was ready: follow-up 15
+        # remainder, audit §47.4 / §50.
+        ctx.memory["cap_run_finished_goal_id"] = goal_id
         self._observe_evidence(ctx)
         return SkillResult(Status.RUNNING)
 

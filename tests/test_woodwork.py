@@ -369,6 +369,7 @@ def test_process_logs_goal_converts_then_marks_finished():
                             pos=Position(100, 100, 0), goal_id=17))
     assert done.action is None
     assert mem["cap_process_finished_goal_id"] == 17
+    assert mem["cap_run_finished_goal_id"] == 17
     assert mem["cap_process_board_delta"] == 20
     assert mem["cap_process_logs_remaining"] == 0
 

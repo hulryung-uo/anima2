@@ -31,8 +31,11 @@ predictably; an axe just breaks mid-swing. The rule prefers an axe lying on the 
 woodsman that can do neither keeps chopping rather than stalling at a shop it cannot use.
 
 What is *not* handled here is the other half of that difference: the world itself runs
-out. A grove thins until swinging at it earns nothing, and that is left to `Harvest`'s
-own windowed stuck-rate relocation, not to this rule.
+out. A grove thins until swinging at it earns nothing. That hop is `Harvest`'s
+windowed stuck-rate relocation, now with lumberjacking's own 500493 in the
+window and a surveyed `harvest_spot_pool` of neighbouring groves — the 2026-08-18
+Yew day chopped ~100 logs from five trees at `(518, 1042)` then stood there for
+429 ticks, because cycling the grove never hopped and no next stand was seeded.
 
 ## What the first day cost — two defects, both invisible from outside
 

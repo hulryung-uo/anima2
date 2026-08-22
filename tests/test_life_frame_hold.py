@@ -782,12 +782,13 @@ def test_a_real_give_up_ladder_is_reported_as_bound_1():
 def _expiring_fetch_life():
     """A fetch_iron frame that finishes empty: the pile vanishes after admission.
 
-    Fetch writes `cap_fetch_finished_goal_id` but not `cap_run_finished_goal_id`,
-    so `CapabilityGoalComplete` has neither branch and `expire_due` closes it —
-    bound 2. This is the production path bound 2 still owns after follow-up 15
-    gave craft the sell/bank/buy marker. The pile sits past `PICKUP_REACH` so
-    admission walks rather than lifts; popping it then cannot accidentally
-    achieve the fetch.
+    After follow-up 15 remainder, fetch writes `cap_run_finished_goal_id` at
+    finish — the production close is bound 1 (giveup). Bound 2's reporter
+    still needs a finished-but-ladderless frame, so the helper strips the
+    marker once after finish; see
+    `test_a_deadline_retirement_is_reported_as_bound_2_not_bound_1`.
+    The pile sits past `PICKUP_REACH` so admission walks rather than lifts;
+    popping it then cannot accidentally achieve the fetch.
     """
     from anima2.skills.craft import PICKUP_REACH
     from anima2.skills.smelt import INGOT_GRAPHICS
@@ -809,23 +810,45 @@ def _expiring_fetch_life():
     return body, life, frame
 
 
-def test_a_deadline_retirement_is_reported_as_bound_2_not_bound_1():
-    """The control that makes the give-up label mean something: a fetch that
-    finished empty can yield, never wrote the run-finished marker, and
-    `expire_due` closes it — bound 2.
+def test_a_finished_empty_fetch_closes_on_the_ladder_not_the_deadline():
+    """Follow-up 15 remainder: fetch's run-finished marker is bound 1."""
+    from anima2.life_runner import frame_retirements, retirement_tally
 
-    Craft cannot be this control after follow-up 15: a finished craft is bound 1,
-    and a starved started craft cannot yield, so it goes overdue instead of
-    expiring (the live gate's worst case).
+    body, life, frame = _expiring_fetch_life()
+    budget = frame.deadline_tick - frame.created_tick
+    for _ in range(budget):
+        life.tick()
+        if life.econ_agent.goal_stack.current is None:
+            break
+    rows = frame_retirements(life)
+    assert len(rows) == 1 and rows[0][1] == "fetch_iron"
+    assert rows[0][4] == "giveup", rows
+    assert rows[0][2] < budget, f"ladder must beat the deadline: {rows}"
+    assert retirement_tally(life) == "retired=1:1g"
+
+
+def test_a_deadline_retirement_is_reported_as_bound_2_not_bound_1():
+    """The control that makes the give-up label mean something.
+
+    Every production finish path now writes the ladder (FU15 remainder).
+    Bound 2 still exists for frames that can yield without it; the reporter
+    keeps that shape by stripping the marker after fetch finishes empty.
     """
     from anima2.life_runner import frame_retirements, retirement_tally
 
     body, life, frame = _expiring_fetch_life()
     budget = frame.deadline_tick - frame.created_tick
+    stripped = False
     for _ in range(budget * 3):
+        if (not stripped
+                and life.econ_agent.memory.get("cap_fetch_finished_goal_id")
+                == frame.id):
+            life.econ_agent.memory.pop("cap_run_finished_goal_id", None)
+            stripped = True
         life.tick()
         if life.econ_agent.goal_stack.current is None:
             break
+    assert stripped, "fetch never finished empty — cannot strip the ladder"
     rows = frame_retirements(life)
     assert len(rows) == 1 and rows[0][1] == "fetch_iron"
     assert rows[0][4] == "expired", rows

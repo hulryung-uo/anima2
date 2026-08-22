@@ -96,6 +96,16 @@ LUMBER_MAP = 1
 #: other.
 MINE_POOL_SPOTS = 12
 
+#: How many OTHER groves a solo woodsman may hop to when the stand it was
+#: staged on runs dry. Same lesson as `MINE_POOL_SPOTS`, arriving from the
+#: lumber side: woodsman-20260818-1941 chopped ~100 logs from a 5-tree Yew
+#: stand then stood on it for 429 ticks. ServUO lumber banks are 4x3 and
+#: hold 20-45 logs, respawn 20-30 minutes — a 600-tick day cannot wait, and
+#: `find_tree_clusters` already spaces groves >5 tiles so the next stand is
+#: a different bank. 12 is the miner's measured "empty pool" floor; a
+#: woodsman's banks are smaller so the same count lasts at least as long.
+GROVE_POOL_SPOTS = 12
+
 
 def _survey_map(*bodies, fallback: int = LUMBER_MAP) -> int:
     """Facet for `find_mine_spots` / `find_tree_clusters`: the body's own map.
@@ -119,11 +129,31 @@ def _survey_map(*bodies, fallback: int = LUMBER_MAP) -> int:
 #: Where a SOLO woodsman works. The multi-profession village keeps its lumberjacks in
 #: the Minoc woods above to stay compact, but those woods are thin — a live survey found
 #: 284 tree statics there and a best grove of just TWO trees, which is the size that runs
-#: dry mid-session and leaves `Harvest` relocating instead of working. The Yew woods
-#: carry 1192 statics with several five-tree groves, so a lone woodsman gets sustained
-#: work and `Harvest`'s relocation has somewhere to go when a bank does thin out.
+#: dry mid-session. The Yew woods carry 1192 statics with several five-tree groves, so a
+#: lone woodsman gets a first stand that lasts a morning AND a pool of neighbours
+#: `grove_spot_pool` seeds into `harvest_spot_pool` when that stand's 4x3 bank empties.
 #: (Surveyed across 7 candidate bases; this was the densest by a wide margin.)
 YEW_FOREST = (560, 1080)
+
+
+def grove_spot_pool(groves, home: tuple[int, int], *,
+                    limit: int = GROVE_POOL_SPOTS):
+    """Surveyed groves other than `home`, in `find_tree_clusters` order.
+
+    Shape matches `harvest_spot_pool`: `[((stand_x, stand_y), [(x,y,z,graphic), …]), …]`.
+    The home grove is already in `harvest_nodes`; putting it in the pool would hop
+    back to the bank that just confessed empty.
+    """
+    hx, hy = home
+    pool = []
+    for (sx, sy), trees in groves:
+        if (sx, sy) == (hx, hy):
+            continue
+        pool.append(((sx, sy), [(t.x, t.y, t.z, t.graphic) for t in trees]))
+        if len(pool) >= limit:
+            break
+    return pool
+
 
 #: `data/insights.jsonl` relative to the process's cwd — mirrors `curriculum.
 #: py`'s `_DEFAULT_MILESTONES_LOG`/`skill_library.py`'s `_DEFAULT_LEDGER`
@@ -2200,7 +2230,9 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
                 b.close()
         return
     (gx, gy), trees = groves[0]
-    print(f"grove: map={facet} stand ({gx},{gy}) with {len(trees)} trees in reach")
+    pool = grove_spot_pool(groves, (gx, gy))
+    print(f"grove: map={facet} stand ({gx},{gy}) with {len(trees)} trees in reach "
+          f"(pool {len(pool)})")
 
     login_throttle(GM_RELOGIN_COOLDOWN_S)
     gm = GmControl.spawn(host, port).__enter__()
@@ -2268,6 +2300,7 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
                              body=bodies["woodsman"], persona=Persona(name="Bjorn"),
                              routes={**w_routes, "carpenter_drop": drop})
     bjorn.memory["harvest_nodes"] = [(t.x, t.y, t.z, t.graphic) for t in trees]
+    bjorn.memory["harvest_spot_pool"] = pool
     for m in (bjorn.memory, bjorn.econ_agent.memory):
         m["shop_serials"] = shop_serials  # identity pin, not a nearest-tile guess
     bjorn.set_leash((wx, wy))
@@ -2821,8 +2854,9 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
         if not groves:
             raise RuntimeError(f"no grove found near {forest} on map {facet}")
         (sx, sy), trees = groves[0]
+        pool = grove_spot_pool(groves, (sx, sy))
         print(f"grove: map={facet} stand ({sx},{sy}) with {len(trees)} trees in reach "
-              f"({len(groves)} groves near {forest})")
+              f"({len(groves)} groves near {forest}, pool {len(pool)})")
         prof = PROFESSIONS["lumberjack"]
         wx, wy, wz = gm.stage(serial, sx, sy, skills=prof.skills,
                               items=list(prof.items))
@@ -2841,13 +2875,29 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
                       econ_memory={"shop_serials": shop_serials},
                       memory={"harvest_nodes": [(t.x, t.y, t.z, t.graphic)
                                                 for t in trees],
+                              "harvest_spot_pool": pool,
                               "shop_serials": shop_serials},
                       banner="with a hatchet")
 
     def status_extra(life, obs) -> str:
+        cursor = "yes" if (obs is not None and obs.pending_target is not None) else "no"
         line = (f"axe={owned_tool_readout(obs, AXE_GRAPHICS)} "
                 f"logs={pack_amount(obs, LOG_GRAPHIC)} "
-                f"boards={pack_amount(obs, BOARD_GRAPHIC)}")
+                f"boards={pack_amount(obs, BOARD_GRAPHIC)} "
+                f"cursor={cursor}")
+        # Dry-grove hop, woodsman-20260818-1941: without `win=` the 429-tick stall
+        # looked like "still chopping". `pool=` is the remaining surveyed groves;
+        # `reloc=` is a hop in flight.
+        mem = life.memory
+        recent = mem.get("harvest_recent_stuck")
+        if recent is not None and len(recent) > 0:
+            line += f" win={sum(recent)}/{len(recent)}"
+        pool = mem.get("harvest_spot_pool")
+        if pool is not None:
+            line += f" pool={len(pool)}"
+        if mem.get("harvest_relocating"):
+            tgt = mem.get("harvest_relocate_target")
+            line += f" reloc={tgt}" if tgt else " reloc"
         # When a process_logs goal holds the stack, show the completion bookkeeping the
         # achievement check reads — "not achieved" has several distinct causes, and this
         # block earned its place in a real debugging round (commit c49c444).

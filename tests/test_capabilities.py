@@ -15,12 +15,14 @@ from anima2.capabilities import (
 )
 from anima2.contract import (
     Drop,
+    GumpView,
     ItemView,
     MobileView,
     Observation,
     PlayerView,
     PopupRequest,
     Position,
+    TargetCursor,
     Use,
 )
 from anima2.goals import GoalOutcome, GoalSource
@@ -2322,6 +2324,8 @@ def _lumber_ctx(
     axe: bool = False,
     goal_id: int | None = None,
     goal_policy: CapabilityPolicy | None = None,
+    pending_target: TargetCursor | None = None,
+    gumps: list | None = None,
 ) -> SkillContext:
     player = PlayerView(serial=1, pos=Position(100, 100, 0), hits=100, hits_max=100)
     backpack = ItemView(serial=2, graphic=0x0E75, amount=1, pos=player.pos,
@@ -2348,7 +2352,9 @@ def _lumber_ctx(
         "banker_spot": (100, 100),
     }
     return SkillContext(
-        obs=Observation(player=player, items=items),
+        obs=Observation(player=player, items=items,
+                        pending_target=pending_target,
+                        gumps=list(gumps or ())),
         persona=Persona(name="Bjorn"),
         goal=goal,
         memory=memory,
@@ -2407,6 +2413,27 @@ def test_lumberjack_process_logs_ready_only_with_logs_and_an_axe():
     assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, logs=0, axe=True)) is None
     # No axe -> can't convert.
     assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, logs=18, axe=False)) is None
+
+
+def test_process_logs_ready_with_a_chop_leftover_cursor():
+    # woodsman-20260818-1926 at (518, 1042): Chop's last Use(axe) left
+    # pending_target, 20 logs, axe worn, want=process_logs admitted=None
+    # ready=[] for 585 ticks. ProcessLogs.step already TargetObject(log) on
+    # that cursor; the gate was the odd one out. Live cursor kind was 1
+    # (ground-allowed harvest), which ServUO HarvestTarget still accepts an
+    # IAxe (pack log) on.
+    goal = capability_goal("lumberjack", "process_logs")
+    cursor = TargetCursor(target_type=1, cursor_id=7, cursor_flag=0)
+    ctx = _lumber_ctx(goal, logs=20, axe=True, pending_target=cursor)
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, ctx) is not None
+    # A cursor without logs is still nothing to process.
+    empty = _lumber_ctx(goal, logs=0, axe=True, pending_target=cursor)
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, empty) is None
+    # Dropping the idle-UI list entirely would admit through a gump; that is
+    # a different surface and still refuses.
+    gump = _lumber_ctx(goal, logs=20, axe=True,
+                       gumps=[GumpView(serial=1, gump_id=0x5AFE, elements=[])])
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, gump) is None
 
 
 def test_lumberjack_process_completion_binds_boards_to_the_frozen_logs():

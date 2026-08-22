@@ -85,6 +85,7 @@ def test_deliver_boards_drops_pack_pile_on_the_ground_then_finishes():
     r3 = skill.step(_ctx([_backpack()], memory=mem))
     actions.append(r3.action)
     assert mem["cap_deliver_finished_goal_id"] == 71
+    assert mem["cap_run_finished_goal_id"] == 71
     assert mem["cap_deliver_delivered"] == 19
     assert mem["cap_deliver_boards_remaining"] == 0
     assert r3.action is None
@@ -127,6 +128,7 @@ def test_fetch_boards_lifts_ground_pile_into_the_pack_then_finishes():
     r3 = skill.step(_ctx([_backpack(), _item(0x800, BOARD_GRAPHIC, amount=19)], memory=mem))
     actions.append(r3.action)
     assert mem["cap_fetch_finished_goal_id"] == 71
+    assert mem["cap_run_finished_goal_id"] == 71
     assert mem["cap_fetch_fetched"] == 19
     assert mem["cap_fetch_ground_remaining"] == 0
     assert r3.action is None
@@ -203,4 +205,5 @@ def test_deliver_return_arriving_home_still_finishes():
     }
     res = skill.step(_ctx([_backpack()], memory=mem, pos=Position(*DROP, 0)))
     assert mem["cap_deliver_finished_goal_id"] == 71
+    assert mem["cap_run_finished_goal_id"] == 71
     assert res.action is None

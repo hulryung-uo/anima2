@@ -116,10 +116,12 @@ def test_a_productive_reply_does_not_cycle_the_node():
 
 
 def test_chop_is_unchanged_by_the_widened_cycling_rule():
-    """A woodsman's behaviour must not move: `Chop` leaves both
-    `no_resource_clilocs` and `invalid_target_clilocs` empty, so the derived set
-    collapses back to exactly the one cliloc it always used."""
+    """Cycling itself must not move: 500493 still advances `harvest_idx` to the
+    next tree. `Chop.no_resource_clilocs` now also contains that id so a *fully
+    dry* grove can fill the relocate window, but the derived cycling set is
+    still exactly `{NODE_DEPLETED_CLILOC}` — one fact, two readers."""
     assert Chop().node_exhausted_clilocs == {NODE_DEPLETED_CLILOC}
+    assert Chop.no_resource_clilocs == {NODE_DEPLETED_CLILOC}
     grove = [(99, 99, 0, 0x0CCA), (101, 101, 0, 0x0CCB)]
     mem: dict = {"harvest_nodes": grove}
     assert _swings(mem, NODE_DEPLETED_CLILOC, count=2,
@@ -273,6 +275,32 @@ def test_a_woodsmans_grove_survives_a_relocation_it_cannot_reprobe():
     for _ in range(chop.relocate_stall_limit + 2):            # ...and stall-giveup
         chop.step(_ctx_at(mem, (112, 100), tool=0x0F43))
     assert mem["harvest_nodes"] == grove
+
+
+def test_a_woodsmans_failed_pool_hop_keeps_the_grove():
+    """The pool path's `abandoned=True` used to drop Chop's nodes
+    unconditionally. Trees cannot be re-probed, so a WalkTo that never left
+    the dry stand would end the trade. Keeping the list is what lets the
+    next window fill hop again — the miner's drop is correct for terrain and
+    wrong for statics, which is why `nodes_are_reprobeable` is the single
+    source both exits read."""
+    from collections import deque
+
+    grove = [(518, 1041, 0, 0xCCA), (519, 1041, 0, 0xCCB)]  # woodsman-20260818-1941
+    mem: dict = {
+        "harvest_nodes": grove, "harvest_idx": 1,
+        "harvest_spot_pool": [((530, 1042), [(530, 1041, 0, 0xCCA)])],
+    }
+    chop = Chop()
+    window = len(chop.probe_offsets) * chop.stuck_window_rotations
+    mem["harvest_recent_stuck"] = deque([1] * window, maxlen=window)
+    chop.step(_ctx_at(mem, (518, 1042), tool=0x0F43))          # starts the hop
+    assert mem.get("harvest_relocating") is True
+    for _ in range(chop.relocate_stall_limit + 2):            # never moves
+        chop.step(_ctx_at(mem, (518, 1042), tool=0x0F43))
+    assert not mem.get("harvest_relocating")
+    assert mem["harvest_nodes"] == grove
+    assert "harvest_pending_nodes" not in mem
 
 
 def test_reprobeability_is_one_class_fact_read_by_both_relocation_exits():

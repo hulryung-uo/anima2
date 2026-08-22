@@ -85,10 +85,13 @@ CATCH_CLILOC = 1008124
 # system uses its own message ids
 # (`Scripts/Services/Harvest/{Mining,Lumberjacking,Fishing}.cs`
 # `HarvestDefinition.NoResourcesMessage`/`.PackFullMessage`) — `Mine` sets both
-# to the live-confirmed mining clilocs; `Chop` already handles wood depletion
-# via `NODE_DEPLETED_CLILOC` (the same cliloc as lumberjacking's own
-# `NoResourcesMessage`) by cycling its known grove node list, so only
-# `pack_full_clilocs` is new for it; `Fish` gets both.
+# to the live-confirmed mining clilocs; `Chop` sets `no_resource_clilocs` to
+# `NODE_DEPLETED_CLILOC` (lumberjacking's own `NoResourcesMessage`, 500493) so
+# a fully dry grove fills the relocate window the same way a dead ore bank
+# does. Cycling the known grove still happens first — the derived
+# `node_exhausted_clilocs` already contained 500493, so the first depleted
+# tree still advances `harvest_idx`; only a window of them hops. `Fish` gets
+# both.
 
 # Once relocation triggers (see `no_resource_clilocs`), walk this offset away
 # from the current stand spot before resuming probing — comfortably past
@@ -189,8 +192,9 @@ class Harvest(Skill):
     #: and `min(chebyshev)` over `RELOCATE_OFFSETS` is 9 against a reach of 2, so
     #: after ANY blind hop that guard is unconditionally true. Review-caught, one
     #: commit after the guard shipped. A reachable path, not a theoretical one:
-    #: `Chop` sets `pack_full_clilocs`, so a woodsman whose pack fills mid-grove
-    #: samples a full window of failures and relocates.
+    #: `Chop` counts 500493 in the relocate window (and pack-full), so a dry grove
+    #: hops — but only a surveyed `harvest_spot_pool` installs a NEW grove on
+    #: arrival. A blind hop that then drops the old list is the end of the trade.
     nodes_are_reprobeable: bool = True
     #: Edge of this harvest system's resource-bank grid, or 0 for "not modelled".
     #: Telemetry ONLY — nothing decides on it. ServUO gives every harvest
@@ -671,13 +675,19 @@ class Harvest(Skill):
         spent — nothing was dropped and the "too far away forever" wedge survived
         on the stalling half. Review-caught one commit later.
 
-        `abandoned` means a POOL spot was given up on: its nodes were never
-        installed and the old ones are condemned regardless, so the drop is
-        unconditional. Otherwise it is only right when the list is genuinely
-        unreachable AND this skill can re-probe without one (`nodes_are_reprobeable`).
+        `abandoned` means a POOL spot was given up on: its pending nodes were
+        never installed. A miner drops the condemned face and falls back to
+        probing; a woodsman MUST NOT — trees are statics, and dropping the
+        grove is the end of the trade (`nodes_are_reprobeable`). The old
+        grove may already be dry, but keeping it is what lets the next
+        window fill hop again instead of probing ground forever.
+
+        Otherwise the drop is only right when the list is genuinely
+        unreachable AND this skill can re-probe without one.
         """
-        if abandoned or (self.nodes_are_reprobeable
-                         and self._nodes_all_out_of_reach(ctx)):
+        if not self.nodes_are_reprobeable:
+            return
+        if abandoned or self._nodes_all_out_of_reach(ctx):
             ctx.memory.pop("harvest_nodes", None)
             ctx.memory.pop("harvest_idx", None)
 
@@ -793,20 +803,32 @@ class Chop(Harvest):
     skill_id = SKILL_LUMBERJACKING
     requires_equipped = True
     equip_layer = 2  # two-handed
-    # No `no_resource_clilocs`: lumberjacking's own "no resources" message
-    # (`Lumberjacking.cs` `lumber.NoResourcesMessage`) is cliloc 500493 —
-    # already handled above as `NODE_DEPLETED_CLILOC`, which cycles the known
-    # grove node list rather than relocating (a grove is a short, known
-    # cluster reached via exact nodes, not an unbounded probe ring — the
-    # windowed-rate/relocate machinery only ever engages in the probe branch,
-    # via `no_resource_clilocs`, which `Chop` leaves empty). `pack_full_clilocs`
-    # is new for it.
+    # Lumberjacking's `NoResourcesMessage` is 500493 — the same id as
+    # `NODE_DEPLETED_CLILOC`, which still cycles the known grove. Putting it
+    # here as well is what lets a *fully dry* grove fill the relocate window:
+    # woodsman-20260818-1941 cycled five Yew trees then stood on them for 429
+    # ticks, because cycling alone never hops and `Chop` left this set empty
+    # so the window never saw 500493. ServUO `Lumberjacking.cs`: a bank is
+    # 4x3 and holds 20-45 logs, respawn 20-30 min — a 600-tick day cannot wait.
+    no_resource_clilocs = frozenset({NODE_DEPLETED_CLILOC})
     pack_full_clilocs = frozenset({500497})  # "You can't place any wood into your backpack!"
+    # Outcome-only, same reason as `Mine`: at live cadence the 500493 lands in
+    # the same batch as the next swing's already-open cursor, and the legacy
+    # `pending_target is None` sampler would drop the verdicts a dry grove
+    # produces. Fail-with-wood (500495) is proof the bank still yields.
+    productive_clilocs = frozenset({
+        500495,   # "You hack at the tree ... fail to produce any useable wood."
+        500498,   # "You put some logs into your backpack." (pre-ML)
+        1072540, 1072541, 1072542, 1072543, 1072544, 1072545, 1072546,
+    })
+    #: One rotation: 24 dry-tree verdicts is conclusive for a 5-tree grove, and
+    #: three rotations made the miner take 3-5 live minutes to confess.
+    stuck_window_rotations = 1
     #: Trees are STATICS — the probe ring targets ground and can never hit one, and
     #: nothing re-seeds the grove after staging. So a dropped node list ends the
-    #: trade rather than falling back to anything. See the base attribute; and note
-    #: that the `pack_full_clilocs` immediately above is what makes a woodsman's
-    #: relocation reachable at all, so this is not a hypothetical path.
+    #: trade rather than falling back to anything. A woodsman's hop is therefore
+    #: only useful with a surveyed `harvest_spot_pool` of other groves (the
+    #: miner's forge11 lesson, arriving here from woodsman-20260818-1941).
     nodes_are_reprobeable = False
 
 

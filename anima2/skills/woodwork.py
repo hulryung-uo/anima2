@@ -257,6 +257,8 @@ class ProcessLogsGoal(ProcessLogs):
         # All logs converted (none left) and no cursor open -> the batch is done.
         if self._pack_log(ctx) is None and ctx.obs.pending_target is None:
             ctx.memory["cap_process_finished_goal_id"] = goal_id
+            # Neutral run-finished marker — follow-up 15 remainder (audit §50).
+            ctx.memory["cap_run_finished_goal_id"] = goal_id
             self._observe_evidence(ctx)
             return SkillResult(Status.RUNNING)
         # Otherwise run the convert gesture (Use axe -> target log), goal-scoped.
@@ -389,6 +391,8 @@ class DeliverBoards(Skill):
         if result is not None:
             return result
         ctx.memory["cap_deliver_finished_goal_id"] = goal_id
+        # Neutral run-finished marker — follow-up 15 remainder (audit §50).
+        ctx.memory["cap_run_finished_goal_id"] = goal_id
         self._observe_evidence(ctx)
         return SkillResult(Status.RUNNING)
 

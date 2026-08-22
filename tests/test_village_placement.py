@@ -267,3 +267,30 @@ def test_stage_key_readout_snapshots_before_reading():
     fresh = _RacyMemory({"mkt_phase": "sell", "sell_stage": "popup"})
     with pytest.raises(KeyError):
         " ".join(f"{k}={fresh[k]}" for k in keys if k in fresh)
+
+
+def test_grove_spot_pool_skips_home_and_stops_at_the_cap():
+    """woodsman-20260818-1941 stood on groves[0] with no next stand to hop to.
+    The home grove is already in `harvest_nodes`; seeding it into the pool
+    would walk back to the bank that just confessed empty."""
+    from anima2.uomap import Static
+    from anima2.village import GROVE_POOL_SPOTS, grove_spot_pool
+
+    def tree(x, y):
+        return Static(x, y, 0, 0xCCA)
+
+    home = (518, 1042)
+    groves = [
+        (home, [tree(518, 1041), tree(519, 1041)]),
+        ((530, 1042), [tree(530, 1041)]),
+        ((540, 1040), [tree(540, 1039)]),
+    ]
+    pool = grove_spot_pool(groves, home)
+    assert [s for s, _ in pool] == [(530, 1042), (540, 1040)]
+    assert pool[0][1] == [(530, 1041, 0, 0xCCA)]
+    assert grove_spot_pool(groves[:1], home) == []
+
+    many = [((100 + i * 10, 100), [tree(100 + i * 10, 99)]) for i in range(20)]
+    capped = grove_spot_pool(many, (100, 100))
+    assert len(capped) == GROVE_POOL_SPOTS
+    assert (100, 100) not in {s for s, _ in capped}

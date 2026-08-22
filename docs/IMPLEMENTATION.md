@@ -8,7 +8,7 @@ Read [`DESIGN.md`](DESIGN.md) for *what this is* and *why*. Read
 [`OBSERVATIONS.md`](OBSERVATIONS.md) for the input side of a new finding.
 This file is only *how a change is chosen, built, and closed*.
 
-Last updated: 2026-08-18.
+Last updated: 2026-08-22.
 
 ---
 
@@ -32,34 +32,36 @@ that can steer a Life, which is a design question, not a wiring one.
 Do **not** burn a multi-hour live GM budget to discover a defect that a
 hand-built observation can name.
 
-### Current queue (2026-08-18)
+### Current queue (2026-08-22)
 
-Live-scored 2026-08-18:
+Live-scored (no further live days until resumed):
 
 | Item | Score | Tape |
 |---|---|---|
 | Follow-up 42 / §43.4 apron | PASS | `forge-20260818-0003` |
 | Follow-up 40 / §44.3 `silent=` | Instrument PASS | same |
 | Follow-up 41 / §45.2 `map=` | PASS | same |
-| Follow-up 15 (craft) live | **PASS** — giveup@22, fetch@4; 0× `300/300 expired` | `forge-20260818-0039` |
-| Stale `bs_stand` (§48) live | **PASS** — 0× stale `sell_return`; 0× age-11 sell giveup; 49× sell@5 achieved | `.logs/forge-20260818-0100` |
+| Follow-up 15 (craft) live | **PASS** | `forge-20260818-0039` |
+| Stale `bs_stand` (§48) live | **PASS** | `.logs/forge-20260818-0100` |
+| Chop cursor vs process_logs (§49) live | **PASS** | `.logs/woodsman-20260818-1941` |
 
 Closed offline, live-unverified:
 
 | Item | What | Where |
 |---|---|---|
 | DeliverBoards sibling of 42 | Return stall / exhausted WalkTo is not arrival | `skills/woodwork.py`, audit §46 |
+| Follow-up 15 remainder | fetch / process / deliver write `cap_run_finished_goal_id` | `skills/carpentry.py`, `skills/woodwork.py` |
+| Dry Yew grove hop (§51) | `Chop` fills the relocate window on 500493; woodsman runners seed a grove pool | `skills/harvest.py`, `village.py` |
 
 Still open, do not start without a fixture or a written prediction:
 
-- Follow-up 15 remainder — fetch / process / deliver still have no
-  `cap_run_finished_goal_id`. Bound 2's reporter now stands on fetch.
 - Genome axes → Life knobs — design, not a splat. `profession` is identity
   and the allowlist refuses it.
 - Foundry eval measuring a Life — `foundry/eval.py::_build_agent` still
   builds a bare `Agent`.
 - Retreat / rest timing as knobs — the capability manifest forbids
   per-instance survival state on purpose.
+- Live days paused by request (2026-08-22).
 
 Live watch: `./scripts/run_forge_pair.sh` (Safari + `.logs/`) or
 `uv run python -m anima2.monitor_watch` — not Chrome, not `anima-desktop`

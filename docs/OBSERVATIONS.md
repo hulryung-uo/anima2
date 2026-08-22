@@ -81,6 +81,33 @@ the fast loop may not do, what a live run is for — is
 
 ## Entries
 
+### 2026-08-18  Bjorn chopped 20 logs then stood still with the axe cursor open
+- **Saw:** A freshly staged lumberjack at Yew `(518, 1042)` filled the pack
+  with 20 logs in ~18 ticks, then did not move, convert, or sell for the
+  rest of a 600-tick day.
+- **It said:** `want=process_logs admitted=None ready=[] axe=yes logs=20
+  boards=0` from t=18 to t=600; `RULE-vs-GATE DISAGREEMENT` 585 ticks;
+  `NO PROGRESS for 440 ticks`. Monitor `target {active: 1, kind: 1}`.
+- **Where:** `.logs/woodsman-20260818-1926.log`. Account `animawood48787`.
+- **Why it looked wrong:** the rule wanted the conversion the skill already
+  knows how to finish (`Use(axe)` leftover → `TargetObject(log)`). The
+  gate treated that harvest cursor as idle-UI dirt.
+- **Later the same day (verify tape):** `.logs/woodsman-20260818-1941.log`
+  — `admitted=process_logs@1/180 cursor=yes`; conversions age=3; sells
+  age=5; banked 50g above the 150 reserve. §49 live-closed.
+
+### 2026-08-18  The Yew grove ran dry and Bjorn stood on it for 429 ticks
+- **Saw:** After a working chop→process→sell→bank loop, Bjorn stayed at
+  `(518, 1042)` with `logs=0 boards=10` from ~t=173 to t=600, still
+  swinging (`cursor` toggling yes/no), producing nothing.
+- **It said:** `NO PROGRESS` 360/400/440; end line `[BUDGET SPENT · STALLED 429]`.
+  Five trees in reach; 138 groves surveyed near `YEW_FOREST`.
+- **Where:** `.logs/woodsman-20260818-1941.log`. Account `animawood49689`.
+- **Why it looked wrong:** lumber banks are 4x3 / 20-45 logs / 20-30 min
+  respawn (`Lumberjacking.cs`). Cycling `harvest_idx` on 500493 never
+  hops, `Chop.no_resource_clilocs` was empty so the relocate window never
+  saw the dry grove, and the runner never seeded `harvest_spot_pool`.
+
 ### 2026-08-18  Late-day sell returns walked to an early craft tile and gave up at age 11
 - **Saw:** After a productive morning of sells from `@(2611,473)`, Pim settled
   at craft_spot `@(2609,474)`. Every late `sell_return` still targeted

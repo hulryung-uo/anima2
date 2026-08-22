@@ -138,6 +138,27 @@ def _mine_ticker(mem, mining=35.0):
     return tick
 
 
+def _chop_ticker(mem):
+    """Drive `Chop` the same way `_mine_ticker` drives `Mine`: equipped axe,
+    swing → cursor → reply. Outcome-only windowing samples only on a real
+    lumberjacking verdict, so the priming tick records nothing."""
+    from anima2.skills import Chop
+
+    skill = Chop()
+    axe = _item(0x333, 0x0F43, layer=2, container=1)
+
+    def tick(pending=None, journal=()):
+        obs = Observation(
+            player=PlayerView(serial=1, pos=Position(100, 100, 0)),
+            items=[axe],
+            pending_target=pending,
+            new_journal=list(journal),
+        )
+        return skill.step(SkillContext(obs=obs, persona=Persona(name="B"), memory=mem))
+
+    return tick
+
+
 def _run_rotations(tick, mem, *, rotations, ring, stuck_cliloc=None):
     """`rotations` full probe-ring rotations of swing → cursor → reply: swing
     → cursor opens → answer → reply carries `stuck_cliloc` (or nothing, a
@@ -319,11 +340,10 @@ def test_mine_detects_partial_exhaustion_despite_interspersed_skill_gain():
 
 
 def test_chop_unaffected_by_mining_no_resource_cliloc():
-    """`Chop` has no `no_resource_clilocs` configured (wood depletion is
-    already handled by `NODE_DEPLETED_CLILOC`'s own node-cycling) — feeding it
-    mining's cliloc (503040, meaningless to lumberjacking) must never trip the
-    new relocate machinery. Confirms the mechanism is genuinely opt-in, not a
-    blanket behavior change for every `Harvest` subclass."""
+    """`Chop` opts into lumberjacking's own 500493, not mining's 503040 —
+    feeding it mining's cliloc must never trip the relocate machinery.
+    Confirms the mechanism is genuinely per-subclass, not a blanket change
+    for every `Harvest` skill."""
     from anima2.contract import TargetCursor
     from anima2.skills import Chop
     from anima2.skills.harvest import PROBE_OFFSETS
@@ -350,6 +370,56 @@ def test_chop_unaffected_by_mining_no_resource_cliloc():
         last_action = tick(journal=[stray]).action
     assert isinstance(last_action, Use)  # never relocated — kept swinging normally
     assert mem.get("harvest_relocating") is not True
+
+
+def test_chop_relocates_after_sustained_no_wood():
+    """woodsman-20260818-1941: five Yew trees at (518, 1042) ran dry, Chop
+    cycled them, and 429 ticks of 500493 never hopped because that cliloc
+    only advanced `harvest_idx`. A full window of lumberjacking's own
+    `NoResourcesMessage` now walks away, same as a dead ore bank."""
+    from anima2.skills import Chop
+    from anima2.skills.harvest import NODE_DEPLETED_CLILOC, PROBE_OFFSETS, RELOCATE_OFFSETS
+    from anima2.contract import WalkTo
+
+    mem: dict = {}
+    tick = _chop_ticker(mem)
+    ring = len(PROBE_OFFSETS)
+    last_action = _run_rotations(
+        tick, mem, stuck_cliloc=NODE_DEPLETED_CLILOC,
+        rotations=Chop.stuck_window_rotations, ring=ring)
+    assert isinstance(last_action, WalkTo)
+    assert mem["harvest_relocating"] is True
+    dx, dy = RELOCATE_OFFSETS[0]
+    assert (last_action.x, last_action.y) == (100 + dx, 100 + dy)
+
+
+def test_a_dry_grove_walks_to_the_next_surveyed_grove():
+    """The hop is only useful if it installs a NEW grove. Blind compass +
+    `nodes_are_reprobeable = False` keeps the dead trees; the pool is the
+    miner's forge11 lesson, with the live stand as home."""
+    from collections import deque
+    from anima2.skills import Chop
+    from anima2.contract import WalkTo
+
+    next_stand = (530, 1042)
+    next_trees = [(530, 1041, 0, 0xCCA)]
+    mem: dict = {
+        "harvest_spot_pool": [(next_stand, next_trees)],
+        "harvest_nodes": [(518, 1041, 0, 0xCCA)],
+    }
+    chop = Chop()
+    window = len(chop.probe_offsets) * chop.stuck_window_rotations
+    mem["harvest_recent_stuck"] = deque([1] * window, maxlen=window)
+    axe = _item(0x333, 0x0F43, layer=2, container=1)
+    res = chop.step(_ctx(items=[axe], memory=mem))
+    assert isinstance(res.action, WalkTo)
+    assert (res.action.x, res.action.y) == next_stand
+    obs = Observation(player=PlayerView(serial=1, pos=Position(*next_stand, 0)),
+                      items=[axe])
+    chop.step(SkillContext(obs=obs, persona=Persona(name="B"), memory=mem))
+    assert mem["harvest_nodes"] == next_trees
+    assert mem["harvest_idx"] == 0
+    assert mem.get("harvest_spot_pool") == []
 
 
 def test_fish_rewards_each_catch():
