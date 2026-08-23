@@ -579,3 +579,63 @@ def test_prey_that_will_not_pin_is_deleted_not_left_to_roam():
     lost = _FakeGm(found=False)
     assert stage_pinned_prey(lost, "Ettin", 10, 20, 0) == "lost"
     assert not any(c.startswith("[Delete") for c in lost.commands), lost.commands
+
+
+def test_walkable_run_stops_where_the_ground_stops_being_climbable():
+    """ServUO allows a land step only when `startZ + StepHeight >= landZ`
+    (`Scripts/Services/Pathing/Movement.cs`, `StepHeight = 2`): ascent capped at 2,
+    descent unbounded. A vendor trip is a ROUND trip, though, so a 25-tile drop on the
+    way out is a 25-tile climb on the way home — the bound has to hold both ways or the
+    runner cheerfully places a shop the warrior can reach exactly once.
+
+    Measured 2026-08-24 (audit §58): the warrior pocket at `(2587, 408)` is a z=15
+    plateau ringed by cliffs, and all four shops were staged at a flat 12.
+    """
+    from anima2 import uomap
+    from anima2.uomap import STEP_HEIGHT, walkable_run
+
+    # A synthetic ridge, so the assertion does not depend on the shard's map files.
+    profile = {0: 15, 1: 15, 2: 16, 3: 18, 4: 28, 5: 30}   # the +10 at step 4
+
+    def fake_cells(map_index, x0, y0, x1, y1):
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                yield x, y, 0x0003, profile.get(y - 100, 15)
+
+    real, uomap.land_cells = uomap.land_cells, fake_cells
+    try:
+        assert walkable_run(0, 50, 100, 0, 1, 5) == 3, "stops one short of the +10"
+        assert walkable_run(0, 50, 100, 0, 1, 2) == 2, "never reports past max_len"
+        # Descent is bounded too, and that is the round-trip half of the rule.
+        assert STEP_HEIGHT == 2
+        profile.update({1: 15 - STEP_HEIGHT - 1})
+        assert walkable_run(0, 50, 100, 0, 1, 5) == 0, "a drop is a climb on the way back"
+
+        # OFF THE EDGE OF THE MAP is a stop, not a crash. The box this reads is derived
+        # from `max_len`, so a ray that leaves loaded data yields no cell at all.
+        holes = {(50, 100): 15, (50, 101): 15}
+        uomap.land_cells = lambda mi, x0, y0, x1, y1: (
+            (x, y, 0x0003, holes[(x, y)])
+            for (x, y) in holes if x0 <= x <= x1 and y0 <= y <= y1)
+        assert walkable_run(0, 50, 100, 0, 1, 5) == 1
+        assert walkable_run(0, 99, 99, 0, 1, 5) == 0, "no ground under our own feet"
+    finally:
+        uomap.land_cells = real
+
+
+def test_the_warrior_pocket_is_walled_in_and_the_map_says_so():
+    """The live finding itself, pinned to the real map files so it cannot silently stop
+    being true: at `HUNTING_SPOT` no direction allows the fixed 12-tile shop offset."""
+    from anima2.profession import HUNTING_SPOT
+    from anima2.uomap import walkable_run
+    from anima2.village import _VENDOR_GAP, _VENDOR_MIN_GAP
+
+    gx, gy = HUNTING_SPOT
+    runs = {name: walkable_run(0, gx, gy, dx, dy, _VENDOR_GAP)
+            for name, (dx, dy) in (("weapon", (1, 0)), ("healer", (-1, 0)),
+                                   ("banker", (0, 1)), ("armorer", (0, -1)))}
+    assert all(n < _VENDOR_GAP for n in runs.values()), (
+        f"the pocket stopped being walled in — re-read §58 before trusting the old "
+        f"vendor distances: {runs}")
+    assert all(n >= _VENDOR_MIN_GAP for n in runs.values()), (
+        f"a leg is now unusably short and the runner must say so loudly: {runs}")

@@ -53,7 +53,7 @@ from .skills import MineSmeltDeliver
 from .skills.combat import is_hostile
 from .skills.market import walk_readout
 from .skills.base import Status
-from .uomap import find_mine_spots, find_tree_clusters, play_map
+from .uomap import find_mine_spots, find_tree_clusters, play_map, walkable_run
 
 # Minoc-area woods, near the mining camp — keeps the village compact.
 # Each lumberjack gets a distinct grove (a stand spot + the trees in reach).
@@ -3163,6 +3163,13 @@ def warrior_readout(life, obs) -> str:
         return " blade=?"
 
 
+#: How far a warrior-village shop is placed from the hunting pocket, and the floor under
+#: which that leg is reported as impossible rather than merely tight. 12 was the old fixed
+#: figure; 3 is one tile outside the ring the prey is pinned on.
+_VENDOR_GAP = 12
+_VENDOR_MIN_GAP = 3
+
+
 def stage_pinned_prey(gm, prey: str, x: int, y: int, z: int, *,
                       exclude: set[int] | None = None, retries: int = 2) -> str:
     """Spawn one `prey` at `(x, y, z)`, pin it, and READ THE PIN BACK FROM THE SERVER.
@@ -3327,10 +3334,34 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # with `Utility.Random(3)` and only one branch carries swords, so it stocks a
             # Katana on a 1-in-3 roll fixed at spawn. IronWorker installs SBSwordWeapon,
             # whose Katana is unconditional (see skills/warrior.py::BuyWeapon).
-            gm.stage_npc("IronWorker", gx + 12, gy, gz, exclude=all_serials)
-            gm.stage_npc("Healer", gx - 12, gy, gz, exclude=all_serials)
-            gm.stage_npc("Banker", gx, gy + 12, gz, exclude=all_serials)
-            gm.stage_npc("Armorer", gx, gy - 12, gz, exclude=all_serials)
+            # PUT THEM WHERE THE WARRIOR CAN WALK. A flat 12 was the layout for fifteen
+            # live days and the hunting pocket is a z=15 plateau ringed by cliffs: the
+            # banker stood 54 z above the warrior behind a `+10` step, the healer behind a
+            # `+13`. Every one of those days ended `banked=0` with no vendor purchase
+            # ever made, and `BACK ALIVE` stuck at 0 because the resurrection healer was
+            # on the far side of the same wall (audit §58). `walkable_run` asks the map
+            # how far the ground actually allows, ROUND TRIP, and each shop goes at the
+            # last tile that answers — never nearer than `_VENDOR_MIN_GAP`, so a shop is
+            # never inside the melee the prey is pinned in.
+            reach = {}
+            for role, (ddx, ddy) in (("weapon", (1, 0)), ("healer", (-1, 0)),
+                                     ("banker", (0, 1)), ("armorer", (0, -1))):
+                reach[role] = walkable_run(0, gx, gy, ddx, ddy, _VENDOR_GAP)
+            wx, hx = gx + reach["weapon"], gx - reach["healer"]
+            by, ay = gy + reach["banker"], gy - reach["armorer"]
+            # Printed even when every ray is fine: a shop quietly moved to 3 tiles and a
+            # shop at 12 behave very differently, and "no line" must not mean either.
+            print(f"  vendor gaps (walkable, max {_VENDOR_GAP}): "
+                  + " ".join(f"{r}={reach[r]}" for r in ("weapon", "healer",
+                                                         "banker", "armorer")))
+            short = [r for r, n in reach.items() if n < _VENDOR_MIN_GAP]
+            if short:
+                print(f"  ** the pocket at ({gx},{gy}) is walled in: {', '.join(short)} "
+                      f"under {_VENDOR_MIN_GAP} tiles — that leg cannot work **")
+            gm.stage_npc("IronWorker", wx, gy, gz, exclude=all_serials)
+            gm.stage_npc("Healer", hx, gy, gz, exclude=all_serials)
+            gm.stage_npc("Banker", gx, by, gz, exclude=all_serials)
+            gm.stage_npc("Armorer", gx, ay, gz, exclude=all_serials)
             # Prey spawned ADJACENT to the stand so Hunt engages immediately (before the
             # warrior can drift), each on its own tile around the warrior.
             # Prey spawned adjacent AND PINNED (`CantWalk`) so a wounded creature stands
@@ -3356,8 +3387,8 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # waits for the warrior to be dressed (see `_ready_to_fight`), so the pocket
             # fills as soon as the suit is on and not one tick sooner. Deleting the spawn
             # here costs nothing but the first few seconds of a hunt.
-            routes = {"weapon_vendor_spot": [(gx + 12, gy)],
-                      "healer_spot": [(gx - 12, gy)],
+            routes = {"weapon_vendor_spot": [(wx, gy)],
+                      "healer_spot": [(hx, gy)],
                       # The SAME Healer, told to `RecoverDeath` as well. `healer_spot` is
                       # the bandage vendor route (`warrior.BuyBandages.vendor_spot_key`);
                       # it is not read by the death skill, which looks for a configured
@@ -3366,9 +3397,9 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                       # ServUO's `BaseHealer.OnMovement` offers a `ResurrectGump` to a
                       # ghost that walks within 2 tiles, so a staged Healer really can
                       # bring the warrior back; nothing was pointing at it.
-                      "resurrection_spot": [(gx - 12, gy)],
-                      "banker_spot": [(gx, gy + 12)],
-                      "armorer_spot": [(gx, gy - 12)]}
+                      "resurrection_spot": [(hx, gy)],
+                      "banker_spot": [(gx, by)],
+                      "armorer_spot": [(gx, ay)]}
             life = build_tuned_life(
                 WarriorLife, knobs, body=body,
                 persona=Persona(name=f"Bram{i}", combat_disposition="aggressive"),

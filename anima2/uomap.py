@@ -420,3 +420,40 @@ def find_mine_spots(map_index: int, cx: int, cy: int, radius: int = 40,
         if all(max(abs(s[0] - t[0]), abs(s[1] - t[1])) >= spacing for t, _ in spots):
             spots.append((s, nodes))
     return spots
+
+#: ServUO allows a land step only when `startZ + StepHeight >= landZ`
+#: (`Scripts/Services/Pathing/Movement.cs`, `StepHeight = 2`). Ascent is capped at 2;
+#: descent is not. A VENDOR TRIP IS A ROUND TRIP, though, so a one-tile drop of 25 is
+#: just an ascent of 25 on the way home — `walkable_run` therefore bounds the step BOTH
+#: ways, which is the difference between a reachable shop and a one-way trip off a cliff.
+STEP_HEIGHT = 2
+
+
+def walkable_run(map_index: int, x0: int, y0: int, dx: int, dy: int,
+                 max_len: int, *, climb: int = STEP_HEIGHT) -> int:
+    """How many steps of `(dx, dy)` from `(x0, y0)` stay round-trip walkable.
+
+    Returns 0 when the very first step is already too steep. Land z only: statics and
+    mobiles are the walk's own problem, and this exists to stop a RUNNER placing a
+    destination the ground itself forbids.
+
+    Measured need, 2026-08-24 (audit §58): `run_warrior_village` stages its four vendors
+    at a flat `+/-12` from the hunting pocket, and the pocket at `(2587, 408)` is a z=15
+    plateau ringed by cliffs — the banker sat 54 z above the warrior behind a `+10` step,
+    the healer behind a `+13`. Fifteen live days of `banked=0`, no vendor purchase ever,
+    and `BACK ALIVE` stuck at 0 because the resurrection healer was on the wrong side of
+    the same wall. Nothing in the runner had ever asked whether the ground allowed it.
+    """
+    cells = {(x, y): z for x, y, _t, z in land_cells(
+        map_index,
+        min(x0, x0 + dx * max_len), min(y0, y0 + dy * max_len),
+        max(x0, x0 + dx * max_len), max(y0, y0 + dy * max_len))}
+    prev = cells.get((x0, y0))
+    if prev is None:
+        return 0
+    for step in range(1, max_len + 1):
+        z = cells.get((x0 + dx * step, y0 + dy * step))
+        if z is None or abs(z - prev) > climb:
+            return step - 1
+        prev = z
+    return max_len
