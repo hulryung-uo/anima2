@@ -3281,6 +3281,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
     from .life_runner import build_tuned_life, enforce_gold_provenance, validate_knobs
     from .live_common import GM_RELOGIN_COOLDOWN_S, fresh_suffix, login_throttle
     from .profession import HUNTING_SPOT
+    from .skills.warrior import WarriorSurvive
     from .warrior_life import WarriorLife
 
     # Before the first packet — and this runner spawns `count` of them, so the cost of
@@ -3595,9 +3596,21 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                 # POCKET and refill toward `prey_target`. Counting near the warrior
                 # instead would refill the moment he stepped away from perfectly good
                 # prey — and then he would have both.
+                # COUNT AS FAR AS THE WARRIOR FEELS DANGER, not as far as we aimed.
+                # `[Add` placement is approximate (§55 recorded `foes=d0`), so a creature
+                # that landed outside a tight radius is invisible to this count and the
+                # spawner adds another — measured 2026-08-24 (§61.9): `prey_target = 2`
+                # and `foes=d1,d1,d1`, three Ettins in melee at once, four deaths and
+                # nothing banked on the run right after a clean 630. Three is a different
+                # fight from two: every bandage slips per hit taken.
+                #
+                # `WarriorSurvive.hostile_scan_range` is the radius the warrior's own
+                # reflex uses to decide it is in danger, so counting to the same distance
+                # asks the question the top-up is actually about.
                 near = sum(1 for m in lo.mobiles
                            if m.serial != lo.player.serial and m.hits > 0
-                           and max(abs(m.pos.x - sx), abs(m.pos.y - sy)) <= 3)
+                           and max(abs(m.pos.x - sx), abs(m.pos.y - sy))
+                           <= WarriorSurvive.hostile_scan_range)
                 for k in range(min(budget, max(0, prey_target - near))):
                     dx, dy = adj[k % len(adj)]
                     _spawn_pinned(px, py, pz, dx, dy)
