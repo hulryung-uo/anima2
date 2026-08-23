@@ -154,3 +154,26 @@ the fast loop may not do, what a live run is for — is
 - **Later the same day (verify tape):** `forge-20260818-0039` —
   `craft_tongs#17 age=22/300 -> giveup`, `fetch_iron#18 age=4/180 ->
   achieved`; 0× craft `300/300 expired`. Follow-up 15 craft live-closed.
+
+### 2026-08-24  Bram stood on his spawn tile for 203 samples and died with 95 bandages left
+- **Saw:** A freshly staged swordsman never left `(2587, 408)`. Two Ettins on
+  adjacent tiles beat him from 150 HP to dead over 214 ticks while he wrapped
+  bandages that healed nothing.
+- **It said:** `skill=survive` throughout; `plate=6/6` `blade=0x13FFr5`
+  `bandages=95`. No alarm fired — he was neither stalled nor idle.
+- **Where:** `~/anima-logs/warrior-20260824-0236-slip.log`, t=18–214.
+- **Why it looked wrong:** he was *trying* to run. `Survive` emitted `Walk`
+  every tick. The away-vector cancelled between the east and west Ettins and
+  the code committed NORTH — which is a third spawn tile. Audit §54.
+
+### 2026-08-24  Bram killed two Ettins, then was chased down by prey that cannot walk
+- **Saw:** A good opening — two kills, 372 gold looted — then a slow death at
+  `(2585, 411)` with creatures crowding him however far he retreated.
+- **It said:** `foes=` oscillating `d3,d3,d3 -> d1,d3,d3 -> d2,d3,d3` while the
+  position line never changed, and once `foes=d0,...` — a hostile on his own
+  tile. `kills=2 out+322.0`.
+- **Where:** `~/anima-logs/warrior-20260824-0309-foes.log`, t≈300–409.
+- **Why it looked wrong:** `run_warrior_village` pins every prey it stages
+  (`[Set CantWalk true`). Pinned creatures cannot close distance, so oscillating
+  distances around a stationary warrior are impossible — unless the pin never
+  took. It sent the command and never read it back. Audit §55.
