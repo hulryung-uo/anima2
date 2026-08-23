@@ -465,6 +465,16 @@ def test_warrior_readout_names_what_stops_a_warrior_living():
 
     assert "foes=none" in out, out  # no mobiles at all in the base fixture
     assert "res=none" in out, out    # ...and no healer wired
+    assert " ui=clear" in out, out   # ...and no surface open
+
+    # A CURSOR NOBODY ANSWERS DISABLES `Survive` (`can_run` ends on
+    # `pending_target is None`), so the line has to be able to show one.
+    from anima2.contract import GumpView, TargetCursor
+    snagged = Observation(
+        player=PlayerView(serial=me, pos=Position(), hits=40, hits_max=125),
+        items=[pack], pending_target=TargetCursor(target_type=0, cursor_id=7, cursor_flag=0),
+        gumps=[GumpView(serial=0xABCD, gump_id=0x1234)])
+    assert " ui=tgtg1" in warrior_readout(_Life(), snagged), warrior_readout(_Life(), snagged)
 
     # THE GHOST DISCRIMINATOR. `BACK ALIVE` is 0 on every warrior day and the two causes
     # have opposite owners -- no healer wired (this repo) versus a body that will not walk

@@ -3123,6 +3123,15 @@ def warrior_readout(life, obs) -> str:
         # while the skill is `recover`, the brain is asking and the BODY is not walking
         # the ghost (the sibling repo). No field could tell them apart, and §53.5 blamed
         # the bridge on no evidence at all.
+        # THE OPEN SURFACES. `Survive.can_run` ends `return ctx.obs.pending_target is None`
+        # — it refuses to steal a cursor the work skill opened — so a cursor nobody
+        # answers silently disables the survival reflex. The 2026-08-24 tape (§57) is the
+        # shape: `skill=bank_gold act=nonex106` while HP fell 37 -> 19 with 101 bandages
+        # in the pack. Nothing on the line could show whether a cursor was open, and that
+        # one bit decides between two completely different fixes.
+        ui = ("tgt" if getattr(obs, "pending_target", None) is not None else "") + \
+             (f"g{len(obs.gumps)}" if getattr(obs, "gumps", None) else "")
+        ui_s = f" ui={ui or 'clear'}"
         # Read it through `RecoverDeath`'s OWN normaliser. Runners store a route as a bare
         # `(x, y)` or as a `[(x, y), ...]` list, and a second parser here would disagree
         # with the skill about which of those counts -- the readout would then be
@@ -3137,7 +3146,7 @@ def warrior_readout(life, obs) -> str:
             res_s = (f" res=({spot[0]},{spot[1]})"
                      f"@d{max(abs(spot[0] - here.x), abs(spot[1] - here.y))}")
         return (f" blade={blade_s} plate={plate}/{len(PLATE_ARMOR_LAYERS)}"
-                f"(pack {inpack}){badlayer}{foe_s}{res_s}"
+                f"(pack {inpack}){badlayer}{foe_s}{ui_s}{res_s}"
                 # `life.last_skill_name` forwards the LAST-TICKED agent's skill. Reading
                 # `hunt_agent` directly (as this did) describes an agent that barely runs
                 # in economy mode: the 2026-08-24 bank-trip death printed `skill=hunt` for
