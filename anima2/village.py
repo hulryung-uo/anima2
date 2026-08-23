@@ -3461,6 +3461,18 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                 WarriorLife, knobs, body=body,
                 persona=Persona(name=f"Bram{i}", combat_disposition="aggressive"),
                 routes=routes)
+            # LEASH HIM TO HIS POCKET. Before this, `run_warrior_village` was the only
+            # runner that never called `set_leash` — so `wander_home` was unset, `Wander`
+            # roamed free and (once §59 taught `Combat` to close) the warrior chased,
+            # retreated, chased again from wherever it landed, and parked. Measured
+            # 2026-08-24 (§61.14): `deaths=0`, six kills, and `landed=2/36` — thirty-four
+            # `bank_gold` frames given up from `@(2591,414)`, four tiles from a banker the
+            # greedy market walk could not route around a pinned creature to reach.
+            #
+            # The radius is the shortest walkable shop ray. Anywhere inside it, every shop
+            # this village staged is still reachable by the straight-line walk that is all
+            # `market.py` has; outside it, nothing is guaranteed.
+            life.set_leash((gx, gy), max(_VENDOR_MIN_GAP, min(reach.values())))
             warriors.append({"i": i, "life": life, "spot": (gx, gy, gz), "respawned": 0})
         # Staging is serial and GM-heavy, so with a big roster the FIRST-staged bodies sit
         # idle for a long time before anyone starts playing. Warm every body (and report

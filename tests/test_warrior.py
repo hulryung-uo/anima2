@@ -488,6 +488,34 @@ def test_a_swordsman_does_not_engage_bare_handed():
     corpse = _item(0x703, KATANA_GRAPHIC, container=0xC0FFEE)
     assert not WarriorHunt().can_run(_hunt_ctx([_backpack(), corpse]))
 
+    # AND IT DOES NOT CHASE OFF THE MAP. `Combat` learned to close (§59) and nothing
+    # pulled the warrior back: a day with deaths=0 and six kills ended `@(2591,414)` with
+    # `landed=2/36`, thirty-four bank frames given up from a tile the greedy market walk
+    # could not leave. The leash is the one `Wander` already obeys.
+    from anima2.skills.movement import Wander
+
+    def _at(x, y, memory):
+        obs = Observation(player=PlayerView(serial=PLAYER, pos=Position(x, y, 0),
+                                            hits=150, hits_max=150),
+                          items=[_backpack(), worn],
+                          mobiles=[MobileView(serial=0xAA, name="Ettin",
+                                              pos=Position(x + 1, y, 0), body=1,
+                                              notoriety=6, hits=100, hits_max=100,
+                                              distance=1)])
+        return SkillContext(obs=obs, persona=persona, memory=memory)
+
+    leashed = {"wander_home": (100, 100), "wander_leash": 4}
+    assert WarriorHunt().can_run(_at(104, 100, dict(leashed))), "on the leash, engage"
+    assert not WarriorHunt().can_run(_at(105, 100, dict(leashed))), "past it, come home"
+    # No home configured = no leash, exactly as before this existed.
+    assert WarriorHunt().can_run(_at(900, 900, {}))
+    # A malformed home must read as "unleashed", never as "always outside".
+    assert WarriorHunt().can_run(_at(900, 900, {"wander_home": "somewhere"}))
+    # The default is `Wander`'s own, so the two cannot drift apart.
+    far = {"wander_home": (100, 100)}
+    assert WarriorHunt().can_run(_at(100 + Wander.leash, 100, dict(far)))
+    assert not WarriorHunt().can_run(_at(100 + Wander.leash + 1, 100, dict(far)))
+
     # It is still a HUNT: armed with nothing to fight, it must yield the hands rather
     # than answer for every tick of a quiet pocket.
     quiet = Observation(player=PlayerView(serial=PLAYER, pos=Position(100, 100, 0),

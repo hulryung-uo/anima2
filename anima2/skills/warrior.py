@@ -28,6 +28,7 @@ from ..contract import Drop, Equip, PickUp
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import BACKPACK_LAYER
 from .hunt import Hunt
+from .movement import Wander, wander_leash
 from .market import BuyMaterialCapability, BuyToolCapability
 from .survival import BANDAGE_GRAPHICS, Survive
 
@@ -115,7 +116,35 @@ class WarriorHunt(Hunt):
     name = "warrior_hunt"
 
     def can_run(self, ctx: SkillContext) -> bool:
-        return _worn_or_packed_sword(ctx.obs) and super().can_run(ctx)
+        return (_worn_or_packed_sword(ctx.obs)
+                and self._inside_the_leash(ctx)
+                and super().can_run(ctx))
+
+    @staticmethod
+    def _inside_the_leash(ctx: SkillContext) -> bool:
+        """Refuse to engage from outside `wander_leash` tiles of `wander_home`.
+
+        `Combat` learned to walk into reach (audit §59) and nothing pulled the warrior
+        back: it chased, retreated, chased the next thing from where it landed, and
+        parked. Measured 2026-08-24 (§61.14): a day with `deaths=0` and only 6 kills that
+        ended `@(2591,414)` with `landed=2/36` — thirty-four `bank_gold` frames given up,
+        every one of them `d=4` from a banker the greedy market walk could not route
+        around a pinned creature to reach. The warrior was alive, safe, and earning
+        nothing for two-thirds of the day.
+
+        The leash is the one `Wander` already obeys, read through the same clamped
+        single source, so a runner or a knob moves both together. Refusing here does not
+        strand him: `Wander`'s own leash steers home on the next tick, and `Survive`
+        and `RecoverDeath` sit above this and are unaffected — fleeing out past the leash
+        stays legal, coming back is what stops being optional.
+        """
+        home = ctx.memory.get("wander_home")
+        if not (isinstance(home, (tuple, list)) and len(home) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in home)):
+            return True  # unleashed agents behave exactly as before
+        here = ctx.obs.player.pos
+        return max(abs(here.x - home[0]), abs(here.y - home[1])) <= wander_leash(
+            ctx.memory, Wander.leash)
 
 
 def _worn_or_packed_sword(obs) -> bool:
