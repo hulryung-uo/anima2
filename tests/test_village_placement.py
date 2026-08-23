@@ -464,6 +464,22 @@ def test_warrior_readout_names_what_stops_a_warrior_living():
                           notoriety=noto, hits=hits, hits_max=50, distance=dist)
 
     assert "foes=none" in out, out  # no mobiles at all in the base fixture
+    assert "res=none" in out, out    # ...and no healer wired
+
+    # THE GHOST DISCRIMINATOR. `BACK ALIVE` is 0 on every warrior day and the two causes
+    # have opposite owners -- no healer wired (this repo) versus a body that will not walk
+    # a ghost (the sibling repo) -- so `res=` must read the spot the way `RecoverDeath`
+    # itself does. Runners store `[(x, y)]`; a reader that only understood a bare `(x, y)`
+    # would print `none` for a healer that IS wired and send the blame to the wrong repo.
+    class _Wired:
+        kills = 2
+        hunt_agent = type("A", (), {"memory": {"resurrection_spot": [(2575, 408)]},
+                                    "last_skill_name": "recover"})()
+
+    wired = Observation(player=PlayerView(serial=me, pos=Position(2587, 408, 0),
+                                          hits=0, hits_max=125), items=[pack])
+    assert " res=(2575,408)@d12" in warrior_readout(_Wired(), wired), \
+        warrior_readout(_Wired(), wired)
 
     from anima2.skills.combat import is_hostile
     foe_noto = next(n for n in range(1, 8) if is_hostile(_mob(0, 0, n)))

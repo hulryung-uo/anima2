@@ -3105,8 +3105,27 @@ def warrior_readout(life, obs) -> str:
         foes = sorted(m.distance for m in obs.mobiles
                       if m.serial != me and is_hostile(m))[:3]
         foe_s = " foes=" + (",".join(f"d{d}" for d in foes) if foes else "none")
+        # THE GHOST DISCRIMINATOR. `BACK ALIVE` has been 0 on every warrior day, and the
+        # two candidate causes have opposite owners: if `res=none`, `RecoverDeath` never
+        # got a healer (a wiring problem in this repo); if `res=(x,y)@d12` sits frozen
+        # while the skill is `recover`, the brain is asking and the BODY is not walking
+        # the ghost (the sibling repo). No field could tell them apart, and §53.5 blamed
+        # the bridge on no evidence at all.
+        # Read it through `RecoverDeath`'s OWN normaliser. Runners store a route as a bare
+        # `(x, y)` or as a `[(x, y), ...]` list, and a second parser here would disagree
+        # with the skill about which of those counts -- the readout would then be
+        # confidently wrong about the exact thing it exists to adjudicate.
+        from .skills.recovery import _first_point
+        memory = getattr(getattr(life, "hunt_agent", life), "memory", None) or {}
+        spot = _first_point(memory.get("resurrection_spot"))
+        if spot is None:
+            res_s = " res=none"
+        else:
+            here = obs.player.pos
+            res_s = (f" res=({spot[0]},{spot[1]})"
+                     f"@d{max(abs(spot[0] - here.x), abs(spot[1] - here.y))}")
         return (f" blade={blade_s} plate={plate}/{len(PLATE_ARMOR_LAYERS)}"
-                f"(pack {inpack}){badlayer}{foe_s}"
+                f"(pack {inpack}){badlayer}{foe_s}{res_s}"
                 f" skill={getattr(getattr(life, 'hunt_agent', life), 'last_skill_name', '?')}"
                 f" bandages={pack_amount(obs, BANDAGE_GRAPHIC)}"
                 f" gold={pack_amount(obs, GOLD_GRAPHIC)}"
