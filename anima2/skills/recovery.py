@@ -17,6 +17,26 @@ from ..geometry import chebyshev
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import BACKPACK_LAYER
 
+
+def _first_point(spot) -> tuple[int, int] | None:
+    """First waypoint of a configured route, or `None` if it is not one.
+
+    Runners store routes either as a bare `(x, y)` or as a `[(x, y), ...]` waypoint list
+    (`market.BlacksmithMarket._route` normalises the same two shapes), so a reader that
+    accepted only one of them would silently ignore half the call sites. Defensive about
+    junk because this feeds a WALK: a malformed spot must read as "no spot" rather than
+    send a ghost at coordinates nobody chose.
+    """
+    try:
+        if spot is None:
+            return None
+        first = spot[0]
+        if isinstance(first, (tuple, list)):
+            return (int(first[0]), int(first[1]))
+        return (int(spot[0]), int(spot[1]))
+    except Exception:  # noqa: BLE001 — a bad route is no route
+        return None
+
 CORPSE_GRAPHIC = 0x2006
 RESURRECTION_TITLE_CLILOC = 1011022
 RESURRECTION_CONTINUE_BUTTON = 1
@@ -182,6 +202,29 @@ class RecoverDeath(Skill):
             selected = (0, self.resurrection_target[0], self.resurrection_target[1], map_index)
             self._set_resurrection_target(ctx, selected)
             return selected
+        # A STAGED healer, wired the way every other route in this codebase is wired.
+        #
+        # Without this, a warrior that dies away from a town cannot come back at all:
+        # `profession.py` builds `RecoverDeath()` with no arguments, so
+        # `self.resurrection_target` is None, and the only other source is a
+        # `WAYPOINT_RESURRECTION` the shard sends to a ghost. Measured 2026-08-24 in the
+        # warrior village's hunting pocket: **zero** such waypoints on the whole tape, so
+        # `_resurrection_target` returned None every tick and the warrior stayed a ghost
+        # for the rest of the run (`BACK ALIVE` 0 across four days). The runner had staged
+        # a Healer twelve tiles away the entire time and nothing told this skill about it.
+        #
+        # A memory key rather than a constructor argument because that is how routes
+        # travel here — `vendor_spot`, `banker_spot`, `healer_spot` are all set on agent
+        # memory by the runner — and because `RecoverDeath` is built generically for every
+        # profession, so a constructor argument would mean teaching `profession.py` about
+        # one runner's furniture.
+        #
+        # It sits BELOW the explicit `resurrection_target` and ABOVE the waypoint scan: a
+        # caller that names a tile outranks a guess, and a shard that does advertise real
+        # healers should still win over a staged stand-in it does not know about... which
+        # is why this returns only when the scan below finds nothing. See the `spot`
+        # fallback at the end of this method.
+        spot = _first_point(ctx.memory.get("resurrection_spot"))
 
         now = int(ctx.memory.get(self._RES_CLOCK, 0))
         failed = dict(ctx.memory.get(self._RES_FAILED, {}))
@@ -225,6 +268,13 @@ class RecoverDeath(Skill):
                 self._clear_resurrection_target(ctx)
 
         if not candidates:
+            # Nothing the shard advertises — fall back to the staged healer, if the runner
+            # wired one. Serial 0 marks "a tile, not a mobile", the same shape the explicit
+            # `resurrection_target` uses above.
+            if spot is not None:
+                selected = (0, spot[0], spot[1], map_index)
+                self._set_resurrection_target(ctx, selected)
+                return selected
             return None
         self._set_resurrection_target(ctx, candidates[0])
         return candidates[0]

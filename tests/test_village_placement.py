@@ -375,3 +375,82 @@ def test_harvest_aim_readout_splits_a_stale_grove_from_a_silent_new_one():
     assert harvest_aim_readout(stale, here) == " tree=(518,1041) d=52"
     assert harvest_aim_readout(fresh, here) == " tree=(517,1092) d=1"
     assert harvest_aim_readout({}, here) == ""
+
+
+# --- the warrior readout (2026-08-24) ------------------------------------------------
+
+
+def test_warrior_readout_names_what_stops_a_warrior_living():
+    """The first live warrior day this project has a tape for printed
+    `— warrior village [Bram0:hunt] —` and nothing else. The warrior bled 125 HP to 3 over
+    250 ticks and died, and the tape could not say whether it held a blade, had bandages
+    to heal with, or wore any armour — the three facts that decide that fight.
+
+    Field order is `decide_mode`'s own priority (blade, bandages, chest plate, bank), so a
+    reader scans it in the order the rule acts on it.
+    """
+    from anima2.contract import ItemView, Observation, PlayerView, Position
+    from anima2.skills.hunt import GOLD_GRAPHIC
+    from anima2.skills.warrior import (
+        BANDAGE_GRAPHIC,
+        PLATE_ARMOR_LAYERS,
+        SWORD_RANK,
+        WEAPON_LAYER,
+    )
+    from anima2.village import warrior_readout
+
+    me = 0x1
+    best = max(SWORD_RANK, key=lambda g: SWORD_RANK[g])
+    # graphic -> layer, in that order. The first version of this test read the pair
+    # BACKWARDS, and so did the readout it was testing, so the two agreed and the
+    # bug shipped to three live tapes: `plate=0/6` was being computed as
+    # `worn[graphic].graphic == layer`, which is nonsense and can only ever be 0.
+    # A test that shares its subject's mistake proves the mistake, not the code.
+    chest_g, chest_layer = next(iter(PLATE_ARMOR_LAYERS.items()))
+
+    def _it(serial, graphic, layer=0, container=me, amount=1):
+        return ItemView(serial=serial, graphic=graphic, amount=amount, pos=Position(),
+                        container=container, layer=layer, distance=0)
+
+    pack = _it(0x50, 0x0E75, layer=0x15)
+    obs = Observation(
+        player=PlayerView(serial=me, pos=Position(), hits=90, hits_max=125),
+        items=[pack,
+               _it(0x900, best, layer=WEAPON_LAYER),
+               _it(0x901, chest_g, layer=chest_layer),
+               _it(0x902, BANDAGE_GRAPHIC, container=pack.serial, amount=87),
+               _it(0x903, GOLD_GRAPHIC, container=pack.serial, amount=50)],
+    )
+
+    class _Life:
+        kills = 2
+
+    out = warrior_readout(_Life(), obs)
+    assert f"blade=0x{best:04X}r{SWORD_RANK[best]}" in out, out
+    assert f"plate=1/{len(PLATE_ARMOR_LAYERS)}(pack 0)" in out, out
+    assert "bandages=87" in out and "gold=50" in out and "kills=2" in out, out
+
+    # A DISARMED warrior is the case the tape could not show, and it must be loud.
+    bare = Observation(player=PlayerView(serial=me, pos=Position(), hits=90, hits_max=125),
+                       items=[pack])
+    bare_out = warrior_readout(_Life(), bare)
+    assert "blade=NONE" in bare_out, bare_out
+    assert f"plate=0/{len(PLATE_ARMOR_LAYERS)}(pack 0)" in bare_out, bare_out
+    assert "bandages=0" in bare_out
+
+    # THE DISCRIMINATOR the first tape lacked: a suit sitting in the pack unworn reads
+    # differently from a suit that was never handed over. Both print `plate=0/6`; only
+    # the pack count separates a staging failure from an EquipArmor failure, and they
+    # have opposite fixes.
+    carried = Observation(
+        player=PlayerView(serial=me, pos=Position(), hits=90, hits_max=125),
+        items=[pack] + [_it(0xA00 + n, g, container=pack.serial)
+                        for n, g in enumerate(PLATE_ARMOR_LAYERS)],
+    )
+    carried_out = warrior_readout(_Life(), carried)
+    assert f"plate=0/{len(PLATE_ARMOR_LAYERS)}(pack {len(PLATE_ARMOR_LAYERS)})" in carried_out, \
+        carried_out
+
+    # ...and it never raises, whatever it is handed.
+    assert warrior_readout(object(), None).strip(), "must still say something"
+    assert warrior_readout(object(), object()).strip()

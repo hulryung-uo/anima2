@@ -135,7 +135,21 @@ from .contract import Action, Observation
 # modifiers, all zero unless the shard is ML+ and the client asked for extended status.
 # Cross-checked as before: 19 action types still accepted, 57 observation keys still
 # emitted.
-SUPPORTED_SCHEMA_VERSION = 28
+#
+# 28 -> 31 (2026-08-24). A live warrior day aborted at the handshake, which is the guard
+# doing its job for the fourth time. Three sibling commits bumped it and ALL THREE ARE
+# PURELY ADDITIVE, so again no serializer line is touched:
+#   v29  `TargetedSpell` / `TargetedSkill` / `TargetByResource` — new outgoing verbs.
+#   v30  `OpenDoor`, `EquipLastWeapon`, `InvokeVirtue`, `EmoteAction`,
+#        `CastSpellFromBook`, `AllNames` — ClassicUO verbs that had no Action.
+#   v31  `race_change` plus `ChangeRace`/`ChangeRaceCancel`, and `OpenUOStore`.
+#        Pre-OPL equipment info rides the existing journal, so no new observation key
+#        beyond `race_change`.
+# The brain emits none of those verbs, and the one new observation key is invisible to it
+# because `Observation.from_dict` reads every field through `d.get(...)` and ignores what
+# it does not name — verified rather than assumed, since "additive" is a claim about the
+# READER as much as the writer. A bump with no diff is only safe while that stays true.
+SUPPORTED_SCHEMA_VERSION = 31
 
 
 def default_bridge_path() -> Path:

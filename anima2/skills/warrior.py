@@ -51,9 +51,28 @@ class WarriorSurvive(Survive):
     fight. The stock `Survive` stops the instant HP crosses back above 40%, so a
     warrior re-engages Ettins at ~41% HP and is bursted down again — the death-loop a
     living-endurance test surfaced. Plate soaks the damage; this makes the fighter
-    wait behind it until it is actually safe to swing again."""
+    wait behind it until it is actually safe to swing again.
+
+    ...which it cannot do while still being hit, and that is the other half of the same
+    death loop. The stock `Survive` only retreats when THREE hostiles are in range, and
+    `run_warrior_village` stages `prey_target = 2`, so a warrior at 2 attackers never
+    steps out of melee: it bandages in place, and the incoming damage out-paces the heal.
+    Measured across five live days (2026-08-24), every one a death, the HP trace is the
+    same shape each time — `5 -> 25` from a landed bandage, then `15 -> 5 -> dead` because
+    the heal happened inside the fight. `heal_until_fraction = 0.75` had already made the
+    warrior WANT a safe margin; nothing let it reach one.
+
+    Two is where "outnumbered" begins for a fighter that has to stand still to heal, and
+    the number is about the mechanic rather than about matching the runner's default: one
+    attacker's damage is survivable across a bandage, two is not. Retreat is also
+    unusually cheap here — the village pins its prey (`CantWalk`), so five steps
+    (`max_flee_steps`) puts a warrior permanently out of a melee reach of 1 and it can
+    heal to the full margin before returning. A future reader who raises `prey_target`
+    should not raise this to match: it is not a ratio.
+    """
 
     heal_until_fraction = 0.75
+    flee_hostile_count = 2
 
 # The equip layer for a ONE-HANDED weapon (ServUO Layer.OneHanded == 1). Two-handed
 # weapons use layer 2 (mirrors harvest.py's axe), but the buyable swords are all

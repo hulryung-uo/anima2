@@ -3027,10 +3027,87 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
     ).run(_run_worker)
 
 
+def warrior_readout(life, obs) -> str:
+    """`blade=Katana plate=6/6 bandages=87 gold=50 banked=0 kills=2` — what actually
+    stops a warrior living, in the order `WarriorLife.decide` prices it.
+
+    Written after the first live warrior day this project has a tape for (2026-08-24),
+    which printed `— warrior village [Bram0:hunt] —` and nothing else. The warrior bled
+    125 HP -> 3 over 250 ticks and died, and the tape could not say whether it had a
+    blade, whether it had bandages to heal with, or whether any armour was on — the three
+    facts that decide that fight. Every other runner in this file calls `telemetry_line`;
+    the warrior, alone, printed only its mode. An agent whose failure cannot be read is
+    one that cannot be fixed, which is the whole argument of `docs/MONITORING.md`.
+
+    The field order is `decide_mode`'s own priority — blade, bandages, chest plate, bank
+    — so a reader scans it in the order the rule will act on it, and a missing item is
+    read at the same place the warrior would notice it.
+
+    Read-time projection only; nothing here is recorded to make it printable, and it
+    never raises (a duck-typed stand-in must not be able to kill the status loop).
+    """
+    try:
+        from .obsview import banked_amount, pack_amount, pack_serial
+        from .skills.hunt import GOLD_GRAPHIC
+        from .skills.warrior import (
+            BANDAGE_GRAPHIC,
+            PLATE_ARMOR_LAYERS,
+            SWORD_GRAPHICS,
+            SWORD_RANK,
+            WEAPON_LAYER,
+        )
+        if obs is None:
+            return " blade=? plate=? bandages=? gold=? kills=?"
+        me = obs.player.serial
+        worn = {i.layer: i for i in obs.items if i.container == me}
+        blade = worn.get(WEAPON_LAYER)
+        if blade is not None and blade.graphic in SWORD_GRAPHICS:
+            # Rank, not name: the upgrade rule is keyed on `SWORD_RANK`, so printing the
+            # rank is what lets a reader see WHY an upgrade did or did not fire.
+            blade_s = f"0x{blade.graphic:04X}r{SWORD_RANK.get(blade.graphic, '?')}"
+        else:
+            blade_s = "NONE"
+        # Counted by GRAPHIC, not by layer, and the layer mismatch reported separately.
+        # ServUO assigns an armour piece's layer from TILEDATA (`BaseArmor.cs`:
+        # `Layer = (Layer)ItemData.Quality`), not from a constant, so
+        # `PLATE_ARMOR_LAYERS` is a claim about this shard's data files rather than about
+        # the server code — and if it is wrong, a worn suit reads as no suit. The
+        # 2026-08-24 tape showed exactly that shape: `plate=0/6(pack 0)` while alive
+        # (gone from the pack, so it went SOMEWHERE) and `pack 6` only after death put it
+        # on the corpse. Counting by layer alone could not tell "never equipped" from
+        # "equipped where I was not looking", which is the same two-causes-one-field
+        # mistake this readout was created to end.
+        worn_plate = [i for i in worn.values() if i.graphic in PLATE_ARMOR_LAYERS]
+        plate = len(worn_plate)
+        bad = [i for i in worn_plate if i.layer != PLATE_ARMOR_LAYERS[i.graphic]]
+        badlayer = ("" if not bad else " badlayer=" + ",".join(
+            f"0x{i.graphic:04X}@0x{i.layer:02X}!=0x{PLATE_ARMOR_LAYERS[i.graphic]:02X}"
+            for i in sorted(bad, key=lambda x: x.graphic)))
+        # WORN alone cannot say why a suit is missing. The 2026-08-24 tape read
+        # `plate=0/6` on a warrior the runner had just handed a full suit, and that field
+        # is equally consistent with "never delivered" and with "delivered and refused" —
+        # two causes with opposite fixes (`gm.stage` versus `EquipArmor`). The pack count
+        # is the discriminator, and `skill=` beside it says whether `EquipArmor` is even
+        # being selected. A readout that cannot separate its own hypotheses is half an
+        # instrument (§35.3).
+        bp = pack_serial(obs)
+        inpack = sum(1 for i in obs.items
+                     if i.container == bp and i.graphic in PLATE_ARMOR_LAYERS)
+        return (f" blade={blade_s} plate={plate}/{len(PLATE_ARMOR_LAYERS)}"
+                f"(pack {inpack}){badlayer}"
+                f" skill={getattr(getattr(life, 'hunt_agent', life), 'last_skill_name', '?')}"
+                f" bandages={pack_amount(obs, BANDAGE_GRAPHIC)}"
+                f" gold={pack_amount(obs, GOLD_GRAPHIC)}"
+                f" banked={banked_amount(obs)}"
+                f" kills={getattr(life, 'kills', '?')}")
+    except Exception:  # noqa: BLE001 — telemetry must never break the run
+        return " blade=?"
+
+
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
                         ticks: int = 200, account_prefix: str = "animawar",
                         prey: str = "Ettin", prey_target: int = 2, spacing: int = 25,
-                        monitor: bool = False,
+                        monitor: bool = False, narrate: bool = False,
                         knobs: dict[str, Any] | None = None) -> None:
     """Run `count` swordsmen LIVING the full autonomous loop via `WarriorLife`: each
     hunts, and when it loses its blade or runs low on bandages it re-arms/restocks/banks
@@ -3094,15 +3171,46 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         for i, body in bodies:
             serial = body.ready["player"]["serial"]
             sx, sy = hx + i * spacing, hy
-            gx, gy, gz = gm.stage(serial, sx, sy, skills=prof.skills, items=items)
+            # CLEAR THE POCKET BEFORE PUTTING ANYONE IN IT. This used to stage first and
+            # wipe second, which teleported an undressed character into whatever the last
+            # run left behind and then spent three GM round-trips clearing it — while the
+            # leftovers hit him. Prey is PINNED (`CantWalk`) and nothing removes it at
+            # exit, so pockets accumulate across runs: the 2026-08-24 tapes opened with
+            # `DEAD at first observation ... before this worker's first tick` twice, the
+            # second time even after staging-time prey spawning had been removed, because
+            # the killers were the PREVIOUS run's Ettins.
+            #
+            # Wiping at the stand's own coordinates rather than the character's is what
+            # makes the reorder possible at all: `gm.stage` returns where the character
+            # actually landed, which is what the old order waited for. The requested tile
+            # is what the pocket is defined around, and `stage` places within a tile or
+            # two of it, so a wipe centred on the request covers the arrival — the radii
+            # are 20/12/6 against a placement error of ~2.
+            #
+            # The `z=0` is not a guess either: `command_area` targets GROUND, and ServUO's
+            # `LandTarget` overwrites the sent z with `map.GetAverageZ(x, y)` before any
+            # check reads it (audit §41 settled this while closing the mining cliff). So
+            # there is no character z to wait for, which is the last thing that tied the
+            # wipe to a completed `stage`.
             for r in (20, 12, 6):  # clear stray mobiles so a fresh pocket, not a swarm
-                gm.command_area("[WipeNPCs", gx - r, gy - r, gx + r, gy + r, gz)
+                gm.command_area("[WipeNPCs", sx - r, sy - r, sx + r, sy + r, 0)
+            gx, gy, gz = gm.stage(serial, sx, sy, skills=prof.skills, items=items)
             placed.append((i, body, serial, (gx, gy, gz)))
 
         # PASS 2 — now that every pocket is clear, dress each warrior and stage its own
         # vendors + prey; nothing wipes after this point.
         for i, body, serial, (gx, gy, gz) in placed:
-            for c in ("[Set Str 150", "[Set Dex 125", "[Set Hits 150", "[Set HitsMax 150"):
+            # HP IS DERIVED FROM STRENGTH, so `[Set HitsMax` was a no-op and this runner
+            # spent every live day 25 HP short of what it thought it had granted.
+            # `PlayerMobile.HitsMax` is a getter-only override — on a non-AOS shard (this
+            # one is T2A) it returns `RawStr / 2 + 50`, with no setter to call. Str 150
+            # therefore capped the warrior at exactly the 125/125 four tapes recorded
+            # while the code above asked for 150.
+            #
+            # Str 200 delivers the 150 the runner always meant. Order matters: raise Str
+            # first so the cap moves, THEN set current Hits, or the top-up clamps to the
+            # old maximum. `[Set Hits` is real — current HP has an ordinary setter.
+            for c in ("[Set Str 200", "[Set Dex 125", "[Set Hits 150"):
                 gm.command_on(c, serial)
             gm.command_on(f'[Set Name "Bram{i}"', serial)
             # Delete the ~1000 starter gold (else the warrior banks it immediately
@@ -3136,15 +3244,37 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # Prey spawned adjacent AND PINNED (`CantWalk`) so a wounded creature stands
             # and fights instead of fleeing out of reach at low HP (live-caught: real
             # Attacks took an Ettin to 3 HP, then it fled from distance 1 to 13).
-            adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-            for k in range(prey_target):
-                dx, dy = adj[k % len(adj)]
-                gm.command_at(f"[Add {prey}", gx + dx, gy + dy, gz)
-                mob = gm.find_mobile_near(gx + dx, gy + dy, exclude=all_serials)
-                if mob is not None:
-                    gm.command_on("[Set CantWalk true", mob.serial)
+            #
+            # NO PREY AT STAGING TIME. This loop used to spawn `prey_target` pinned
+            # creatures here, and it killed the warrior before it ever took a tick.
+            # `gm.stage` puts the suit and the blade in the PACK; `EquipWeapon` and
+            # `EquipArmor` are agent reflexes that cannot run until the worker thread
+            # starts, which is after ALL staging finishes — four `stage_npc` calls at
+            # ~0.8s each, plus the stat and provenance calls, for every warrior. So the
+            # old order stood a naked, unarmed character next to two pinned Ettins and
+            # only then began dressing it.
+            #
+            # Measured over three live days (2026-08-24): every one died. Twice it bled
+            # out mid-run (125 HP -> 0 with `plate=0/6` and 103 unused bandages), and the
+            # third time the tape opened with `DEAD at first observation ... it happened
+            # before this worker's first tick` — the fight was over before the brain was
+            # allowed to play. `kills=0` on all three.
+            #
+            # The monitor loop below already tops prey up to `prey_target`, and it now
+            # waits for the warrior to be dressed (see `_ready_to_fight`), so the pocket
+            # fills as soon as the suit is on and not one tick sooner. Deleting the spawn
+            # here costs nothing but the first few seconds of a hunt.
             routes = {"weapon_vendor_spot": [(gx + 12, gy)],
                       "healer_spot": [(gx - 12, gy)],
+                      # The SAME Healer, told to `RecoverDeath` as well. `healer_spot` is
+                      # the bandage vendor route (`warrior.BuyBandages.vendor_spot_key`);
+                      # it is not read by the death skill, which looks for a configured
+                      # target or a shard-sent resurrection waypoint and found neither in
+                      # this pocket — four live days, zero waypoints, `BACK ALIVE` 0.
+                      # ServUO's `BaseHealer.OnMovement` offers a `ResurrectGump` to a
+                      # ghost that walks within 2 tiles, so a staged Healer really can
+                      # bring the warrior back; nothing was pointing at it.
+                      "resurrection_spot": [(gx - 12, gy)],
                       "banker_spot": [(gx, gy + 12)],
                       "armorer_spot": [(gx, gy - 12)]}
             life = build_tuned_life(
@@ -3180,7 +3310,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         for w in warriors:
             t = threading.Thread(target=_run_worker,
                                  args=(w["life"], ticks, w["i"], status, lock, "swordsman"),
-                                 daemon=True)
+                                 kwargs={"narrate": narrate}, daemon=True)
             threads.append(t)
             t.start()
             # Stagger the starts so the warriors' pump windows interleave on the shared
@@ -3198,6 +3328,52 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         #      finishes.
         # Bounded: replace each confirmed kill, top up only when idle — no swarm.
         adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        def _ready_to_fight(life, o) -> bool:
+            """Is this warrior dressed enough to be given something to fight?
+
+            The prey used to be staged before the warrior could equip anything, and all
+            three live days of 2026-08-24 ended with a dead warrior that had never swung
+            (`kills=0`), because `gm.stage` puts the suit in the PACK and only an agent
+            tick can move it onto the body. Restocking has to answer the same question
+            staging got wrong, or it simply re-creates the bug a few seconds later.
+
+            The bar is the blade, not the full suit: `EquipWeapon` finishes first by the
+            reflex ordering, a warrior that is armed can actually fight back, and waiting
+            for all six plate pieces would stall the hunt on a layer the server may keep
+            refusing — which `EquipArmor` is explicitly built to abandon after
+            `_MAX_EQUIP_TRIES`. Requiring the suit would hand that abandoned layer a veto
+            over the whole day.
+
+            Unknown reads as NOT ready: a warrior we cannot see is one we must not feed
+            to an Ettin, and the cost of being wrong is one cycle of delay.
+            """
+            try:
+                from .skills.warrior import SWORD_GRAPHICS, WEAPON_LAYER, WarriorSurvive
+                if o is None or o.player.dead:
+                    return False
+                me = o.player.serial
+                armed = any(i.container == me and i.layer == WEAPON_LAYER
+                            and i.graphic in SWORD_GRAPHICS for i in o.items)
+                if not armed:
+                    return False
+                # AND NOT ALREADY LOSING ONE. Top-up spawns beside the warrior's LIVE
+                # position, so without this clause retreating is futile by construction:
+                # the reflex steps out of melee and two fresh full-HP creatures appear at
+                # its new tile. Measured 2026-08-24 — after `WarriorSurvive` was allowed
+                # to flee at two attackers the warrior died FASTER (t=461 -> t=217) and
+                # never moved a tile, because there was nowhere to disengage to.
+                #
+                # A wounded fighter needs the same thing an unarmed one does: to be left
+                # alone until it is fit. The bar is `heal_until_fraction`, the margin the
+                # warrior's own reflex is trying to reach, so the harness stops feeding it
+                # exactly while it is healing and resumes the moment it is ready — the
+                # hunt<->recover loop this village exists to exercise, instead of an
+                # endless two-on-one no brain can win.
+                hits_max = max(1, o.player.hits_max)
+                return o.player.hits / hits_max >= WarriorSurvive.heal_until_fraction
+            except Exception:  # noqa: BLE001 — never let this raise into the GM loop
+                return False
 
         def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
             # Every GM call costs a full pump (~pump_ms) on the ONE shared control
@@ -3240,6 +3416,11 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                 lo = w["life"].body.last_obs
                 if lo is None or lo.player.dead:
                     continue
+                # Dressed first, THEN something to fight — see `_ready_to_fight`. This is
+                # the same question staging got wrong, and skipping it here would just
+                # re-create the bug a few seconds later.
+                if not _ready_to_fight(w["life"], lo):
+                    continue
                 px, py, pz = lo.player.pos.x, lo.player.pos.y, lo.player.pos.z
                 w["last_kills"] = w["life"].kills
                 # PRESENCE-based top-up (not a timer): count the live hostiles actually
@@ -3255,8 +3436,21 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                     budget -= 1
             with lock:
                 snap = [status[i] for i in sorted(status)]
-            modes = " ".join(f"Bram{w['i']}:{w['life'].mode}" for w in warriors)
-            print(f"— warrior village [{modes}] —\n  " + "\n  ".join(snap))
+            # One block per warrior, in the shape every other runner in this file uses:
+            # the standard `telemetry_line` (want / admitted / ready / retired) plus the
+            # warrior's own kit. Before 2026-08-24 this printed the modes and nothing
+            # else, and a warrior bled out and died on a tape that could not say whether
+            # it was even holding a sword.
+            from .life_runner import telemetry_line
+            blocks = []
+            for w in warriors:
+                life = w["life"]
+                o = getattr(life.body, "last_obs", None)
+                blocks.append(f"Bram{w['i']}:{life.mode} "
+                              f"{telemetry_line(life, 'swordsman', o)}"
+                              f"{warrior_readout(life, o)}")
+            print("— warrior village —\n  " + "\n  ".join(blocks)
+                  + "\n  " + "\n  ".join(snap))
         for t in threads:
             t.join()
     finally:
@@ -4040,7 +4234,8 @@ def main() -> None:
         k = _route_knobs(parsed_knobs, ("swordsman",), runner="--warriors",
                          default_role="swordsman")
         run_warrior_village(args.warriors, host=args.host, port=args.port,
-                            monitor=args.monitor, knobs=k["swordsman"],
+                            monitor=args.monitor, narrate=args.narrate,
+                            knobs=k["swordsman"],
                             ticks=args.ticks, account_prefix=args.account_prefix)
         return
 

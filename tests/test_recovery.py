@@ -732,3 +732,55 @@ def test_redeath_freezes_fresh_rolling_snapshot_and_resets_prior_episode_state()
     assert recovery._CORPSE_SERIAL not in agent.memory
     assert recovery._HELD not in agent.memory
     assert recovery._ROUTE_SENT not in agent.memory
+
+
+# --- a staged healer as the resurrection target (2026-08-24) -------------------------
+
+
+def test_a_staged_healer_is_used_when_the_shard_advertises_no_waypoint():
+    """A warrior that dies away from a town could not come back at all.
+
+    `profession.py` builds `RecoverDeath()` with no arguments, so `resurrection_target` is
+    None, and the only other source is a `WAYPOINT_RESURRECTION` the shard sends to a
+    ghost. Measured over four live days in the warrior village's hunting pocket: ZERO such
+    waypoints, so `_resurrection_target` returned None every tick and the warrior stayed a
+    ghost to the end of every run (`BACK ALIVE` 0). The runner had staged a Healer twelve
+    tiles away the whole time — ServUO's `BaseHealer.OnMovement` offers a `ResurrectGump`
+    to a ghost that walks within 2 tiles — and nothing connected the two.
+    """
+    from anima2.skills.recovery import RecoverDeath
+
+    skill = RecoverDeath()
+    memory = {"resurrection_spot": [(2575, 408)]}
+    ctx = _ctx(dead=True, memory=memory)
+    target = skill._resurrection_target(ctx)
+    assert target is not None, "a staged healer must be usable when no waypoint exists"
+    assert (target[1], target[2]) == (2575, 408), target
+    assert target[0] == 0, "a tile, not a mobile — the same shape an explicit target uses"
+
+    # Unset is unchanged behaviour: no spot, no target, exactly as before.
+    assert RecoverDeath()._resurrection_target(_ctx(dead=True, memory={})) is None
+
+
+def test_the_staged_healer_never_outranks_a_real_resurrection_waypoint():
+    """The fallback is a fallback. A shard that advertises a real healer knows something
+    the runner's furniture does not, so a waypoint must win — otherwise wiring a stand-in
+    would quietly downgrade every town death."""
+    from anima2.contract import WaypointView
+    from anima2.skills.recovery import WAYPOINT_RESURRECTION, RecoverDeath
+
+    wp = WaypointView(serial=0x777, kind=WAYPOINT_RESURRECTION,
+                      pos=Position(2600, 400, 0), map=0, ignore_object=True)
+    ctx = _ctx(dead=True, memory={"resurrection_spot": [(2575, 408)]}, waypoints=[wp])
+    target = RecoverDeath()._resurrection_target(ctx)
+    assert target[0] == 0x777, f"the shard's own waypoint must win: {target}"
+
+
+def test_a_malformed_resurrection_spot_is_no_spot():
+    """This feeds a WALK. A bad route must read as "no route" rather than send a ghost at
+    coordinates nobody chose."""
+    from anima2.skills.recovery import RecoverDeath
+
+    for junk in ("nowhere", 5, [], [()], {"x": 1}, None):
+        assert RecoverDeath()._resurrection_target(
+            _ctx(dead=True, memory={"resurrection_spot": junk})) is None, junk

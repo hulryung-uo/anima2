@@ -398,3 +398,39 @@ def test_equip_armor_abandons_a_stubborn_piece_so_hunt_is_never_wedged():
     # After _MAX_EQUIP_TRIES failed attempts the piece is abandoned -> inert, so the
     # planner falls through to Hunt.
     assert skill.can_run(_ctx([_backpack(), legs], memory=mem)) is False
+
+
+def test_a_warrior_retreats_at_two_attackers_not_three():
+    """The other half of the death loop `heal_until_fraction` was raised for.
+
+    The stock `Survive` retreats only at THREE hostiles, and `run_warrior_village` stages
+    `prey_target = 2`, so a warrior at two attackers bandaged in place and the incoming
+    damage out-paced the heal. Five live days, five deaths, the same HP trace every time:
+    `5 -> 25` from a landed bandage, then `15 -> 5 -> dead`. Wanting a 75% margin is
+    useless if nothing lets the fighter reach one.
+
+    Pinned per-profession rather than globally: this is the warrior's melee arithmetic,
+    and a caster or a crafter meeting two hostiles is a different question.
+    """
+    from anima2.skills.survival import Survive
+    from anima2.skills.warrior import WarriorSurvive
+
+    assert WarriorSurvive.flee_hostile_count == 2
+    assert Survive.flee_hostile_count == 3, "the stock reflex must be unchanged"
+    # And the margin it retreats to is still the warrior's, not the stock one.
+    assert WarriorSurvive.heal_until_fraction == 0.75
+    assert Survive.heal_until_fraction == 0.40
+
+    # Five steps clears a melee reach of 1 with room to spare, which is what makes
+    # retreating cheap against the village's PINNED prey.
+    assert WarriorSurvive.max_flee_steps >= 2
+
+
+def test_the_swordsman_profession_actually_uses_the_warrior_reflex():
+    """A per-profession tuning that the profession does not install is a comment."""
+    from anima2.profession import PROFESSIONS
+    from anima2.skills.warrior import WarriorSurvive
+
+    survive = PROFESSIONS["swordsman"].survive_factory()
+    assert isinstance(survive, WarriorSurvive), type(survive)
+    assert survive.flee_hostile_count == 2

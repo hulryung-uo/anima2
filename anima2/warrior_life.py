@@ -355,6 +355,19 @@ class WarriorLife:
         )
         # SEPARATE memories (no shared dict). The economy agent gets the vendor routes.
         self.econ_agent.memory.update(self.routes)
+        # ...except the one route that is not the economy's. `RecoverDeath` is a WORK
+        # planner reflex (`profession.py` puts it in every profession's `skills`), so it
+        # reads the HUNT agent's memory, and a resurrection spot left with the vendor
+        # routes would be invisible to the only skill that wants it. Measured 2026-08-24:
+        # the warrior village staged a Healer twelve tiles away, the pocket produced zero
+        # shard resurrection waypoints, and four live days ended with the warrior a ghost
+        # (`BACK ALIVE` 0) because nothing connected the two.
+        #
+        # Copied by NAME rather than by mirroring the whole dict: the two agents having
+        # separate memories is deliberate, and handing the hunt planner every vendor
+        # route would let a work skill navigate on the economy's furniture by accident.
+        if "resurrection_spot" in self.routes:
+            self.hunt_agent.memory["resurrection_spot"] = self.routes["resurrection_spot"]
         # The tuning knobs (audit proposal 5), exposed for genome axes / bandit tuning
         # / slow-loop steering. `bank_reserve` goes into the econ memory - the ONE key
         # the rule, the bank gate, and BankGold's FSM all read, AND every reader goes
