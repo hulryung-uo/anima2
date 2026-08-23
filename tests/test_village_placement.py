@@ -473,13 +473,19 @@ def test_warrior_readout_names_what_stops_a_warrior_living():
     # would print `none` for a healer that IS wired and send the blame to the wrong repo.
     class _Wired:
         kills = 2
+        # The LIFE's own forwarder, which points at whichever inner agent was ticked.
+        last_skill_name = "survive"
         hunt_agent = type("A", (), {"memory": {"resurrection_spot": [(2575, 408)]},
-                                    "last_skill_name": "recover"})()
+                                    # Stale on purpose: in economy mode the hunt agent
+                                    # has not run for hundreds of ticks, and reading it
+                                    # printed `skill=hunt` through a bank-trip death.
+                                    "last_skill_name": "hunt"})()
 
     wired = Observation(player=PlayerView(serial=me, pos=Position(2587, 408, 0),
                                           hits=0, hits_max=125), items=[pack])
-    assert " res=(2575,408)@d12" in warrior_readout(_Wired(), wired), \
-        warrior_readout(_Wired(), wired)
+    wired_out = warrior_readout(_Wired(), wired)
+    assert " res=(2575,408)@d12" in wired_out, wired_out
+    assert " skill=survive" in wired_out, wired_out
 
     from anima2.skills.combat import is_hostile
     foe_noto = next(n for n in range(1, 8) if is_hostile(_mob(0, 0, n)))

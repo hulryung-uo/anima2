@@ -513,6 +513,25 @@ def _starved_fsm_life():
     return body, life
 
 
+def _wound_into_the_hysteresis_band(body, life):
+    """Wound the warrior so `WarriorSurvive` owns the economy agent's hands while the
+    RULE still wants the economy — the starved-FSM state these tests are about.
+
+    Not below `heal_below_fraction`: as of audit §56 the orchestrator leaves economy
+    mode outright there (a bleeding warrior does not run errands), which dissolves the
+    very starvation being set up. `WarriorSurvive` latches at its trigger and keeps
+    healing to `heal_until_fraction`, so the band between the two is where the reflex
+    still starves the FSM and `decide_mode` still answers `bank_gold`.
+    """
+    from anima2.skills.warrior import WarriorSurvive
+
+    lo, hi = WarriorSurvive.heal_below_fraction, WarriorSurvive.heal_until_fraction
+    body.player.hits = int(body.player.hits_max * (lo + hi) / 2)
+    # The latch is what `_wounded` consults above the trigger, and it lives in the
+    # memory of whichever agent runs the reflex — here, the economy one.
+    life.econ_agent.memory[WarriorSurvive._HEAL_LATCH] = True
+
+
 def test_the_overdue_release_does_not_depend_on_there_being_a_surface_to_close():
     """The other way both bounds die: a safety interrupt owns the economy agent's hands.
 
@@ -529,7 +548,7 @@ def test_the_overdue_release_does_not_depend_on_there_being_a_surface_to_close()
     budget = frame.deadline_tick - frame.created_tick
 
     body.items.pop(GOLD)          # the coin moves: the rule stops wanting the economy
-    body.player.hits = 30         # and the warrior is wounded, so Survive takes the hands
+    _wound_into_the_hysteresis_band(body, life)   # and Survive takes the hands
     hunt_ticks = 0
     for _ in range(budget * 4):
         life.tick()
@@ -553,7 +572,7 @@ def test_the_overdue_report_is_not_gated_on_the_hold():
     assert frame is not None
     budget = frame.deadline_tick - frame.created_tick
 
-    body.player.hits = 30         # wounded only; the coin is still in the pack
+    _wound_into_the_hysteresis_band(body, life)   # wounded; the coin is still in the pack
     for _ in range(budget * 2):
         life.tick()
     assert life.mode == "economy" and life.holding_frame is False, (

@@ -537,3 +537,53 @@ def test_a_healthy_life_never_closes_a_gump_out_from_under_a_goal():
         life.tick()
     assert life.rule_gate_disagreement is None
     assert not [a for a in body.actions if isinstance(a, GumpResponse)]
+
+
+def test_a_bleeding_warrior_is_not_sent_on_an_errand():
+    """`decide_mode` orders its branches by "what actually stops a warrior living", and
+    the thing that stops one hardest was missing from the list.
+
+    Measured 2026-08-24 (`warrior-20260824-0317-pinned.log`, audit §56): the rule
+    answered `bank_gold` from hp=39/150 down to hp=1/150 across ninety ticks with
+    `foes=d1,d1,d1` and **103 unused bandages** in the pack, and the warrior died holding
+    519 gold he had earned from three kills. The errand was the rule's own choice, not
+    the exit-edge hold's — `holding` requires the rule to have STOPPED wanting the
+    economy, and it never did.
+
+    The threshold is `WarriorSurvive.heal_below_fraction`, read off the class the
+    profession installs, so the rule and the reflex cannot drift apart on the number.
+    """
+    from anima2.skills.warrior import WarriorSurvive
+
+    frac = WarriorSurvive.heal_below_fraction
+    rich = [_backpack(), _gold(BANK_RESERVE + 500), _worn_katana(), _worn_chest(),
+            _bandages(LOW_BANDAGES + 50)]
+
+    def _hurt(hits, hits_max=150):
+        return Observation(
+            player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0),
+                              hits=hits, hits_max=hits_max),
+            items=list(rich))
+
+    assert decide_mode(_hurt(int(150 * frac) + 1), dict(ROUTES)) == ("economy", "bank_gold"), \
+        "a warrior above its own heal trigger still runs its errands"
+    assert decide_mode(_hurt(int(150 * frac) - 1), dict(ROUTES)) == ("hunt", None), \
+        "below the heal trigger the fight-or-heal window owns him"
+
+    # It outranks EVERY economy branch, not just banking: strip the blade and the
+    # bandages so `buy_weapon` and `buy_bandage` would each otherwise win outright.
+    bare = [_backpack(), _gold(BANK_RESERVE + 500)]
+    bleeding_and_bare = Observation(
+        player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0),
+                          hits=int(150 * frac) - 1, hits_max=150),
+        items=bare)
+    assert decide_mode(bleeding_and_bare, dict(ROUTES)) == ("hunt", None)
+    # ...and the same world at full health does want one, or the line above proves nothing.
+    healthy_and_bare = Observation(
+        player=PlayerView(serial=PLAYER, pos=Position(5, 5, 0), hits=150, hits_max=150),
+        items=bare)
+    assert decide_mode(healthy_and_bare, dict(ROUTES))[0] == "economy"
+
+    # NO READING IS NOT A WOUND. Every observation carries `hits_max = 0` before the
+    # shard's first status packet, and every offline fixture leaves it there.
+    assert decide_mode(_hurt(0, hits_max=0), dict(ROUTES)) == ("economy", "bank_gold")

@@ -958,6 +958,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     from .narrate import intent as agent_intent
 
     steps = says = 0
+    last_act, act_run = "", 0
     ticks_done = 0
     last_say = ""
     # PHASE6.md item 2's own bookkeeping (only touched when `chronicle` is
@@ -1338,6 +1339,17 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             prev_recorded = agent.episodes.total_recorded
 
         steps += isinstance(action, Walk)
+        # WHAT THE AGENT ACTUALLY EMITTED, and how long it has emitted the same thing.
+        # The 2026-08-24 bank-trip death (§56) froze `steps`, `eps`, `out+` and the walk
+        # route's own `stall=` for ninety ticks while the warrior was beaten from 39 HP
+        # to 1 holding 103 unused bandages — and every one of those fields is blind in
+        # the same way, because they all count a SUBSET of actions. `Walk` is counted,
+        # `WalkTo` is not; a reward-less action moves neither `out+` nor `eps`. So
+        # "emitting nothing" and "emitting the same non-Walk action forever" were
+        # indistinguishable on the only tape that mattered.
+        act_name = type(action).__name__ if action is not None else "none"
+        act_run = act_run + 1 if act_name == last_act else 1
+        last_act = act_name
         # A Life that has detected a rule-vs-gate disagreement says so LOUDLY, every
         # tick it persists. Six live failures sat in exactly this state looking like an
         # agent at work; the one thing that must never happen again is it being quiet.
@@ -1543,7 +1555,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
                     f"landed={_achieved}/{_retired_total}"
                     f"{f'+{_unachieved}' if _unachieved else ''} "
                     f"out+{agent.episodes.total_reward():.1f} eps={_recorded_now} "
-                    f"steps={steps} says={says}")
+                    f"steps={steps} says={says} act={last_act}x{act_run}")
             if _stalled >= _STALL_TICKS:
                 line += " !stalled"
             if last_say:
@@ -3126,7 +3138,14 @@ def warrior_readout(life, obs) -> str:
                      f"@d{max(abs(spot[0] - here.x), abs(spot[1] - here.y))}")
         return (f" blade={blade_s} plate={plate}/{len(PLATE_ARMOR_LAYERS)}"
                 f"(pack {inpack}){badlayer}{foe_s}{res_s}"
-                f" skill={getattr(getattr(life, 'hunt_agent', life), 'last_skill_name', '?')}"
+                # `life.last_skill_name` forwards the LAST-TICKED agent's skill. Reading
+                # `hunt_agent` directly (as this did) describes an agent that barely runs
+                # in economy mode: the 2026-08-24 bank-trip death printed `skill=hunt` for
+                # 90 ticks while the ECONOMY agent held the tick, which reads as "the
+                # warrior is hunting" when it was doing no such thing. The Life already
+                # owns this choice and documents why; a second copy here only gets it
+                # wrong.
+                f" skill={getattr(life, 'last_skill_name', None) or '?'}"
                 f" bandages={pack_amount(obs, BANDAGE_GRAPHIC)}"
                 f" gold={pack_amount(obs, GOLD_GRAPHIC)}"
                 f" banked={banked_amount(obs)}"

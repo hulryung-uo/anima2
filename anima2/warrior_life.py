@@ -51,6 +51,7 @@ from .skills.warrior import (
     BuyBandage,
     BuyWeapon,
     UpgradeWeapon,
+    WarriorSurvive,
 )
 
 #: Buy a fresh blade when weaponless and this much pack gold is on hand.
@@ -154,6 +155,28 @@ def decide_mode(obs: Observation, memory: dict) -> tuple[str, str | None]:
     """
     if obs.player.dead:
         return "hunt", None  # RecoverDeath (a hunt-planner reflex) owns the death window
+    # BLEEDING OUTRANKS ERRANDS. Nothing in the list below stops a warrior living the way
+    # 26% HP with three creatures on him does, and this rule sent him shopping anyway:
+    # 2026-08-24 (`warrior-...-pinned.log`, audit §56) it answered `bank_gold` from
+    # hp=39/150 down to hp=1/150 across ninety ticks, with `foes=d1,d1,d1` and **103
+    # unused bandages** in the pack, and the warrior died holding 519 gold he had earned
+    # from three kills. `Survive` sits above the capabilities in the economy planner too,
+    # so it *should* have healed him there and demonstrably did not -- but this branch
+    # does not rest on that: a wounded warrior belongs to the fight-or-heal window
+    # whatever the economy leg is doing, and the hunt planner is where that reflex has a
+    # memory not entangled with a transaction FSM.
+    #
+    # `heal_below_fraction` is the warrior's OWN heal trigger, read off the class the
+    # profession installs, so the rule and the reflex cannot drift apart on the number.
+    # There is no hysteresis here on purpose: `Survive` owns the recovery ceiling, and a
+    # second copy of it in the orchestrator would be a second opinion about the same
+    # thing. It resumes economy the tick the reflex stops claiming him.
+    # `hits_max == 0` is NO READING, not a wound — every observation carries it before
+    # the shard's first status packet, and offline fixtures leave it at the default. An
+    # absent reading must not ground the warrior.
+    if (obs.player.hits_max > 0
+            and obs.player.hits / obs.player.hits_max < WarriorSurvive.heal_below_fraction):
+        return "hunt", None
     gold = pack_amount(obs, GOLD_GRAPHIC)
     if (not owns(obs, SWORD_GRAPHICS, layer=WEAPON_LAYER) and gold >= WEAPON_PRICE
             and _valid_spot(memory.get("weapon_vendor_spot"))):
