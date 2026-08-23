@@ -230,13 +230,18 @@ def test_swordsman_wires_both_hunt_and_the_economy_capabilities():
     from anima2.capabilities import CAPABILITIES
     from anima2.profession import PROFESSIONS
     from anima2.skills.hunt import Hunt
+    from anima2.skills.warrior import WarriorHunt
 
     sword = PROFESSIONS["swordsman"]
     # The work-skill (hunting) planner carries both pre-work reflexes just above
-    # Hunt, in order: EquipWeapon (wield) then EquipArmor (suit up), then Hunt.
+    # the work skill, in order: EquipWeapon (wield) then EquipArmor (suit up).
     work = [type(s).__name__ for s in sword.planner().skills]
-    assert work[work.index("Hunt") - 2 : work.index("Hunt")] == ["EquipWeapon", "EquipArmor"]
-    assert sword.work_skill is Hunt
+    at = work.index("WarriorHunt")
+    assert work[at - 2 : at] == ["EquipWeapon", "EquipArmor"], work
+    # `WarriorHunt`, not `Hunt`: it is a strict `Hunt` that refuses to engage bare-handed
+    # (audit §61.9 — three deaths at one tile after three resurrections, `blade=NONE`).
+    assert sword.work_skill is WarriorHunt
+    assert issubclass(WarriorHunt, Hunt)
     # The economy planner (capability mode) builds — its manifest must pass, which
     # it only does because pre-work reflexes are excluded from capability mode.
     econ = sword.planner(capability_goals=True)
@@ -436,3 +441,57 @@ def test_the_swordsman_profession_actually_uses_the_warrior_reflex():
     survive = PROFESSIONS["swordsman"].survive_factory()
     assert isinstance(survive, WarriorSurvive), type(survive)
     assert survive.flee_hostile_count == 1
+
+
+def test_a_swordsman_does_not_engage_bare_handed():
+    """Death drops the whole kit on the corpse, the ghost walks to a Healer, and
+    `Combat.can_run` is true for anything inside `engage_range = 10` — so the resurrected
+    character walks straight back in unarmed.
+
+    Measured 2026-08-24 (audit §61.9): `BACK ALIVE` three times in one run and three
+    deaths at the SAME tile `(2583, 408)`, `blade=NONE plate=0/6`.
+    `docs/SWORD-WARRIOR.md` had already recorded that an unarmoured warrior is provably
+    alpha-struck dead by three Ettins.
+
+    The bar is the BLADE, not the suit — the same bar `village.ready_to_fight` uses.
+    """
+    from anima2.contract import MobileView, Position
+    from anima2.skills.warrior import KATANA_GRAPHIC, WEAPON_LAYER, WarriorHunt
+
+    ettin = MobileView(serial=0xAA, name="Ettin", pos=Position(101, 100, 0), body=1,
+                       notoriety=6, hits=100, hits_max=100, distance=1)
+    persona = Persona(name="Bram", combat_disposition="aggressive")
+
+    def _hunt_ctx(items):
+        obs = Observation(player=PlayerView(serial=PLAYER, pos=Position(100, 100, 0),
+                                            hits=150, hits_max=150),
+                          items=list(items), mobiles=[ettin])
+        return SkillContext(obs=obs, persona=persona, memory={})
+
+    naked = _hunt_ctx([_backpack()])
+    assert not WarriorHunt().can_run(naked), "a ghost's leftovers are not a warrior"
+
+    worn = _item(0x700, KATANA_GRAPHIC, container=PLAYER, layer=WEAPON_LAYER)
+    assert WarriorHunt().can_run(_hunt_ctx([_backpack(), worn]))
+
+    # A blade in the pack counts: `EquipWeapon` runs above this and will wield it, and
+    # refusing here would stall the hunt for the tick between buying and wearing.
+    packed = _item(0x701, KATANA_GRAPHIC)  # default container is the backpack
+    assert WarriorHunt().can_run(_hunt_ctx([_backpack(), packed]))
+
+    # A sword lying on the GROUND is not owned — container is not us and not our pack.
+    loose = _item(0x702, KATANA_GRAPHIC, container=None)
+    assert not WarriorHunt().can_run(_hunt_ctx([_backpack(), loose]))
+
+    # ...nor is the one still lying in the CORPSE, which is the exact state this guard
+    # exists for: `RecoverDeath` has not fetched it back yet.
+    corpse = _item(0x703, KATANA_GRAPHIC, container=0xC0FFEE)
+    assert not WarriorHunt().can_run(_hunt_ctx([_backpack(), corpse]))
+
+    # It is still a HUNT: armed with nothing to fight, it must yield the hands rather
+    # than answer for every tick of a quiet pocket.
+    quiet = Observation(player=PlayerView(serial=PLAYER, pos=Position(100, 100, 0),
+                                          hits=150, hits_max=150),
+                        items=[_backpack(), worn], mobiles=[])
+    assert not WarriorHunt().can_run(
+        SkillContext(obs=quiet, persona=persona, memory={}))

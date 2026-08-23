@@ -29,7 +29,7 @@ from .curriculum import (
 from .planner import Planner
 from .skills import BlacksmithMarket, Chop, Fish, GoTo, Greet, Hunt, MineSmeltDeliver, RecoverDeath, Skill, SpeakPending, Survive, Wander
 from .skills.mage import ArmedHunt, CastAttack, KeepDistance
-from .skills.warrior import EquipArmor, EquipWeapon, WarriorSurvive
+from .skills.warrior import EquipArmor, EquipWeapon, WarriorHunt, WarriorSurvive
 from .skills.base import SkillContext, SkillResult, Status
 
 # anima v1's flood-fill-verified Minoc ore banks (foundry/kernel/gm.py LANE_SPOTS):
@@ -621,7 +621,8 @@ PROFESSIONS: dict[str, Profession] = {
         ],
         needs_workplace=True,
         workplace=HUNTING_SPOT,
-        work_skill=Hunt,
+        # A swordsman does not walk into an Ettin bare-handed — see WarriorHunt.
+        work_skill=WarriorHunt,
         combat_disposition="aggressive",
         pre_work_skills=(EquipWeapon, EquipArmor),
         # Heal to a safe margin before wading back in (living-test hardening).

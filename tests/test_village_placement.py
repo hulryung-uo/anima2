@@ -543,7 +543,12 @@ class _FakeGm:
 
     def find_mobile_near(self, x, y, retries=2, exclude=frozenset()):
         self.retries = retries
-        return type("M", (), {"serial": 0xBEEF})() if self.found else None
+        self.excluded = set(exclude)
+        # Whatever the caller excludes, it does not come back — the real one filters.
+        for serial in (0xBEEF, 0xCAFE):
+            if serial not in self.excluded:
+                return type("M", (), {"serial": serial})() if self.found else None
+        return None
 
 
 def test_prey_that_will_not_pin_is_deleted_not_left_to_roam():
@@ -579,6 +584,15 @@ def test_prey_that_will_not_pin_is_deleted_not_left_to_roam():
     lost = _FakeGm(found=False)
     assert stage_pinned_prey(lost, "Ettin", 10, 20, 0) == "lost"
     assert not any(c.startswith("[Delete") for c in lost.commands), lost.commands
+
+    # THE EXCLUDE SET IS THE CALLER'S ONLY DEFENCE against re-finding a creature that
+    # was already pinned here: `find_mobile_near` returns the NEAREST match, so without
+    # it the lookup can pin an old Ettin, report success, and leave the one just added
+    # roaming — with `0 lost, 0 deleted` printed over the top (audit §61.10).
+    reuse = _FakeGm()
+    assert stage_pinned_prey(reuse, "Ettin", 10, 20, 0, exclude={0xBEEF}) == "pinned"
+    assert 0xBEEF in reuse.excluded and "[Set CantWalk true#51966" in reuse.commands, \
+        reuse.commands
 
 
 def test_walkable_run_stops_where_the_ground_stops_being_climbable():

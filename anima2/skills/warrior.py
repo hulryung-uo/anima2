@@ -27,6 +27,7 @@ from __future__ import annotations
 from ..contract import Drop, Equip, PickUp
 from .base import Skill, SkillContext, SkillResult, Status
 from .harvest import BACKPACK_LAYER
+from .hunt import Hunt
 from .market import BuyMaterialCapability, BuyToolCapability
 from .survival import BANDAGE_GRAPHICS, Survive
 
@@ -87,6 +88,46 @@ class WarriorSurvive(Survive):
 
     heal_until_fraction = 0.75
     flee_hostile_count = 1
+
+class WarriorHunt(Hunt):
+    """`Hunt`, but a swordsman does not walk into an Ettin bare-handed.
+
+    Death drops the whole kit on the corpse. The ghost then walks to a Healer, is
+    resurrected — and `Combat.can_run` is true for anything inside `engage_range = 10`,
+    so an unarmed, unarmoured character immediately engages again. Measured 2026-08-24
+    (audit §61.9): `BACK ALIVE` three times in one run, three deaths at the SAME tile
+    `(2583, 408)`, `blade=NONE plate=0/6`. `docs/SWORD-WARRIOR.md` recorded the same shape
+    long before as the "remote-death naked loop", and recorded that an unarmoured warrior
+    is provably alpha-struck dead by three Ettins.
+
+    `EquipWeapon` sits above this in the planner and cannot help: it only fires on a sword
+    the character OWNS, and after a death the sword is on the corpse. `RecoverDeath` sits
+    above it too and is what actually fixes the situation — this simply stops `Hunt`
+    taking the hands on the ticks when the corpse run cannot.
+
+    The bar is the BLADE, not the suit, and it is deliberately the same bar
+    `village.ready_to_fight` uses to decide the harness may feed him: armed is the line
+    between a fight and a mugging. Armour is checked by neither, because `EquipArmor` is
+    allowed to abandon a layer the server keeps refusing and a veto here would hand that
+    abandoned layer the whole day.
+    """
+
+    name = "warrior_hunt"
+
+    def can_run(self, ctx: SkillContext) -> bool:
+        return _worn_or_packed_sword(ctx.obs) and super().can_run(ctx)
+
+
+def _worn_or_packed_sword(obs) -> bool:
+    """A sword worn at `WEAPON_LAYER` or sitting in the pack, ready to be worn."""
+    me = obs.player.serial
+    packs = {i.serial for i in obs.items
+             if i.container == me and i.layer == BACKPACK_LAYER}
+    return any(i.graphic in SWORD_GRAPHICS
+               and ((i.container == me and i.layer == WEAPON_LAYER)
+                    or i.container in packs)
+               for i in obs.items)
+
 
 # The equip layer for a ONE-HANDED weapon (ServUO Layer.OneHanded == 1). Two-handed
 # weapons use layer 2 (mirrors harvest.py's axe), but the buyable swords are all

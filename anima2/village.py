@@ -3529,16 +3529,23 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             adj = [(1, 1)]
 
         unpinned = [0, 0]  # [lost (no serial), deleted (would not pin)]
-        def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
+        def _spawn_pinned(lo, px: int, py: int, pz: int, dx: int, dy: int) -> None:
             # `retries=2`, not the old 1: every GM call costs a pump on the ONE shared
             # control connection and the shard serves it in the same loop the warriors
             # play in, so this used to be cut to a single observation for throughput.
             # A miss is not free, though — it leaves a chaser that ruins every retreat
             # for the rest of the run, which costs far more than one extra pump.
-            outcome = stage_pinned_prey(
-                gm, prey, px + dx, py + dy, pz,
-                exclude={w["life"].hunt_agent.body.ready["player"]["serial"]
-                         for w in warriors})
+            # EXCLUDE EVERY CREATURE THAT ALREADY EXISTS, not just the players.
+            # `find_mobile_near` returns the nearest match, so with only players excluded
+            # it happily returns a creature that was ALREADY pinned there — re-pins it,
+            # reports `pinned`, and leaves the one just `[Add`-ed roaming free. The
+            # counter then prints `0 lost, 0 deleted` while roamers accumulate every
+            # cycle. Measured 2026-08-24 (§61.10): `foes=d1,d1,d1` at `@(2593,415)`,
+            # six tiles off the stand, where by construction no PINNED creature can be —
+            # they are only ever added at the stand's own diagonals.
+            known = {w["life"].hunt_agent.body.ready["player"]["serial"] for w in warriors}
+            known |= {m.serial for m in lo.mobiles}
+            outcome = stage_pinned_prey(gm, prey, px + dx, py + dy, pz, exclude=known)
             if outcome != "pinned":
                 unpinned[0 if outcome == "lost" else 1] += 1
 
@@ -3613,7 +3620,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                            <= WarriorSurvive.hostile_scan_range)
                 for k in range(min(budget, max(0, prey_target - near))):
                     dx, dy = adj[k % len(adj)]
-                    _spawn_pinned(px, py, pz, dx, dy)
+                    _spawn_pinned(lo, px, py, pz, dx, dy)
                     budget -= 1
             with lock:
                 snap = [status[i] for i in sorted(status)]
