@@ -50,6 +50,7 @@ from .skills.mage import KeepDistance
 from .skill_library import SkillLibrary
 from .skill_tuning import DELIVER_THRESHOLD_CANDIDATES, ParamSpec, ParamTuner
 from .skills import MineSmeltDeliver
+from .skills.combat import is_hostile
 from .skills.market import walk_readout
 from .skills.base import Status
 from .uomap import find_mine_spots, find_tree_clusters, play_map
@@ -3093,8 +3094,19 @@ def warrior_readout(life, obs) -> str:
         bp = pack_serial(obs)
         inpack = sum(1 for i in obs.items
                      if i.container == bp and i.graphic in PLATE_ARMOR_LAYERS)
+        # WHO IS HITTING IT, and from how far. The 2026-08-24 tapes could show a warrior
+        # bleeding to death fourteen tiles from a pocket of PINNED prey and could not name
+        # the attacker — pinned creatures cannot follow, so "still taking damage after a
+        # long retreat" is either a creature that was never pinned or one nobody staged.
+        # Nearest first, because melee reach is 1 and that is the only distance that
+        # decides whether a bandage will slip.
+        # `is_hostile` is the single source for "attackable and not observably dead" —
+        # it already drops corpses, so this must not re-test `hits` and drift from it.
+        foes = sorted(m.distance for m in obs.mobiles
+                      if m.serial != me and is_hostile(m))[:3]
+        foe_s = " foes=" + (",".join(f"d{d}" for d in foes) if foes else "none")
         return (f" blade={blade_s} plate={plate}/{len(PLATE_ARMOR_LAYERS)}"
-                f"(pack {inpack}){badlayer}"
+                f"(pack {inpack}){badlayer}{foe_s}"
                 f" skill={getattr(getattr(life, 'hunt_agent', life), 'last_skill_name', '?')}"
                 f" bandages={pack_amount(obs, BANDAGE_GRAPHIC)}"
                 f" gold={pack_amount(obs, GOLD_GRAPHIC)}"

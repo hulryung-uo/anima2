@@ -400,14 +400,16 @@ def test_equip_armor_abandons_a_stubborn_piece_so_hunt_is_never_wedged():
     assert skill.can_run(_ctx([_backpack(), legs], memory=mem)) is False
 
 
-def test_a_warrior_retreats_at_two_attackers_not_three():
+def test_a_warrior_leaves_melee_to_heal_at_all():
     """The other half of the death loop `heal_until_fraction` was raised for.
 
-    The stock `Survive` retreats only at THREE hostiles, and `run_warrior_village` stages
-    `prey_target = 2`, so a warrior at two attackers bandaged in place and the incoming
-    damage out-paced the heal. Five live days, five deaths, the same HP trace every time:
-    `5 -> 25` from a landed bandage, then `15 -> 5 -> dead`. Wanting a 75% margin is
-    useless if nothing lets the fighter reach one.
+    ServUO does not interrupt a bandage when the healer is hit, it SLIPS it, and slips are
+    charged against the heal (`toHeal -= toHeal * m_Slips * 0.35`). On non-AOS —
+    this shard is T2A — `disruptThreshold` is 0, so EVERY point of damage slips. Bandaging
+    inside melee is therefore void rather than risky, and the attacker COUNT never enters
+    into it: one is enough to spend a bandage for nothing. Tried at two first; the tape
+    then burned six bandages standing still against a single attacker and never rose,
+    while the one recovery it did manage (54 -> 136) came after stepping three tiles clear.
 
     Pinned per-profession rather than globally: this is the warrior's melee arithmetic,
     and a caster or a crafter meeting two hostiles is a different question.
@@ -415,7 +417,7 @@ def test_a_warrior_retreats_at_two_attackers_not_three():
     from anima2.skills.survival import Survive
     from anima2.skills.warrior import WarriorSurvive
 
-    assert WarriorSurvive.flee_hostile_count == 2
+    assert WarriorSurvive.flee_hostile_count == 1
     assert Survive.flee_hostile_count == 3, "the stock reflex must be unchanged"
     # And the margin it retreats to is still the warrior's, not the stock one.
     assert WarriorSurvive.heal_until_fraction == 0.75
@@ -433,4 +435,4 @@ def test_the_swordsman_profession_actually_uses_the_warrior_reflex():
 
     survive = PROFESSIONS["swordsman"].survive_factory()
     assert isinstance(survive, WarriorSurvive), type(survive)
-    assert survive.flee_hostile_count == 2
+    assert survive.flee_hostile_count == 1

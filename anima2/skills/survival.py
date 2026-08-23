@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 
 from ..contract import MobileView, TargetObject, Use, Walk
-from ..geometry import direction_toward
+from ..geometry import DIRECTION_DELTAS, direction_toward
 from .base import Skill, SkillContext, SkillResult, Status
 from .combat import is_hostile
 from .harvest import BACKPACK_LAYER
@@ -278,17 +278,45 @@ class Survive(Skill):
 
     @staticmethod
     def _away_direction(ctx: SkillContext, hostiles: list[MobileView]) -> int:
+        """The best step away from `hostiles` that is not walking into somebody.
+
+        The ideal heading is away from the hostiles' centroid, but the ideal TILE is
+        routinely occupied — the warrior village spawns its pinned prey on the four
+        cardinal neighbours, so the obvious escape squares are exactly the ones with a
+        creature standing on them. The previous version committed to one direction and,
+        when hostiles cancelled out on opposite sides, always committed NORTH: one of
+        those four spawn tiles. Measured 2026-08-24: a warrior walked into the same
+        blocked tile for its whole `max_flee_steps` budget, never moved off its spawn
+        square across 203 samples, and died bandaging in melee — where ServUO slips every
+        heal to nothing (`Bandage.cs`, `disruptThreshold = 0` off AOS).
+
+        So the directions are RANKED and the occupied ones skipped: start from the ideal
+        heading and fan outwards, taking the first neighbour no mobile is standing on. A
+        step 45 degrees off is worth far more than a step into a wall of flesh, because
+        leaving melee at all is what makes a bandage heal.
+
+        Only MOBILES are consulted. Terrain is not modelled here and deliberately so —
+        the walk's own stall give-up already bounds a step into scenery, and a skill that
+        second-guessed the map would need the walkability window this one is not given.
+        """
         here = ctx.obs.player.pos
         cx = sum(m.pos.x for m in hostiles) / len(hostiles)
         cy = sum(m.pos.y for m in hostiles) / len(hostiles)
         dx, dy = here.x - cx, here.y - cy
-        norm = math.hypot(dx, dy)
-        if norm < 1e-6:
-            dx, dy = 0.0, -1.0  # surrounded at the centroid: commit north
+        if math.hypot(dx, dy) < 1e-6:
+            dx, dy = 0.0, -1.0  # surrounded at the centroid: north is the first CANDIDATE
         step_x = 1 if dx > 0 else -1 if dx < 0 else 0
         step_y = 1 if dy > 0 else -1 if dy < 0 else 0
-        target = type(here)(here.x + step_x, here.y + step_y, here.z)
-        return direction_toward(here, target)
+        ideal = direction_toward(here, type(here)(here.x + step_x, here.y + step_y, here.z))
+        taken = {(m.pos.x, m.pos.y) for m in ctx.obs.mobiles
+                 if m.serial != ctx.obs.player.serial}
+        # Fan out from the ideal heading: 0, +1, -1, +2, -2, ... around the 8-way compass.
+        for offset in (0, 1, -1, 2, -2, 3, -3, 4):
+            d = (ideal + offset) % len(DIRECTION_DELTAS)
+            ddx, ddy = DIRECTION_DELTAS[d]
+            if (here.x + ddx, here.y + ddy) not in taken:
+                return d
+        return ideal  # boxed in on all eight sides — the give-up ladder can have it
 
     def _bandage(self, ctx: SkillContext):
         backpack = next(

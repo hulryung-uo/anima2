@@ -451,6 +451,39 @@ def test_warrior_readout_names_what_stops_a_warrior_living():
     assert f"plate=0/{len(PLATE_ARMOR_LAYERS)}(pack {len(PLATE_ARMOR_LAYERS)})" in carried_out, \
         carried_out
 
+    # WHO IS HITTING IT. The 2026-08-24 free-tile tape showed a warrior bleed out at
+    # `(2577, 398)` — fourteen tiles from a pocket of PINNED prey, which by construction
+    # cannot follow. The tape could not name the attacker, so "the retreat did not work"
+    # and "something nobody staged is standing on him" were indistinguishable, and they
+    # have opposite fixes. Nearest first, because melee reach is 1 and that distance is
+    # the one that decides whether a bandage slips.
+    from anima2.contract import MobileView
+
+    def _mob(serial, dist, noto, hits=50):
+        return MobileView(serial=serial, name="", pos=Position(), body=0,
+                          notoriety=noto, hits=hits, hits_max=50, distance=dist)
+
+    assert "foes=none" in out, out  # no mobiles at all in the base fixture
+
+    from anima2.skills.combat import is_hostile
+    foe_noto = next(n for n in range(1, 8) if is_hostile(_mob(0, 0, n)))
+    friend_noto = next(n for n in range(1, 8) if not is_hostile(_mob(0, 0, n)))
+
+    crowded = Observation(
+        player=PlayerView(serial=me, pos=Position(), hits=90, hits_max=125),
+        items=[pack],
+        mobiles=[_mob(0xB03, 7, foe_noto), _mob(0xB01, 1, foe_noto),
+                 _mob(0xB02, 4, foe_noto),
+                 _mob(me, 0, foe_noto),              # ourself is not a foe
+                 _mob(0xB04, 2, friend_noto),        # a Healer standing by is not a foe
+                 _mob(0xB05, 1, foe_noto, hits=0),   # a corpse is not a foe
+                 _mob(0xB06, 9, foe_noto)],          # capped: nearest three, no more
+    )
+    # Anchored on BOTH ends: `foes=d1,d4,d7` as a bare substring also matches an
+    # uncapped `foes=d1,d4,d7,d9`, so the cap would go untested.
+    crowded_out = warrior_readout(_Life(), crowded)
+    assert " foes=d1,d4,d7 " in crowded_out, crowded_out
+
     # ...and it never raises, whatever it is handed.
     assert warrior_readout(object(), None).strip(), "must still say something"
     assert warrior_readout(object(), object()).strip()

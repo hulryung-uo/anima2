@@ -411,3 +411,63 @@ def test_post_resurrection_route_stop_precedes_low_hp_bandaging():
     memory = {RecoverDeath._WAITING: True}
     skill = Survive()
     assert not skill.can_run(_ctx(hp=10, memory=memory))
+
+
+# --- fleeing to a tile that is actually free (2026-08-24) ----------------------------
+
+
+def _flee_hostile(serial, x, y):
+    from anima2.contract import MobileView, Position
+    return MobileView(serial=serial, name="Ettin", body=1, notoriety=6,
+                      hits=100, hits_max=100, distance=1, pos=Position(x, y, 0))
+
+
+def _flee_dir(px, py, hostiles):
+    """The direction `Survive` picks to run, given who is standing where."""
+    from anima2.contract import Observation, PlayerView, Position
+    from anima2.skills.survival import Survive
+
+    obs = Observation(player=PlayerView(serial=0x1, pos=Position(px, py, 0),
+                                        hits=40, hits_max=150),
+                      mobiles=hostiles)
+    ctx = SkillContext(obs=obs, persona=Persona(name="Bram"), memory={})
+    return Survive._away_direction(ctx, hostiles)
+
+
+def test_a_cornered_warrior_steps_somewhere_free_not_into_a_body():
+    """The village spawns its pinned prey on the four CARDINAL neighbours, so the obvious
+    escape squares are exactly the occupied ones.
+
+    With hostiles east and west the away-vector cancels and the old code committed NORTH
+    unconditionally — one of those spawn tiles. Measured live: the warrior walked into the
+    same blocked tile for its whole flee budget, never left its spawn square across 203
+    samples, and died bandaging inside melee, where ServUO slips every heal to nothing.
+    """
+    from anima2.geometry import DIRECTION_DELTAS
+
+    # East + west cancel; north is ALSO occupied. It must still find a way out.
+    hostiles = [_flee_hostile(0xA, 2588, 408), _flee_hostile(0xB, 2586, 408)]
+    blocked = hostiles + [_flee_hostile(0xC, 2587, 407)]
+    d = _flee_dir(2587, 408, blocked)
+    dx, dy = DIRECTION_DELTAS[d]
+    dest = (2587 + dx, 408 + dy)
+    assert dest not in {(m.pos.x, m.pos.y) for m in blocked}, (d, dest)
+
+
+def test_the_flee_still_prefers_running_away_when_it_can():
+    """The fan-out is a fallback, not a shuffle: with the direct escape clear, take it."""
+    from anima2.geometry import DIRECTION_DELTAS
+
+    # One hostile due south -> the ideal heading is due north, and north is free.
+    d = _flee_dir(2587, 408, [_flee_hostile(0xA, 2587, 409)])
+    assert DIRECTION_DELTAS[d] == (0, -1), DIRECTION_DELTAS[d]
+
+
+def test_a_warrior_boxed_in_on_all_eight_sides_still_answers():
+    """Surrounded is a real state and must not raise or loop — the give-up ladder owns it."""
+    from anima2.geometry import DIRECTION_DELTAS
+
+    ring = [_flee_hostile(0xA0 + i, 2587 + dx, 408 + dy)
+            for i, (dx, dy) in enumerate(DIRECTION_DELTAS)]
+    d = _flee_dir(2587, 408, ring)
+    assert 0 <= d < len(DIRECTION_DELTAS)

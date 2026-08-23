@@ -62,17 +62,31 @@ class WarriorSurvive(Survive):
     the heal happened inside the fight. `heal_until_fraction = 0.75` had already made the
     warrior WANT a safe margin; nothing let it reach one.
 
-    Two is where "outnumbered" begins for a fighter that has to stand still to heal, and
-    the number is about the mechanic rather than about matching the runner's default: one
-    attacker's damage is survivable across a bandage, two is not. Retreat is also
-    unusually cheap here — the village pins its prey (`CantWalk`), so five steps
-    (`max_flee_steps`) puts a warrior permanently out of a melee reach of 1 and it can
-    heal to the full margin before returning. A future reader who raises `prey_target`
-    should not raise this to match: it is not a ratio.
+    ONE, and the server's own arithmetic is why — this was tried at two first and the
+    data said two was still wrong. ServUO does not INTERRUPT a bandage when the healer is
+    hit; it SLIPS it (`PlayerMobile.OnDamage` -> `BandageContext.Slip`), and slips are
+    charged against the heal itself: `toHeal -= toHeal * m_Slips * 0.35` (`Bandage.cs`),
+    so three hits during one application heal essentially nothing. On a non-AOS shard —
+    this one is T2A — `disruptThreshold` is **0**, so EVERY point of damage slips, not
+    just a heavy blow.
+
+    So bandaging inside melee is not risky, it is void, and the number of attackers never
+    enters into it: one is enough to spend a bandage for nothing. The measured run says
+    the same thing from the other side — the warrior's only successful recovery
+    (54 -> 136 HP) happened on the one occasion it had stepped three tiles clear, while
+    the decline that killed it burned six bandages standing still and never rose.
+
+    Retreat is unusually cheap here: the village pins its prey (`CantWalk`), so five steps
+    (`max_flee_steps`) puts a warrior permanently outside a melee reach of 1. It fights
+    down to `heal_below_fraction`, walks out, heals to the 75% margin above, and returns —
+    which is the sawtooth this profession is supposed to produce.
+
+    Per-profession, not global: `Survive` keeps 3. A caster fleeing every single hostile
+    would never finish a cast, and only a bandage-healer pays this particular tax.
     """
 
     heal_until_fraction = 0.75
-    flee_hostile_count = 2
+    flee_hostile_count = 1
 
 # The equip layer for a ONE-HANDED weapon (ServUO Layer.OneHanded == 1). Two-handed
 # weapons use layer 2 (mirrors harvest.py's axe), but the buyable swords are all
