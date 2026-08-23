@@ -487,3 +487,63 @@ def test_warrior_readout_names_what_stops_a_warrior_living():
     # ...and it never raises, whatever it is handed.
     assert warrior_readout(object(), None).strip(), "must still say something"
     assert warrior_readout(object(), object()).strip()
+
+
+class _FakeGm:
+    """A GM control plane that can be told to lose a spawn, or to refuse the pin."""
+
+    def __init__(self, *, found=True, pins_after=0):
+        self.found, self.pins_after = found, pins_after
+        self.sets = 0
+        self.commands: list[str] = []
+
+    def command_at(self, cmd, x, y, z):
+        self.commands.append(f"{cmd}@({x},{y},{z})")
+
+    def command_on(self, cmd, serial):
+        self.commands.append(f"{cmd}#{serial}")
+        if cmd.startswith("[Set CantWalk"):
+            self.sets += 1
+
+    def get_property_value(self, prop, serial):
+        assert prop == "CantWalk"
+        return "True" if self.sets > self.pins_after else "False"
+
+    def find_mobile_near(self, x, y, retries=2, exclude=frozenset()):
+        self.retries = retries
+        return type("M", (), {"serial": 0xBEEF})() if self.found else None
+
+
+def test_prey_that_will_not_pin_is_deleted_not_left_to_roam():
+    """`[Set CantWalk true` was sent and never read back, so a prey that did not pin
+    became a silent chaser. Measured 2026-08-24 (`warrior-...-foes.log`): the warrior
+    stationary at `@(2585, 411)` while its nearest hostiles oscillated `d3,d3,d3 ->
+    d1,d3,d3 -> d2,d3,d3` and one read `d0`, on his own tile. Pinned prey cannot move,
+    so every retreat the village stages is void against one that was never pinned.
+    """
+    from anima2.village import stage_pinned_prey
+
+    ok = _FakeGm()
+    assert stage_pinned_prey(ok, "Ettin", 10, 20, 0) == "pinned"
+    assert "[Delete#48879" not in ok.commands, ok.commands
+    # MORE THAN ONE observation. The old spawner looked once, for throughput on the
+    # shared control connection, and a miss is what leaves the roamer behind.
+    assert ok.retries >= 2, ok.retries
+
+    # Refuses the pin however many times it is asked -> removed, because this spawner
+    # runs every monitor cycle and a leftover ACCUMULATES.
+    stubborn = _FakeGm(pins_after=99)
+    assert stage_pinned_prey(stubborn, "Ettin", 10, 20, 0) == "deleted"
+    assert stubborn.sets == 2, "one retry before giving up"
+    assert "[Delete#48879" in stubborn.commands, stubborn.commands
+
+    # A pin that takes on the SECOND attempt must not be thrown away.
+    flaky = _FakeGm(pins_after=1)
+    assert stage_pinned_prey(flaky, "Ettin", 10, 20, 0) == "pinned"
+    assert "[Delete#48879" not in flaky.commands, flaky.commands
+
+    # Never found: the creature EXISTS and we have no serial, so it cannot be cleaned
+    # up. That is the worse outcome and must be reported as its own thing.
+    lost = _FakeGm(found=False)
+    assert stage_pinned_prey(lost, "Ettin", 10, 20, 0) == "lost"
+    assert not any(c.startswith("[Delete") for c in lost.commands), lost.commands

@@ -3116,6 +3116,39 @@ def warrior_readout(life, obs) -> str:
         return " blade=?"
 
 
+def stage_pinned_prey(gm, prey: str, x: int, y: int, z: int, *,
+                      exclude: set[int] | None = None, retries: int = 2) -> str:
+    """Spawn one `prey` at `(x, y, z)`, pin it, and READ THE PIN BACK FROM THE SERVER.
+
+    Returns `"pinned"`, `"deleted"` (found, would not pin, removed) or `"lost"` (never
+    found, so it cannot even be removed — a roamer is loose).
+
+    The artisan village already carried this lesson in a comment — *never infer staging
+    from the fact that a command was sent* — and the warrior spawner did not, so a missed
+    lookup left an unpinned Ettin in the pocket with no line anywhere saying so. The
+    2026-08-24 `foes=` tape is what that looks like from the brain's side: the warrior
+    stationary at `@(2585, 411)` while its three nearest hostiles oscillated
+    `d3,d3,d3 -> d1,d3,d3 -> d2,d3,d3`, one of them reading `d0` — on the warrior's own
+    tile. Pinned prey cannot do that, and no retreat this village stages means anything
+    against a creature that walks.
+
+    DELETING what will not pin is the warrior spawner's requirement, not the artisan's:
+    that one stages a single prey, this one runs every monitor cycle for the life of the
+    run, so a roaming leftover accumulates and outlives the warrior that provoked it.
+    A deleted spawn is simply replaced next cycle.
+    """
+    gm.command_at(f"[Add {prey}", x, y, z)
+    mob = gm.find_mobile_near(x, y, retries=retries, exclude=exclude or set())
+    if mob is None:
+        return "lost"
+    for _ in range(2):
+        gm.command_on("[Set CantWalk true", mob.serial)
+        if str(gm.get_property_value("CantWalk", mob.serial)).lower() in ("true", "1"):
+            return "pinned"
+    gm.command_on("[Delete", mob.serial)
+    return "deleted"
+
+
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
                         ticks: int = 200, account_prefix: str = "animawar",
                         prey: str = "Ettin", prey_target: int = 2, spacing: int = 25,
@@ -3387,19 +3420,20 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             except Exception:  # noqa: BLE001 — never let this raise into the GM loop
                 return False
 
+        unpinned = [0, 0]  # [lost (no serial), deleted (would not pin)]
         def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
-            # Every GM call costs a full pump (~pump_ms) on the ONE shared control
-            # connection, and the single-threaded shard serves that connection in the same
-            # loop as the warriors' own. `retries=1` is the big win here: the creature was
-            # just `[Add`-ed at a known tile, so one observation finds it — the default 3
-            # retries tripled this helper's cost (~2s -> ~0.8s) and, multiplied by warriors
-            # x prey, was what starved the warrior bridges at 3+ warriors.
-            gm.command_at(f"[Add {prey}", px + dx, py + dy, pz)
-            mob = gm.find_mobile_near(px + dx, py + dy, retries=1,
-                                      exclude={w["life"].hunt_agent.body.ready["player"]["serial"]
-                                               for w in warriors})
-            if mob is not None:
-                gm.command_on("[Set CantWalk true", mob.serial)
+            # `retries=2`, not the old 1: every GM call costs a pump on the ONE shared
+            # control connection and the shard serves it in the same loop the warriors
+            # play in, so this used to be cut to a single observation for throughput.
+            # A miss is not free, though — it leaves a chaser that ruins every retreat
+            # for the rest of the run, which costs far more than one extra pump.
+            outcome = stage_pinned_prey(
+                gm, prey, px + dx, py + dy, pz,
+                exclude={w["life"].hunt_agent.body.ready["player"]["serial"]
+                         for w in warriors})
+            if outcome != "pinned":
+                unpinned[0 if outcome == "lost" else 1] += 1
+
         # GM-work BUDGET per monitor cycle. The control connection is shared and every GM
         # call costs a pump on the same single-threaded shard the warriors are playing on,
         # so unbounded per-warrior restocking scales GM traffic linearly with the roster
@@ -3471,7 +3505,10 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         except Exception:  # noqa: BLE001
             pass
     total_kills = sum(w["life"].kills for w in warriors)
-    print(f"\nthe day's hunt is done. total kills across the village: {total_kills}")
+    # PRINTED EVEN WHEN ZERO, which is the whole point: a roaming Ettin is invisible on
+    # every other field, and "no line" and "nothing went wrong" have to be distinguishable.
+    print(f"\nthe day's hunt is done. total kills across the village: {total_kills}"
+          f"  (prey: {unpinned[0]} lost, {unpinned[1]} deleted for not pinning)")
 
 
 class _ChainPriorityClient:
