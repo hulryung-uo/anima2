@@ -47,6 +47,45 @@ ruff clean. Highlights that matter for resuming:
   `docs/SWORD-WARRIOR.md`, `docs/MAGE-AND-PIPELINE.md`, `docs/WOODSMAN.md`,
   `docs/CARPENTER.md`, `docs/MONITORING.md`.
 
+## The sword-warrior runs a full day (2026-08-24)
+
+`python -m anima2.village --warriors 1 --ticks 1200` now **ends alive and banks**. For
+SIXTEEN live days it ended in a corpse with `banked=0` every time. The working day:
+`banked=325`, `landed=2/2` (both `bank_gold` frames achieved in ~10 ticks of a 120-tick
+budget), 4 kills, `out+651.0`, `deaths=0`, `hp=81/150` at BUDGET SPENT,
+`prey: 0 lost, 0 deleted`. Tape `~/anima-logs/warrior-20260824-0356-reach.log`;
+five defects and the evidence for each in `docs/AUDIT-2026-07-29.md` §54–§58 and
+`docs/SWORD-WARRIOR.md`.
+
+Two of those are worth knowing before touching anything else:
+
+- **`decide_mode` now answers `("hunt", None)` below `WarriorSurvive.heal_below_fraction`.**
+  `gold > bank_reserve` reads the same at 26% HP in melee as at full health, so the rule
+  kept sending a bleeding warrior to the bank; it died at hp 39→1 over ninety ticks with
+  103 unused bandages. This one branch produced the first day ending alive (six sawtooth
+  recoveries). An override making survival beat the exit-edge hold was written and
+  **reverted** — it reddened the live-proven bound-3 gate, whose mechanism is wounding
+  below that same trigger (§57.2).
+- **`uomap.walkable_run` places the village's shops.** They were staged at a flat ±12 and
+  `HUNTING_SPOT` is a z=15 plateau ringed by cliffs — ServUO allows a `+2` land step
+  (`Movement.cs`) and the banker sat 54 z up behind a `+10`. That ONE fact explained three
+  separately-tracked blockers: `banked=0`, no vendor purchase ever, and `BACK ALIVE=0`
+  (the resurrection healer was behind the same wall — a bug in THIS repo, which §53.5 had
+  blamed on the sibling repo without evidence). Descent is uncapped in ServUO, so the
+  bound is applied BOTH ways: a shop down a cliff is a one-way trip.
+
+**Still open on the warrior:** `BACK ALIVE` is 0 because it stopped dying, so the ghost
+walk is diagnosed-and-untested; no vendor PURCHASE has run inside a village day; and
+`NO PROGRESS` false-fires ~13×/day on a healthy warrior (kills are ~200 ticks apart from
+one tile — `act=` distinguishes it, the 40-tick threshold does not fit this profession).
+
+New readout fields this week, all on the per-agent line: `foes=` (nearest three hostile
+distances — oscillation around a stationary warrior is how §55 caught unpinned prey),
+`ui=` (open cursor/gumps), `res=` (the resurrection target and its distance), and
+`act=<Action>x<run>` (what the ticked agent actually emitted, and for how long — `steps`
+counts only `Walk`, `eps`/`out+` only rewarded terminals, so a hundred-tick freeze was
+invisible to all of them).
+
 ## Two roadmaps, one decision
 
 `docs/PHASE7.md` item 2 names a `--genomes 20` evolution-vs-random rerun as next. The
