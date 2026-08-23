@@ -639,3 +639,47 @@ def test_the_warrior_pocket_is_walled_in_and_the_map_says_so():
         f"vendor distances: {runs}")
     assert all(n >= _VENDOR_MIN_GAP for n in runs.values()), (
         f"a leg is now unusably short and the runner must say so loudly: {runs}")
+
+
+def test_a_warrior_between_the_heal_thresholds_still_gets_something_to_fight():
+    """The restock gate asked how FULL the warrior was; it has to ask whether the heal
+    reflex currently owns him.
+
+    `WarriorSurvive` enters the heal window below `heal_below_fraction` (0.40) and heals
+    to `heal_until_fraction` (0.75). Gating the top-up on 0.75 therefore starves a warrior
+    anywhere in between — not healing, perfectly able to fight, and fed nothing. Measured
+    2026-08-24 (audit §60): after clearing its pocket at hp=96/150 (64%) the warrior had
+    no hostile inside `engage_range` and spent the rest of the day in `skill=wander`,
+    drifting to `foes=d17`.
+    """
+    from anima2.contract import ItemView, Observation, PlayerView, Position
+    from anima2.skills.warrior import SWORD_GRAPHICS, WEAPON_LAYER, WarriorSurvive
+    from anima2.village import ready_to_fight
+
+    me = 0x1
+    blade = ItemView(serial=0x900, graphic=sorted(SWORD_GRAPHICS)[0], amount=1,
+                     pos=Position(), container=me, layer=WEAPON_LAYER, distance=0)
+
+    class _Life:
+        def __init__(self, healing=False):
+            self.hunt_agent = type("A", (), {
+                "memory": {WarriorSurvive._HEAL_LATCH: True} if healing else {}})()
+
+    def _obs(hits, *, items=(blade,), dead=False):
+        return Observation(player=PlayerView(serial=me, pos=Position(), hits=hits,
+                                             hits_max=150, dead=dead),
+                           items=list(items))
+
+    lo, hi = WarriorSurvive.heal_below_fraction, WarriorSurvive.heal_until_fraction
+    between = int(150 * (lo + hi) / 2)
+    assert lo < between / 150 < hi, "the fixture must sit BETWEEN the two thresholds"
+    assert ready_to_fight(_Life(), _obs(between)), \
+        "not healing and armed — feed him"
+    assert not ready_to_fight(_Life(healing=True), _obs(between)), \
+        "the reflex owns him; top-up beside his live tile makes retreat futile"
+
+    # The clauses that were already right must stay right.
+    assert not ready_to_fight(_Life(), _obs(150, items=())), "unarmed is not ready"
+    assert not ready_to_fight(_Life(), _obs(150, dead=True)), "a corpse is not ready"
+    assert not ready_to_fight(_Life(), None), "unknown reads as NOT ready"
+    assert not ready_to_fight(object(), _obs(150)), "and it never raises into the GM loop"

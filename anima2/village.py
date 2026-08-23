@@ -3163,6 +3163,58 @@ def warrior_readout(life, obs) -> str:
         return " blade=?"
 
 
+def ready_to_fight(life, o) -> bool:
+    """Is this warrior dressed enough to be given something to fight?
+
+    The prey used to be staged before the warrior could equip anything, and all
+    three live days of 2026-08-24 ended with a dead warrior that had never swung
+    (`kills=0`), because `gm.stage` puts the suit in the PACK and only an agent
+    tick can move it onto the body. Restocking has to answer the same question
+    staging got wrong, or it simply re-creates the bug a few seconds later.
+
+    The bar is the blade, not the full suit: `EquipWeapon` finishes first by the
+    reflex ordering, a warrior that is armed can actually fight back, and waiting
+    for all six plate pieces would stall the hunt on a layer the server may keep
+    refusing — which `EquipArmor` is explicitly built to abandon after
+    `_MAX_EQUIP_TRIES`. Requiring the suit would hand that abandoned layer a veto
+    over the whole day.
+
+    Unknown reads as NOT ready: a warrior we cannot see is one we must not feed
+    to an Ettin, and the cost of being wrong is one cycle of delay.
+    """
+    try:
+        from .skills.warrior import SWORD_GRAPHICS, WEAPON_LAYER, WarriorSurvive
+        if o is None or o.player.dead:
+            return False
+        me = o.player.serial
+        armed = any(i.container == me and i.layer == WEAPON_LAYER
+                    and i.graphic in SWORD_GRAPHICS for i in o.items)
+        if not armed:
+            return False
+        # AND NOT ALREADY LOSING ONE. Top-up spawns beside the warrior's LIVE
+        # position, so without this clause retreating is futile by construction:
+        # the reflex steps out of melee and two fresh full-HP creatures appear at
+        # its new tile. Measured 2026-08-24 — after `WarriorSurvive` was allowed
+        # to flee at two attackers the warrior died FASTER (t=461 -> t=217) and
+        # never moved a tile, because there was nowhere to disengage to.
+        #
+        # ASK WHETHER IT IS HEALING, NOT HOW FULL IT IS. The bar used to be
+        # `heal_until_fraction` (0.75), but `Survive` only ENTERS the heal window below
+        # `heal_below_fraction` (0.40) — so a warrior between the two, not healing and
+        # perfectly able to fight, was fed nothing. Measured 2026-08-24 (audit §60):
+        # after clearing its pocket at hp=96/150 (64%) the warrior got no top-up, had no
+        # hostile inside `engage_range`, and spent the rest of the day in `skill=wander`,
+        # drifting to `foes=d17`.
+        #
+        # `Survive`'s own latch is the exact fact wanted — set on entering the heal
+        # window, cleared on reaching the ceiling — so the harness stops feeding
+        # precisely while the reflex owns the character, which is what the old comment
+        # claimed and the fraction could not deliver.
+        return not life.hunt_agent.memory.get(WarriorSurvive._HEAL_LATCH)
+    except Exception:  # noqa: BLE001 — never let this raise into the GM loop
+        return False
+
+
 #: How far a warrior-village shop is placed from the hunting pocket, and the floor under
 #: which that leg is reported as impossible rather than merely tight. 12 was the old fixed
 #: figure; 3 is one tile outside the ring the prey is pinned on.
@@ -3384,7 +3436,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # allowed to play. `kills=0` on all three.
             #
             # The monitor loop below already tops prey up to `prey_target`, and it now
-            # waits for the warrior to be dressed (see `_ready_to_fight`), so the pocket
+            # waits for the warrior to be dressed (see `ready_to_fight`), so the pocket
             # fills as soon as the suit is on and not one tick sooner. Deleting the spawn
             # here costs nothing but the first few seconds of a hunt.
             routes = {"weapon_vendor_spot": [(wx, gy)],
@@ -3452,52 +3504,6 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         # Bounded: replace each confirmed kill, top up only when idle — no swarm.
         adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
-        def _ready_to_fight(life, o) -> bool:
-            """Is this warrior dressed enough to be given something to fight?
-
-            The prey used to be staged before the warrior could equip anything, and all
-            three live days of 2026-08-24 ended with a dead warrior that had never swung
-            (`kills=0`), because `gm.stage` puts the suit in the PACK and only an agent
-            tick can move it onto the body. Restocking has to answer the same question
-            staging got wrong, or it simply re-creates the bug a few seconds later.
-
-            The bar is the blade, not the full suit: `EquipWeapon` finishes first by the
-            reflex ordering, a warrior that is armed can actually fight back, and waiting
-            for all six plate pieces would stall the hunt on a layer the server may keep
-            refusing — which `EquipArmor` is explicitly built to abandon after
-            `_MAX_EQUIP_TRIES`. Requiring the suit would hand that abandoned layer a veto
-            over the whole day.
-
-            Unknown reads as NOT ready: a warrior we cannot see is one we must not feed
-            to an Ettin, and the cost of being wrong is one cycle of delay.
-            """
-            try:
-                from .skills.warrior import SWORD_GRAPHICS, WEAPON_LAYER, WarriorSurvive
-                if o is None or o.player.dead:
-                    return False
-                me = o.player.serial
-                armed = any(i.container == me and i.layer == WEAPON_LAYER
-                            and i.graphic in SWORD_GRAPHICS for i in o.items)
-                if not armed:
-                    return False
-                # AND NOT ALREADY LOSING ONE. Top-up spawns beside the warrior's LIVE
-                # position, so without this clause retreating is futile by construction:
-                # the reflex steps out of melee and two fresh full-HP creatures appear at
-                # its new tile. Measured 2026-08-24 — after `WarriorSurvive` was allowed
-                # to flee at two attackers the warrior died FASTER (t=461 -> t=217) and
-                # never moved a tile, because there was nowhere to disengage to.
-                #
-                # A wounded fighter needs the same thing an unarmed one does: to be left
-                # alone until it is fit. The bar is `heal_until_fraction`, the margin the
-                # warrior's own reflex is trying to reach, so the harness stops feeding it
-                # exactly while it is healing and resumes the moment it is ready — the
-                # hunt<->recover loop this village exists to exercise, instead of an
-                # endless two-on-one no brain can win.
-                hits_max = max(1, o.player.hits_max)
-                return o.player.hits / hits_max >= WarriorSurvive.heal_until_fraction
-            except Exception:  # noqa: BLE001 — never let this raise into the GM loop
-                return False
-
         unpinned = [0, 0]  # [lost (no serial), deleted (would not pin)]
         def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
             # `retries=2`, not the old 1: every GM call costs a pump on the ONE shared
@@ -3540,10 +3546,10 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                 lo = w["life"].body.last_obs
                 if lo is None or lo.player.dead:
                     continue
-                # Dressed first, THEN something to fight — see `_ready_to_fight`. This is
+                # Dressed first, THEN something to fight — see `ready_to_fight`. This is
                 # the same question staging got wrong, and skipping it here would just
                 # re-create the bug a few seconds later.
-                if not _ready_to_fight(w["life"], lo):
+                if not ready_to_fight(w["life"], lo):
                     continue
                 px, py, pz = lo.player.pos.x, lo.player.pos.y, lo.player.pos.z
                 w["last_kills"] = w["life"].kills
