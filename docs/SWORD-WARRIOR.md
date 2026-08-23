@@ -289,3 +289,57 @@ robustness cliff plus one shipped improvement. Full write-up:
   offline gates pin the logic, but an end-to-end orchestrated purchase can need a rerun.
 - **Next (not built).** Replacing the other five plate pieces, chasing the intermittent
   vendor-buy stall, and a second shard port if a bigger roster is ever wanted.
+
+## The autonomous village day (2026-08-24)
+
+Everything above was proved by purpose-built scripts staging one situation each. The
+question this section answers is different: does `python -m anima2.village --warriors 1
+--ticks 1200` — an unattended `WarriorLife` on its own orchestrator — survive a day and
+earn?
+
+For sixteen live days the answer was no. Every single one ended in a corpse, with
+`banked=0`. It now ends alive, and banks. Five defects stood between those two sentences,
+and each is written up where the evidence is — `docs/AUDIT-2026-07-29.md` §54–§58:
+
+1. **The retreat walked into a body** (§54). `_away_direction` committed NORTH when the
+   hostiles cancelled out, and north is one of the four tiles the village pins prey on. It
+   now fans out past occupied tiles. First run that moved: 14 tiles, and the first HP
+   recovery under fire.
+2. **`flee_hostile_count` was stock 3** (§54) with `prey_target = 2`, so the warrior never
+   disengaged — and ServUO *slips* rather than interrupts a bandage
+   (`toHeal -= toHeal * slips * 0.35`, `disruptThreshold = 0` off AOS), so a heal in melee
+   converges to nothing. Now 1: with a slipping bandage, one attacker is already too many.
+3. **The prey was never actually pinned** (§55). `[Set CantWalk true` was sent and never
+   read back; a missed lookup left a roaming Ettin behind, silently, every monitor cycle.
+   `stage_pinned_prey` reads the pin back and deletes what will not take it.
+4. **The rule sent a bleeding warrior to the bank** (§56). `gold > bank_reserve` reads the
+   same at 26% HP in melee as at full health. `decide_mode` now answers `("hunt", None)`
+   below `WarriorSurvive.heal_below_fraction`. **This is the single change that produced
+   the first day ending alive** — six sawtooth recoveries across 1200 ticks.
+5. **Every shop was on the far side of a cliff** (§58). The four vendors were staged at a
+   flat ±12 and `HUNTING_SPOT` is a z=15 plateau ringed by cliffs: the banker sat 54 z up
+   behind a `+10` step, and ServUO allows `+2`. One cause under three separate-looking
+   blockers — `banked=0`, no vendor purchase ever, and `BACK ALIVE=0` (the resurrection
+   healer was behind the same wall). `uomap.walkable_run` now places each shop at the last
+   round-trip-walkable tile.
+
+**The day that works** (`~/anima-logs/warrior-20260824-0356-reach.log`):
+
+```
+vendor gaps (walkable, max 12): weapon=3 healer=6 banker=5 armorer=5
+FRAME RETIRED bank_gold#1 age=10/120 -> achieved
+banked=325  landed=2/2  kills=4  out+651.0  deaths=0  hp=81/150 at BUDGET SPENT
+prey: 0 lost, 0 deleted for not pinning
+```
+
+### What this still does not show
+
+- **`BACK ALIVE` is still 0** — because the warrior stopped dying. The resurrection route
+  is now pointed at a reachable healer (`res=(2581,408)@d5`) and untested.
+- **No vendor PURCHASE has run in a village day.** `buy_bandage`/`buy_weapon`/`buy_armor`
+  are proved only by the single-situation scripts above; the village never reached a shop
+  before §58, so their live orchestrated path is unexercised here.
+- **`NO PROGRESS` fires ~13 times a day on a healthy warrior.** Kills are ~200 ticks apart
+  and the fight happens from one tile, so reward/steps/speech/position all freeze between
+  them. `act=Attackx21` distinguishes it now; the 40-tick threshold does not fit this
+  profession.
