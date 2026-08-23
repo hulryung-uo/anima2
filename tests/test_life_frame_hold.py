@@ -1088,3 +1088,70 @@ def test_the_walk_readout_renders_the_age_8_giveup_signature():
     assert len(rets) >= 3, rets
     assert {(cap, age, budget, why) for _id, cap, age, budget, why in rets} == {
         ("sell_furniture", 8, 180, "giveup")}, rets
+
+
+def test_a_warrior_being_killed_does_not_keep_holding_a_transaction():
+    """The exit-edge hold exists to finish a transaction the rule stopped wanting. It
+    must not finish one over the warrior's corpse.
+
+    Measured 2026-08-24 (audit §61.11): `want=None admitted=bank_gold@84/120+hold`,
+    `foes=d1,d1,d1`, `hp=31/150`, `act=nonex68`. §56 had just taught `decide_mode` to stop
+    answering `bank_gold` below the heal trigger, and the hold put the warrior straight
+    back into economy mode — which is precisely what the hold is for. Only the frame's own
+    120-tick deadline saved him, which is luck with a bound, not a design.
+    """
+    from anima2.contract import MobileView
+
+    body, life = _starved_fsm_life()
+    frame = _run_to_admission(life)
+    assert frame is not None
+    body.items.pop(GOLD)          # the rule stops wanting the economy: the hold is what
+    for _ in range(3):            # would otherwise keep the mode
+        life.tick()
+    assert life.holding_frame is True, "with nothing wrong, the hold is the right answer"
+
+    # WOUNDED, BUT NOBODY IS ATTACKING. Still held — a character nobody can reach is not
+    # dying however low the bar reads, and the live-proven bound-3 gate is exactly this
+    # state (a tinker wounded by GM fiat at a forge, with no hostile anywhere).
+    body.player.hits = 1
+    life.tick()
+    assert life.holding_frame is True, (
+        "a wound with no attacker must not release the hold — that reading reddens the "
+        "bound-3 gate, whose whole mechanism is a wounded character with no hostiles")
+
+    # ...and now something is on him.
+    body.mobiles = {0xA1: MobileView(serial=0xA1, name="Ettin", pos=Position(5, 6, 0),
+                                     body=1, notoriety=6, hits=100, hits_max=100,
+                                     distance=1)}
+    life.tick()
+    assert life.holding_frame is False, "being killed outranks finishing an errand"
+
+    # The frame is not cancelled — nobody ticks it, and it resumes when the danger does.
+    assert life.econ_agent.goal_stack.current is not None
+
+    # A HOSTILE ALONE IS NOT ENOUGH. A healthy warrior standing next to an Ettin is
+    # working, not dying, and the errand should still finish.
+    body.player.hits = body.player.hits_max
+    life.tick()
+    assert life.holding_frame is True, "full health with an attacker is a fight, not a death"
+
+    # NOR IS A WOUND ALONE, and nor is one with the attacker out of reach: the scan range
+    # is the survival reflex's own, and something it cannot see is not killing it.
+    body.player.hits = 1
+    body.mobiles[0xA1].distance = 99
+    body.mobiles[0xA1].pos = Position(200, 200, 0)
+    life.tick()
+    assert life.holding_frame is True, "an attacker beyond the scan range is not a threat"
+
+    # NO READING IS NOT A WOUND — every observation carries `hits_max = 0` before the
+    # shard's first status packet, and a hold must not drop on that.
+    body.mobiles[0xA1].distance = 1
+    body.mobiles[0xA1].pos = Position(5, 6, 0)
+    body.player.hits, body.player.hits_max = 0, 0
+    life.tick()
+    assert life.holding_frame is True, "hits_max 0 is an absent reading, not a dying warrior"
+
+    body.player.hits, body.player.hits_max = 80, 80
+    body.mobiles = {}
+    life.tick()
+    assert life.holding_frame is True, "the hold comes back once the danger is gone"

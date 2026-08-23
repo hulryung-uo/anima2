@@ -39,6 +39,7 @@ from .persona import Persona
 from .profession import PROFESSIONS
 from .skills.market import _bank_reserve, vendor_dry
 from .skills.hunt import GOLD_GRAPHIC
+from .skills.combat import is_hostile
 from .skills.warrior import (
     BANDAGE_GRAPHICS,
     PLATE_ARMOR_LAYERS,
@@ -653,6 +654,7 @@ class WarriorLife:
         repaired = self.frame_overdue and self._repair_overdue_frame(obs, frame)
         holding = (mode != "economy" and frame is not None
                    and not self._death_episode_open(obs)
+                   and not self._being_killed(obs)
                    and (not self.frame_overdue or repaired))
         if holding:
             mode = "economy"
@@ -678,6 +680,36 @@ class WarriorLife:
             self.candidates = []
         self._detect_disagreement(obs)
         return action
+
+    def _being_killed(self, obs) -> bool:
+        """Wounded past the survival trigger AND something is in reach to finish the job.
+
+        DEATH ALREADY OVERRIDES THE HOLD; this is the same rule one step earlier, and
+        2026-08-24 is why it has to be. `decide_mode` had just been taught to stop wanting
+        an errand below the heal trigger (§56) — and the hold put the warrior straight
+        back into economy mode, because that is exactly what the hold is for. The tape
+        reads `want=None admitted=bank_gold@84/120+hold`, `foes=d1,d1,d1`, `hp=31/150`,
+        `act=nonex68`. Finishing a transaction cannot outrank not dying, and a hold that
+        survives the rule's own survival branch makes that branch unreachable in the one
+        situation it was written for.
+
+        BOTH HALVES MATTER. An earlier version tested only the wound and was reverted
+        (§57.2): it reddened the live-proven bound-3 gate, whose whole mechanism is
+        wounding a tinker below the trigger by GM fiat to starve its capability FSM — with
+        no hostile anywhere. A character nobody is attacking is not dying, however low the
+        bar reads, and the hold is still the right answer for it.
+
+        Thresholds come from the survival reflex the profession installs, so the rule and
+        the reflex cannot drift. `hits_max == 0` is no reading, not a wound.
+        """
+        hits_max = obs.player.hits_max
+        survive = self.hunt_agent.planner.skills[0]
+        below = getattr(survive, "heal_below_fraction", 0.0)
+        reach = getattr(survive, "hostile_scan_range", 0)
+        if not (hits_max > 0 and obs.player.hits / hits_max < below):
+            return False
+        return any(m.serial != obs.player.serial and m.distance <= reach and is_hostile(m)
+                   for m in obs.mobiles)
 
     def _death_episode_open(self, obs) -> bool:
         """Is a death still being recovered from — ghost window OR corpse run?
