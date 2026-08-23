@@ -3551,15 +3551,30 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
                 # re-create the bug a few seconds later.
                 if not ready_to_fight(w["life"], lo):
                     continue
-                px, py, pz = lo.player.pos.x, lo.player.pos.y, lo.player.pos.z
+                # SPAWN AT THE STAND, NOT AT THE WARRIOR. Top-up used to arrive beside
+                # the warrior's LIVE tile, so it followed him wherever he went — and once
+                # `Combat` learned to close on a target (§59), the pair became a random
+                # walk: chase the creature that appeared two tiles away, get another one
+                # beside the new tile, repeat. Measured 2026-08-24 (§61): the warrior
+                # ended up at `@(2581,403)`, seven tiles off its stand, and 8 of 10
+                # `bank_gold` frames gave up because every trip now started from a
+                # different place than the route was built for.
+                #
+                # The pocket is the stand. Prey belongs in it, the shops are placed
+                # relative to it (§58), and the bank route leaves from it. The approach
+                # step is exactly what makes this safe: a warrior can now WALK to a
+                # creature inside `engage_range`, which is why the spawner no longer has
+                # to put one under his feet.
+                sx, sy = w["spot"][0], w["spot"][1]
+                px, py, pz = sx, sy, lo.player.pos.z
                 w["last_kills"] = w["life"].kills
-                # PRESENCE-based top-up (not a timer): count the live hostiles actually
-                # near THIS warrior and refill toward `prey_target`. A pinned creature can
-                # still end up out of reach if the warrior drifts, and a kill removes one
-                # — this keeps fightable creatures on top of the warrior, and spawns
-                # nothing when the pocket is stocked.
+                # PRESENCE-based top-up (not a timer): count the live hostiles in the
+                # POCKET and refill toward `prey_target`. Counting near the warrior
+                # instead would refill the moment he stepped away from perfectly good
+                # prey — and then he would have both.
                 near = sum(1 for m in lo.mobiles
-                           if m.serial != lo.player.serial and m.hits > 0 and m.distance <= 3)
+                           if m.serial != lo.player.serial and m.hits > 0
+                           and max(abs(m.pos.x - sx), abs(m.pos.y - sy)) <= 3)
                 for k in range(min(budget, max(0, prey_target - near))):
                     dx, dy = adj[k % len(adj)]
                     _spawn_pinned(px, py, pz, dx, dy)
