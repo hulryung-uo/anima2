@@ -296,6 +296,71 @@ def test_grove_spot_pool_skips_home_and_stops_at_the_cap():
     assert (100, 100) not in {s for s, _ in capped}
 
 
+#: The real Yew survey, `find_tree_clusters(0, 560, 1080)`, in the richest-first order it
+#: returns — its first 14 stands after the home grove `(518, 1042)`, with their real tree
+#: counts and their real chebyshev distance from home. Not a sketch: `grove_spot_pool`'s
+#: whole job is to pick an ITINERARY out of this list, and the §51.2 tape paid the 51-tile
+#: first hop that row 0 of it costs.
+_YEW_HOME = (518, 1042)
+_YEW_SURVEY_RICHEST_FIRST = [
+    ((517, 1093), 5), ((610, 1050), 5), ((523, 1087), 4), ((535, 1037), 4),
+    ((574, 1037), 4), ((604, 1056), 4), ((541, 1031), 4), ((554, 1031), 4),
+    ((580, 1031), 4), ((506, 1025), 4), ((560, 1025), 4), ((524, 1039), 3),
+    ((512, 1045), 3), ((556, 1078), 2),
+]
+
+
+def _yew_groves():
+    """`find_tree_clusters` output shape for the survey above, home grove included."""
+    from anima2.uomap import Static
+
+    def grove(spot, n):
+        # Trees sit within harvest reach 2 of the stand; the exact tiles do not matter
+        # here, only that each grove carries the number of trees the survey found.
+        return (spot, [Static(spot[0] + i - 1, spot[1] - 1, 0, 0xCCA) for i in range(n)])
+
+    return [grove(_YEW_HOME, 5)] + [grove(s, n) for s, n in _YEW_SURVEY_RICHEST_FIRST]
+
+
+def test_grove_pool_hops_to_the_nearest_grove_not_the_richest():
+    """woodsman-20260822-1225 walked 51 tiles on its first hop; 17 was in the pool.
+
+    Audit §51.3: "`grove_spot_pool` is richest-first, so the first hop was 51 tiles
+    (pool[3] is 17)." The pool is consumed head-first as a relocation itinerary
+    (`Harvest._begin_relocate` does `pool.pop(0)`), so its order IS the walk the day
+    pays — and the walk is greedy with a stall give-up, so a longer hop is also more
+    likely to wedge. `find_mine_spots` already orders its stands this way for the
+    miner ("Nearest-first from (cx, cy), so a relocation hop is as short as the
+    terrain allows"); this is the same rule reaching the lumber side.
+    """
+    from anima2.village import grove_spot_pool
+
+    def d(spot):
+        return max(abs(spot[0] - _YEW_HOME[0]), abs(spot[1] - _YEW_HOME[1]))
+
+    pool = grove_spot_pool(_yew_groves(), _YEW_HOME)
+    spots = [s for s, _ in pool]
+
+    # The hop the tape actually paid, and the one it should have paid.
+    assert d((517, 1093)) == 51 and d((524, 1039)) == 6  # the fixture reaches the case
+    assert spots[0] == (524, 1039)
+
+    # The whole itinerary is non-decreasing in distance, not just its head.
+    assert [d(s) for s in spots] == sorted(d(s) for s in spots)
+
+    # Ties keep the OLD key: `sorted` is stable, so among equidistant groves the
+    # richest still leads. (524, 1039) and (512, 1045) are both 6 tiles out and both
+    # carry 3 trees, ahead of no equidistant rival — but the rule is what is pinned.
+    assert spots[:2] == [(524, 1039), (512, 1045)]
+
+    # The cap now spends its 12 slots on near groves. (610, 1050) is the richest grove
+    # in the survey after home — five trees — and 92 tiles away; it is exactly what a
+    # relocation itinerary should not be buying, and richest-first put it at index 1.
+    assert (610, 1050) not in spots
+    assert (604, 1056) not in spots  # the other >60-tile stand the cap now drops
+    assert (512, 1045) in spots      # 3 trees at 6 tiles, which richest-first cut
+
+
 def test_harvest_aim_readout_splits_a_stale_grove_from_a_silent_new_one():
     """woodsman-20260822-1225: after `reloc=(517, 1093)` the tape cannot tell
     whether Chop still aimed at the home trees. `d=` is that split."""

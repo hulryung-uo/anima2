@@ -261,3 +261,62 @@ def test_a_missing_axe_still_outranks_supplying_anyone():
     obs = _obs([_backpack(), _item(0x901, BOARD_GRAPHIC, DELIVER_BOARDS_AT),
                 _item(0x902, GOLD_GRAPHIC, 1000)])
     assert decide_mode(obs, routes) == ("economy", "buy_hatchet")
+
+
+# --- the leftover quantum -----------------------------------------------------------
+#
+# `SELL_BOARDS_AT` used to be 20 with the reason "a full sell batch of boards (free
+# input, so a generous threshold is fine)" — a round number, the same shape as the
+# `BANK_ABOVE = 300` mistake this file already records. It is off-grid by exactly one
+# quantum: `LOGS_PER_HARVEST` (ServUO `ConsumedPerHarvest`) is 10, boards are 1:1 with
+# logs, and the LAST harvest action of every 20..45-log bank yields exactly 10 — so a
+# grove going dry always hands over a 10-stack, and a threshold of 20 strands it.
+#
+# Measured: `.logs/woodsman-20260818-1941` and `-20260822-1225` both ended
+# `logs=0 boards=10` and never sold, holding that stack for 51/67 and 47/69 status
+# samples respectively.
+
+def test_the_last_chop_of_a_dry_grove_is_still_worth_a_trip():
+    from anima2.skills.woodwork import LOGS_PER_HARVEST
+
+    obs = _obs([_backpack(), _axe(), _item(0x901, BOARD_GRAPHIC, LOGS_PER_HARVEST)])
+    assert decide_mode(obs, dict(ROUTES)) == ("economy", "sell_boards")
+
+
+def test_a_leftover_quantum_goes_to_the_shop_even_when_a_partner_is_configured():
+    # The interaction the threshold change buys, pinned rather than left implicit:
+    # `deliver_boards` outranks selling but needs 19, so a 10-stack that a partnered
+    # woodsman used to CARRY into the next delivery is now sold to the vendor instead.
+    # Worked example on a 60-log bank (chops of 20, 20, 10, 10): 60 boards delivered
+    # before, 40 delivered + 20 sold after.
+    from anima2.skills.woodwork import LOGS_PER_HARVEST
+
+    routes = {**ROUTES, "carpenter_drop": ((12, 12),)}
+    obs = _obs([_backpack(), _axe(), _item(0x901, BOARD_GRAPHIC, LOGS_PER_HARVEST)])
+    assert decide_mode(obs, routes) == ("economy", "sell_boards")
+
+
+def test_admission_moves_with_the_threshold_rather_than_with_a_literal():
+    """Rule and gate read ONE number — driven at the edge, not restated as `20`.
+
+    The gate is `capabilities._make_sell_ready(..., SellBoards.sell_threshold, ...)`,
+    built at import from the same attribute `SELL_BOARDS_AT` aliases. Asserting the
+    literal would pass a rule-side-only threshold change straight through (the exact
+    probe `test_life_gate_concordance` documents), so this drives
+    `ready_capability_ids` at T-1 and T and asks both sides the same question.
+    """
+    from anima2.capabilities import ready_capability_ids
+    from anima2.skills.base import SkillContext
+
+    def ask(boards):
+        obs = _obs([_backpack(), _axe(), _item(0x901, BOARD_GRAPHIC, boards)])
+        ctx = SkillContext(obs=obs, persona=Persona(name="Bjorn"), memory=dict(ROUTES))
+        return decide_mode(obs, dict(ROUTES)), ready_capability_ids("lumberjack", ctx)
+
+    (below_mode, below_ready) = ask(SELL_BOARDS_AT - 1)
+    assert below_mode != ("economy", "sell_boards")
+    assert "sell_boards" not in below_ready
+
+    (at_mode, at_ready) = ask(SELL_BOARDS_AT)
+    assert at_mode == ("economy", "sell_boards")
+    assert "sell_boards" in at_ready

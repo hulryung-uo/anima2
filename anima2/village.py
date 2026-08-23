@@ -138,15 +138,57 @@ YEW_FOREST = (560, 1080)
 
 def grove_spot_pool(groves, home: tuple[int, int], *,
                     limit: int = GROVE_POOL_SPOTS):
-    """Surveyed groves other than `home`, in `find_tree_clusters` order.
+    """Surveyed groves other than `home`, NEAREST-FIRST from `home`.
 
     Shape matches `harvest_spot_pool`: `[((stand_x, stand_y), [(x,y,z,graphic), …]), …]`.
     The home grove is already in `harvest_nodes`; putting it in the pool would hop
     back to the bank that just confessed empty.
+
+    Nearest-first rather than `find_tree_clusters`' richest-first, because this list is
+    not a ranking — `Harvest._begin_relocate` does `pool.pop(0)`, so the order IS the
+    walk the day pays. The miner's pool already says why in `find_mine_spots`' own
+    docstring ("Nearest-first from (cx, cy), so a relocation hop is as short as the
+    terrain allows"); this is that rule reaching the lumber side. Chebyshev, not the
+    miner's BFS depth: UO movement is 8-directional, so on open ground chebyshev IS the
+    path length, and the BFS only earns its cost against a mountain face that blocks —
+    a forest has no comparable wall, and `find_tree_clusters` deliberately proves no
+    walkability at all (docs/WOODSMAN.md). The walk's own stall-giveup stays the net.
+
+    Named fact (audit §51.3, tape `.logs/woodsman-20260822-1225`): the first hop left
+    `(518, 1042)` for `(517, 1093)` — 51 tiles, t=243 to t=326, **83 ticks of a
+    600-tick day** — while a 17-tile grove sat at `pool[3]` and a 6-tile one was cut by
+    the cap. A long hop is not only slow: the relocation walk is greedy with a stall
+    give-up, and forge12 burned a whole pool wedging on hops it could not finish.
+
+    The trade-off, measured on the real survey this runner uses
+    (`find_tree_clusters(0, *YEW_FOREST)`, 138 groves, home `(518, 1042)`), because
+    richest-first was chosen for a reason and the reason deserves numbers:
+
+    * Trees in the 12-slot pool fall 49 -> 26. That is the wrong denominator, though:
+      ServUO lumber banks are 4x3 and a grove is trees within reach 2 of one stand, so
+      several of a rich grove's trees share one bank and one 20-45 log pool. **Distinct
+      banks fall only 32 -> 25.** Richest-first spends 23 extra trees to buy 7 extra
+      banks (1.53 trees/bank against 1.04).
+    * The itinerary shortens 616 -> 170 tiles and the first hop 51 -> 6. Per walk tile
+      the pool delivers 0.052 banks richest-first and 0.149 nearest-first — 2.9x. At the
+      tape's measured 1.63 ticks/tile the richest-first itinerary is 1003 ticks of pure
+      walking, 167% of a 600-tick day; nearest-first is 273.
+    * The shops are staged AT the home stand, so mean distance from home is also the
+      sell trip: 44.4 tiles -> 9.9, i.e. a `sell_boards` round trip drops from ~145
+      ticks to ~32. This is the half that decides it, and it is why the tempting
+      middle option — keep richest-first's twelve members and merely re-sort them by
+      distance (49 trees, 32 banks, 240-tile itinerary) — is measured and NOT taken:
+      re-ordering cannot move mean d(home) off 44.4, so every sell trip still pays the
+      full 145 ticks, and a cap keyed on richness while the order is keyed on distance
+      admits stands the order can only defer.
+
+    Ties cost nothing to settle: `sorted` is stable, so equidistant groves keep
+    `find_tree_clusters`' richest-first order.
     """
     hx, hy = home
     pool = []
-    for (sx, sy), trees in groves:
+    for (sx, sy), trees in sorted(groves, key=lambda g: max(abs(g[0][0] - hx),
+                                                            abs(g[0][1] - hy))):
         if (sx, sy) == (hx, hy):
             continue
         pool.append(((sx, sy), [(t.x, t.y, t.z, t.graphic) for t in trees]))
@@ -160,9 +202,18 @@ def harvest_aim_readout(memory, obs) -> str:
 
     woodsman-20260822-1225: the first hop left `(518, 1042)` for `(517, 1093)`
     (`reloc=` PASS, `pool=` 12→11) and then swung 270 ticks with `logs=0` and
-    no `win=`. Two causes look identical from that tape — the old grove still
-    installed (d≈51) versus new trees that do not answer (d≤2) — and 500446
-    is not in Chop's sample set, so too-far is silent. This readout splits them.
+    no `win=`. Two causes look identical on THAT tape — the old grove still
+    installed (d≈51) versus new trees that do not answer (d≤2). This readout
+    splits them by distance.
+
+    A second splitter has since been added and this docstring used to deny it:
+    it said "500446 is not in Chop's sample set, so too-far is silent", which
+    was true when written and is false now — `Chop.too_far_clilocs` samples it
+    and `stuck_cause_readout` prints `far=` on this same line. The two are
+    complementary: `d=` says where he is aiming, `far=` says whether the shard
+    refused the range. Corrected rather than deleted because a fact left stale
+    in one of its copies is the defect class this file is named after (§35.3),
+    and the 270 dead ticks are still unattributed either way.
     """
     nodes = memory.get("harvest_nodes")
     if not nodes or obs is None:
@@ -2435,6 +2486,32 @@ def run_supply_pair(*, host: str = "127.0.0.1", port: int = 2594,
     print("\nthe pair's day is done")
 
 
+def stuck_cause_readout(memory) -> str:
+    """WHY a harvester's relocation window is filling, or empty — one formatter.
+
+    The forge pair grew this format first, for the miner. A woodsman line that
+    spelled it a second time is the defect class this audit is named after, so both
+    professions read it from here.
+
+    A PARTITION — one tick charged once, whatever the sets do — and the causes want
+    DIFFERENT fixes, which is the whole point of splitting them: `nores` is an
+    exhausted bank (relocate), `far` is a range refusal, meaning we are standing too
+    far from resource we could otherwise work (a WALK problem), `inval` is a tile we
+    cannot address at all (a SURVEY problem — and for `Mine`, the one `inval` cycles
+    off, which is what `node_exhausted_clilocs` is for), and `packfull` is a sink
+    problem no walk can help. §51.2 lost a woodsman day to exactly the distinction
+    `far` makes: 270 ticks at a hopped-to stand with nothing to say whether the trees
+    were out of range or simply never answered.
+
+    NOT a decomposition of `win=`. The causes are cumulative over the run; `win=` is a
+    rolling window that every relocation empties, and ordinary `maxlen` eviction breaks
+    the identity a second way. §35.3 measured that, after this file asserted the
+    opposite three times.
+    """
+    by = memory.get("harvest_stuck_by_cause") or {}
+    return (" " + " ".join(f"{k}={by[k]}" for k in sorted(by))) if by else ""
+
+
 def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
                    ticks: int = 1200, account_prefix: str = "animaforge",
                    monitor: bool = False, narrate: bool = False,
@@ -2694,19 +2771,11 @@ def run_forge_pair(*, host: str = "127.0.0.1", port: int = 2594,
         silent = miner.memory.get("harvest_silent")
         if silent:
             grimm_flag += f" silent={silent}"
-        # WHY the window is full, which `win=` alone cannot say. The three causes
-        # want three different fixes — `nores` is an exhausted bank (relocate),
-        # `inval` is a tile we cannot hit at all (cycle to another node; the whole
-        # point of `node_exhausted_clilocs`), `packfull` is a sink problem no walk
-        # can help. A partition — one tick charged once — and CUMULATIVE over the
-        # run, which `win=` is not: it is a rolling window that every relocation
-        # empties. So these do NOT sum to `win=` and a reader must not try; an
-        # earlier comment here and in the audit both claimed they did.
-        # Printed beside `banks=`, the output ceiling itself — and `banks=` counts
-        # banks the shard gave a VERDICT about, never banks merely aimed at.
-        by = miner.memory.get("harvest_stuck_by_cause") or {}
-        if by:
-            grimm_flag += " " + " ".join(f"{k}={by[k]}" for k in sorted(by))
+        # WHY the window is full, which `win=` alone cannot say — see
+        # `stuck_cause_readout`, which the woodsman line reads too. Printed beside
+        # `banks=`, the output ceiling itself, and `banks=` counts banks the shard
+        # gave a VERDICT about, never banks merely aimed at.
+        grimm_flag += stuck_cause_readout(miner.memory)
         banks = miner.memory.get("harvest_banks_touched")
         if banks:
             grimm_flag += f" banks={len(banks)}"
@@ -2920,6 +2989,12 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
         if mem.get("harvest_relocating"):
             tgt = mem.get("harvest_relocate_target")
             line += f" reloc={tgt}" if tgt else " reloc"
+        # `win=` says the window is filling; this says WHY. §51.2 hopped correctly and
+        # then swung 270 ticks at the new stand with nothing to read: `far=` climbing is
+        # a WALK problem (trees out of range), no cause at all beside a live `tree=`/`d=`
+        # is a stand that never answers. `Chop` could not report `far` until it sampled
+        # 500446 (`Chop.too_far_clilocs`), so this line had nothing to print before.
+        line += stuck_cause_readout(mem)
         line += harvest_aim_readout(mem, obs)
         # When a process_logs goal holds the stack, show the completion bookkeeping the
         # achievement check reads — "not achieved" has several distinct causes, and this

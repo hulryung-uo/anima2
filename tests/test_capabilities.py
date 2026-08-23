@@ -2381,13 +2381,21 @@ def test_lumberjack_manifest_includes_all_six_capabilities_in_registry_order():
 
 
 def test_lumberjack_sell_boards_ready_only_at_threshold_from_the_carpenter():
+    # Driven at T-1 and T off `SellBoards.sell_threshold` rather than restating its
+    # value: the gate is BUILT from that attribute, so a literal here pins the number
+    # twice instead of pinning the coupling (and it did — it failed the day the
+    # threshold was re-derived from the world's harvest quantum, which is the coupling
+    # working, not a regression). See `skills/woodwork.py::SellBoards.sell_threshold`.
+    from anima2.skills.woodwork import SellBoards
+
+    threshold = SellBoards.sell_threshold
     goal = capability_goal("lumberjack", "sell_boards")
-    # 20+ boards + a carpenter (vendor_spot) route -> ready.
-    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, boards=20)) is not None
-    # Below the 20-board threshold -> not ready.
-    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, boards=19)) is None
+    # A full threshold's worth of boards + a carpenter (vendor_spot) route -> ready.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, boards=threshold)) is not None
+    # One board short of the threshold -> not ready.
+    assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, _lumber_ctx(goal, boards=threshold - 1)) is None
     # No carpenter route -> not ready.
-    no_vendor = _lumber_ctx(goal, boards=20)
+    no_vendor = _lumber_ctx(goal, boards=threshold)
     no_vendor.memory.pop("vendor_spot")
     assert resolve_capability(goal, "lumberjack", GoalSource.COGNITION, no_vendor) is None
 

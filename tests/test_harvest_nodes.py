@@ -17,6 +17,8 @@ target, and nothing in the telemetry could say so.
 
 
 
+from types import SimpleNamespace
+
 from anima2.contract import (
     ItemView,
     JournalEntry,
@@ -405,6 +407,133 @@ def test_only_mining_counts_banks_because_only_minings_grid_is_pinned():
     mem: dict = {"harvest_nodes": [(99, 99, 0, 0x0CCA)]}
     _swings(mem, NODE_DEPLETED_CLILOC, count=2, skill=Chop(), tool=0x0F43)
     assert "harvest_banks_touched" not in mem
+
+
+# --- 3b. `far` for the woodsman: a mute stand and a range refusal are not the same ---
+#
+# woodsman-20260822-1225 (audit §51.2) closed a live day this way: the dry-grove hop
+# fired correctly (`reloc=(517,1093)`, `pool` 12→11) and the woodsman then swung 270
+# ticks at the NEW stand producing nothing, with `win=` absent from every sample. The
+# tape could not say which of two opposite fixes it wanted, and said so in its own
+# words: "Surveyed trees at that stand are in reach 1-2, so 'too far' and 'nodes never
+# installed' are indistinguishable: Chop does not sample 500446."
+
+def _chop_swings(mem, verdict, *, count, grove=((99, 99, 0, 0x0CCA),), pos=(100, 100)):
+    """A woodsman's swings. Trees are STATICS, so a grove is always installed —
+    `Chop` has no probe fallback (`nodes_are_reprobeable` is False) and a fixture
+    without `harvest_nodes` would exercise a branch a woodsman never reaches."""
+    mem.setdefault("harvest_nodes", [tuple(t) for t in grove])
+    return _swings(mem, verdict, count=count, pos=pos, skill=Chop(), tool=0x0F43)
+
+
+def test_chop_charges_a_range_refusal_to_its_own_cause():
+    """THE defect. `Mine` split 500446 out of `inval` on 2026-08-14 (§41) and `Chop`
+    was left behind — it named no invalid-target cliloc at all, so a woodsman's
+    range refusals were charged to nothing and the cause ledger read empty."""
+    mem: dict = {}
+    _chop_swings(mem, 500446, count=3)
+    assert mem["harvest_stuck_by_cause"] == {"far": 3}
+
+
+def test_a_range_refusal_is_a_failed_swing_verdict_for_chop_too():
+    """The behaviour delta, stated as the thing it is rather than hidden: the window
+    measures failed swing verdicts and "that is too far away" IS one, so `Chop` was
+    UNDER-counting its own failures — 24 range refusals used to leave the window
+    completely empty, which is exactly the `win=`-absent tape §51.2 could not read.
+
+    A full window at rate 1.0 now relocates. `Chop`'s window is one rotation of the
+    24-tile probe ring; nothing about the give-up rule itself moved."""
+    mem: dict = {}
+    chop = Chop()
+    window = len(chop.probe_offsets) * chop.stuck_window_rotations
+    _chop_swings(mem, 500446, count=window - 1)
+    assert sum(mem["harvest_recent_stuck"]) == window - 1   # before: no sample at all
+    assert not mem.get("harvest_relocating")                # ...and a short window waits
+    _chop_swings(mem, 500446, count=1)                      # the window fills
+    assert mem["harvest_relocating"]
+    assert mem["harvest_stuck_by_cause"] == {"far": window}
+
+
+def test_a_range_refusal_does_not_move_chop_off_the_tree_it_named():
+    """The axis deliberately NOT touched. `node_exhausted_clilocs` is DERIVED from
+    `invalid_target_clilocs`, so putting 500446 there — `Mine`'s exact shape — would
+    also make a range refusal advance `harvest_idx`. §35.2 is why it does not: the
+    last node-handling change made to `Chop` destroyed a woodsman's grove in the case
+    its own comment named, trees are statics `Chop` cannot re-probe, and nothing
+    re-seeds `harvest_nodes` after staging. Diagnosing `Chop` is not the moment to
+    change how `Chop` handles nodes."""
+    assert 500446 not in Chop.invalid_target_clilocs
+    assert Chop().node_exhausted_clilocs == {NODE_DEPLETED_CLILOC}
+    grove = [(99, 99, 0, 0x0CCA), (101, 101, 0, 0x0CCB)]
+    mem: dict = {}
+    assert _chop_swings(mem, 500446, count=3, grove=grove) == [(99, 99)] * 3
+    assert mem.get("harvest_idx", 0) == 0
+
+
+def test_a_chop_tick_carrying_two_verdicts_is_charged_to_exactly_one_cause():
+    """The partition property, on the profession whose `far` is NOT a subset of its
+    `inval`. One tick charged once is what the `break` buys, and it does not depend
+    on the sets nesting — the sibling `Mine` test pins the same rule where they do."""
+    mem: dict = {"harvest_nodes": [(99, 99, 0, 0x0CCA)]}
+    sk = Chop()
+    obs = Observation(
+        player=PlayerView(serial=1, pos=Position(100, 100, 0)),
+        items=[_pack(0x0F43)],
+        skills=[SkillView(id=44, value=35.0, base=35.0, cap=100.0, lock=0)],
+        new_journal=[JournalEntry(0, "System", "", 0, 0, cliloc=NODE_DEPLETED_CLILOC),
+                     JournalEntry(0, "System", "", 0, 0, cliloc=500446)],
+    )
+    sk.step(SkillContext(obs=obs, persona=Persona(name="Bjorn"), memory=mem))
+    assert mem["harvest_stuck_by_cause"] == {"nores": 1}
+    assert sum(mem["harvest_recent_stuck"]) == 1
+
+
+def test_widening_the_sample_set_to_too_far_is_a_no_op_for_mine_and_fish():
+    """`Mine` keeps 500446 in BOTH sets, so the widened `stuck_this_tick` union is
+    the same set it always was; `Fish` names no range refusal at all. Pinned as set
+    identity rather than re-run behaviour because that is the actual claim — every
+    `Mine`/`Fish` behaviour test in this file and `test_harvest.py` is the rest of it."""
+    assert Mine.too_far_clilocs <= Mine.invalid_target_clilocs
+    assert 500446 in Mine().node_exhausted_clilocs
+    assert not Fish.too_far_clilocs
+    for sk in (Mine(), Fish()):
+        widened = (sk.no_resource_clilocs | sk.pack_full_clilocs
+                   | sk.invalid_target_clilocs | sk.too_far_clilocs)
+        assert widened == (sk.no_resource_clilocs | sk.pack_full_clilocs
+                           | sk.invalid_target_clilocs)
+
+
+def test_the_stuck_cause_readout_is_one_formatter_for_both_professions():
+    """Single source. The miner's forge-pair line grew this format first; a woodsman
+    line that spelled it a second time is the defect class this audit is named after
+    — and a counter no tape can print is the failure §51.2 is actually complaining
+    about, so the formatter is half the fix, not a garnish."""
+    from anima2.village import stuck_cause_readout
+
+    assert stuck_cause_readout({}) == ""
+    assert stuck_cause_readout({"harvest_stuck_by_cause": {}}) == ""
+    assert stuck_cause_readout(
+        {"harvest_stuck_by_cause": {"nores": 2, "far": 7, "inval": 1}}
+    ) == " far=7 inval=1 nores=2"
+
+
+def test_the_woodsman_line_actually_prints_the_cause_split():
+    """The formatter existing is not the fix; the woodsman line CALLING it is. §51.2's
+    complaint is precisely a counter no tape can see, so a mutant that deletes the call
+    reproduces the defect while every assertion above still passes.
+
+    Reached through `test_knobs._capture_specs`, which intercepts `LifeRunner` to grab
+    the SHIPPED spec — imported rather than re-written here, since a lookalike closure
+    is exactly what such a mutant would survive."""
+    from test_knobs import _capture_specs
+
+    status_extra = _capture_specs(ticks=1)[1].status_extra   # [0] is the carpenter
+    life = SimpleNamespace(
+        memory={"harvest_stuck_by_cause": {"far": 7, "nores": 2}},
+        econ_agent=SimpleNamespace(goal_stack=SimpleNamespace(current=None)))
+    obs = Observation(player=PlayerView(serial=1, pos=Position(517, 1093, 0)),
+                      items=[_pack(0x0F43)])
+    assert " far=7 nores=2" in status_extra(life, obs)
 
 
 # --- 4. the surveyed stand's first node has to survive a one-tile-short arrival ------

@@ -44,6 +44,21 @@ LOG_GRAPHIC = 0x1BDD
 BOARD_GRAPHIC = 0x1BD7
 BOARD_GRAPHICS = frozenset({BOARD_GRAPHIC})
 
+# ServUO `Scripts/Services/Harvest/Lumberjacking.cs`: `lumber.ConsumedPerHarvest = 10`
+# ("Ten logs per harvest action"). The QUANTUM of this profession's income, and the
+# only number in the chain the woodsman does not choose.
+#
+# `HarvestSystem.cs` hands out `ConsumedPerFeluccaHarvest` (20) while the bank still
+# holds 20, else `ConsumedPerHarvest` (10), and `HarvestBank.Consume` always takes 10 —
+# so a chop yields EXACTLY 10 or EXACTLY 20 logs and nothing else. This shard is T2A
+# (`Config/Expansion.cfg`), so `Core.ML` is false: `def.RaceBonus` is off (no
+# `ceil(20 * 1.1) = 22` racial stack) and the single plain-`Log` resource is the only
+# vein. `ProcessLogs` is 1:1. Therefore every board count a woodsman can hold is a
+# MULTIPLE OF TEN — confirmed across three live tapes (`.logs/woodsman-20260818-1926`,
+# `-1941`, `-20260822-1225`, ~200 samples): the only `logs=` values ever printed are
+# 0/10/20/30 and the only `boards=` values are 0/10/20/40.
+LOGS_PER_HARVEST = 10
+
 
 class ProcessLogs(Skill):
     """Convert pack logs into boards with an axe — a standalone, inverted Smelt.
@@ -164,8 +179,39 @@ class SellBoards(SellItemCapability):
     description = "Sell observed backpack boards to the configured carpenter vendor and return."
     #: Boards sold to the carpenter — a single art id, not a 4-variant stack set.
     sold_graphic = BOARD_GRAPHIC
-    #: A full sell batch of boards (free input, so a generous threshold is fine).
-    sell_threshold = 20
+    #: One harvest action's worth of boards — the QUANTUM, not a batch size.
+    #:
+    #: This was 20, for the reason "a full sell batch of boards (free input, so a
+    #: generous threshold is fine)": a round number, the same shape as the
+    #: `BANK_ABOVE = 300` that `woodsman_life` records as never once reached. It was
+    #: off-grid by exactly one quantum. `LOGS_PER_HARVEST` is 10 and `ProcessLogs` is
+    #: 1:1, so every board count a woodsman can hold is a multiple of ten — which makes
+    #: 10 the LARGEST threshold that can never strand a stack, and 20 the SMALLEST one
+    #: that can. And the stranding is structural, not bad luck: the LAST harvest action
+    #: of every bank yields exactly 10 (universal over ServUO's whole 20..45 range,
+    #: because `HarvestBank.Consume` takes 10 while the 20-log payout needs `Current`
+    #: still >= 20), so a grove going dry always hands over a stack the old threshold
+    #: refused. Both measured woodsman days ended `logs=0 boards=10` and never sold,
+    #: frozen on it for 51/67 and 47/69 status samples
+    #: (`.logs/woodsman-20260818-1941`, `-20260822-1225`).
+    #:
+    #: It is still not a per-board trip. The trip is worth one full harvest action,
+    #: which is the smallest amount this world ever hands out at once.
+    #:
+    #: READ THIS BEFORE MOVING EITHER BOARD THRESHOLD. `woodsman_life.decide_mode` puts
+    #: `deliver_boards` (19, a throne's worth) ABOVE selling, and 19 > 10 — so a
+    #: 10-stack that a PARTNERED woodsman used to carry into its next delivery is now
+    #: sold to the vendor instead. On a 60-log bank (chops of 20, 20, 10, 10) that is
+    #: 60 boards delivered before against 40 delivered + 20 sold after: a ~33% volume
+    #: trim on the lumberjack->carpenter chain, which is a mechanism proof and not an
+    #: economy (`docs/CARPENTER.md`: every carpentry recipe destroys value at vendor
+    #: prices). PREDICTED, NOT MEASURED — no `--supply-pair` day has run since.
+    #:
+    #: `capabilities._make_sell_ready` is built from this attribute at import, so the
+    #: admission gate moves with it. Both threshold tests drive rule and gate at T-1 and
+    #: T off this attribute rather than restating 10, so a literal cannot re-open the
+    #: rule-vs-gate gap (`tests/test_woodsman_life.py`, `tests/test_capabilities.py`).
+    sell_threshold = LOGS_PER_HARVEST
     # vendor_spot_key = "vendor_spot" (inherited): the lumberjack's `vendor_spot`
     # IS the Carpenter — the sell vendor — while buy_hatchet uses a separate key.
 

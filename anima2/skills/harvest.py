@@ -157,9 +157,15 @@ class Harvest(Skill):
     #: (see `Mine`: 0.75 over a half-invalid ring).
     productive_clilocs: frozenset[int] = frozenset()
     invalid_target_clilocs: frozenset[int] = frozenset()
-    #: A SUBSET of `invalid_target_clilocs` reported as its own cause. Empty on the base,
-    #: so `Chop` and `Fish` partition exactly as they did before; `Mine` narrows it. See
-    #: `Mine.too_far_clilocs` for what the split buys and why it was deferred until now.
+    #: The RANGE refusal, reported as its own cause by the split at `step()`. Empty on
+    #: the base, so `Fish` partitions exactly as it did before.
+    #:
+    #: It is a SUBSET of `invalid_target_clilocs` for `Mine`, which is where the split
+    #: started (§41), and it is NOT one for `Chop`, which names no invalid-target cliloc
+    #: at all — see `Chop.too_far_clilocs` for why that asymmetry is deliberate and what
+    #: it refuses to buy. Because of it, the failure set `step()` samples must union this
+    #: in explicitly rather than lean on the nesting; for `Mine` and `Fish` that union is
+    #: the set they already had.
     too_far_clilocs: frozenset[int] = frozenset()
     #: How many probe-ring rotations the rate window spans.
     stuck_window_rotations: int = 3
@@ -346,9 +352,17 @@ class Harvest(Skill):
         # against does not exist here: the prompt cliloc is neither productive
         # nor failure, so a promptonly tick appends nothing anyway.
         if self.no_resource_clilocs or self.pack_full_clilocs:
+            # `too_far_clilocs` is unioned in rather than assumed to nest inside
+            # `invalid_target_clilocs`. For `Mine` it does nest and this term adds
+            # nothing; for `Chop`, whose `invalid_target_clilocs` is empty, it is the
+            # only term that can carry 500446 at all — and the cause split below runs
+            # ONLY on a sampled failure, so without it a woodsman's range refusals are
+            # charged to nothing. That is the whole defect (§51.2: 270 ticks at a
+            # hopped-to stand producing nothing, with `win=` absent from every sample).
             stuck_this_tick = any(
                 j.cliloc in self.no_resource_clilocs or j.cliloc in self.pack_full_clilocs
                 or j.cliloc in self.invalid_target_clilocs
+                or j.cliloc in self.too_far_clilocs
                 for j in obs.new_journal
             )
             sample: int | None
@@ -824,6 +838,31 @@ class Chop(Harvest):
     #: One rotation: 24 dry-tree verdicts is conclusive for a 5-tree grove, and
     #: three rotations made the miner take 3-5 live minutes to confess.
     stuck_window_rotations = 1
+    #: The range refusal, charged to its own cause — and DELIBERATELY NOT also added to
+    #: `invalid_target_clilocs`, which is the one place `Chop` departs from `Mine`.
+    #:
+    #: Why it exists: woodsman-20260822-1225 (§51.2). The dry-grove hop worked
+    #: (`reloc=(517, 1093)`, `pool` 12→11) and the woodsman then swung 270 ticks at the
+    #: new stand for `logs=0` with no `win=` at all. Its surveyed trees are in reach 1-2,
+    #: so "we are standing too far from them" and "these tiles never answered" produce
+    #: the same tape — a WALK problem and a SURVEY problem wanting opposite fixes,
+    #: exactly the pair §41 split apart for the miner.
+    #:
+    #: Why it stops there: `node_exhausted_clilocs` DERIVES from
+    #: `invalid_target_clilocs`, so `Mine`'s literal shape would ALSO make a range
+    #: refusal advance `harvest_idx`. §35.2 is the reason that is refused — the last
+    #: node-handling change made to `Chop` destroyed a woodsman's grove in the case its
+    #: own comment named. Trees are statics `Chop` cannot re-probe and nothing re-seeds
+    #: `harvest_nodes` after staging, so a wrong node move here is unrecoverable, and
+    #: diagnosing `Chop` is not the moment to change how `Chop` handles nodes.
+    #: `node_exhausted_clilocs` therefore stays exactly `{NODE_DEPLETED_CLILOC}`.
+    #:
+    #: What DOES change, said plainly because §51.3's live prediction was written before
+    #: it: the relocation window now sees these replies. That is a latent under-count
+    #: being fixed rather than an instrument being perturbed — the window measures failed
+    #: swing verdicts and a range refusal is one — but it is still a behaviour delta on
+    #: this profession, and 24 of them now hop where before they did nothing.
+    too_far_clilocs = frozenset({500446})  # "That is too far away."
     #: Trees are STATICS — the probe ring targets ground and can never hit one, and
     #: nothing re-seeds the grove after staging. So a dropped node list ends the
     #: trade rather than falling back to anything. A woodsman's hop is therefore

@@ -52,7 +52,11 @@ from .skills.woodwork import (
 from .warrior_life import WarriorLife
 
 #: Boards worth a trip to the vendor — the sell capability's own trigger, reused so the
-#: rule and the readiness gate can never drift apart.
+#: rule and the readiness gate can never drift apart. It is `LOGS_PER_HARVEST`, the
+#: world's own quantum: the last harvest action of every bank yields exactly ten logs,
+#: so a threshold above ten strands a full stack every time a grove dries. Two live days
+#: ended holding exactly that. The derivation, and what it costs the `carpenter_drop`
+#: branch in the rule below, live on `SellBoards.sell_threshold` — one number, one place.
 SELL_BOARDS_AT = SellBoards.sell_threshold
 #: Boards worth hauling to a partner — the deliver capability's own trigger.
 DELIVER_BOARDS_AT = DeliverBoards.deliver_threshold

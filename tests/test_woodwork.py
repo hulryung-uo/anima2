@@ -194,6 +194,7 @@ from anima2.contract import (  # noqa: E402
 from anima2.skills.market import SELL_CLILOC  # noqa: E402
 from anima2.skills.woodwork import (  # noqa: E402
     HATCHET_GRAPHIC,
+    LOGS_PER_HARVEST,
     BuyHatchet,
     ProcessLogsGoal,
     SellBoards,
@@ -228,7 +229,7 @@ def _mctx(items, *, memory, pos, goal_id, mobiles=(), popup=None, shop_sell=None
 
 def test_sell_boards_is_configured_for_boards_at_the_sell_vendor():
     assert SellBoards.sold_graphic == BOARD_GRAPHIC
-    assert SellBoards.sell_threshold == 20
+    assert SellBoards.sell_threshold == LOGS_PER_HARVEST
     assert SellBoards.vendor_spot_key == "vendor_spot"  # the Carpenter (sell vendor)
 
 
@@ -432,3 +433,16 @@ def test_our_own_tool_is_still_found_in_every_legitimate_place():
         )
         ctx = SkillContext(obs=obs, persona=Persona(name="Bjorn"), memory={})
         assert owned_tool(ctx, AXE_GRAPHICS) is not None, f"container={container}"
+
+
+def test_the_sell_threshold_is_one_harvest_actions_worth():
+    """The threshold is DERIVED from the world's quantum, not picked as a round number.
+
+    ServUO `Lumberjacking.cs` hands out logs in units of `ConsumedPerHarvest` (10) or
+    `ConsumedPerFeluccaHarvest` (20), and boards are 1:1 — so every board count is a
+    multiple of ten and 10 is the LARGEST threshold that can never strand a stack.
+    20 was the smallest one that could, and it stranded exactly one quantum on two
+    measured days (`.logs/woodsman-20260818-1941`, `-20260822-1225`).
+    """
+    assert LOGS_PER_HARVEST == 10  # ServUO: "Ten logs per harvest action"
+    assert SellBoards.sell_threshold == LOGS_PER_HARVEST
