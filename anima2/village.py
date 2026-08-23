@@ -3502,7 +3502,16 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         #      never landed. Pinned prey stands and fights, so a won fight actually
         #      finishes.
         # Bounded: replace each confirmed kill, top up only when idle — no swarm.
-        adj = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        # DIAGONALS, so the four cardinal exits stay open. The prey is PINNED, so a
+        # creature on a cardinal is a permanent wall on that side — and every shop this
+        # village stages sits due N/S/E/W of the stand (§58). Measured 2026-08-24 (§61.4):
+        # once top-up moved to the stand, a pinned Ettin at `(2587, 409)` sat in the only
+        # southern corridor and **11 of 11** `bank_gold` frames gave up, several at
+        # `d=3>2` — three tiles from a banker the warrior could see.
+        #
+        # Diagonals are still chebyshev 1, so `Combat` engages them exactly as before;
+        # this costs the fight nothing.
+        adj = [(1, 1), (-1, -1), (1, -1), (-1, 1)]
 
         unpinned = [0, 0]  # [lost (no serial), deleted (would not pin)]
         def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
