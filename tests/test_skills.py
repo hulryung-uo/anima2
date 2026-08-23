@@ -17,8 +17,10 @@ def _ctx(obs: Observation, persona: Persona) -> SkillContext:
 
 
 def test_combat_wars_then_attacks_hostile():
-    rat = MobileView(0xAA, "rat", Position(102, 100, 0), body=0x10, notoriety=6, hits=10,
-                     hits_max=10, distance=2)
+    # IN REACH (distance 1). At 2 the skill now closes first — see
+    # `test_combat_walks_into_reach_instead_of_swinging_at_nothing`.
+    rat = MobileView(0xAA, "rat", Position(101, 100, 0), body=0x10, notoriety=6, hits=10,
+                     hits_max=10, distance=1)
     ctx = _ctx(_obs([rat]), Persona(name="Ash", combat_disposition="aggressive"))
     skill = Combat()
     assert skill.can_run(ctx)
@@ -26,6 +28,46 @@ def test_combat_wars_then_attacks_hostile():
     assert isinstance(first.action, WarMode) and first.action.on is True
     second = skill.step(ctx)
     assert isinstance(second.action, Attack) and second.action.serial == 0xAA
+
+
+def test_combat_walks_into_reach_instead_of_swinging_at_nothing():
+    """The server does not walk us into range, so an `Attack` from two tiles away is a
+    packet that does nothing — forever.
+
+    Measured 2026-08-24 (audit §59): a warrior one tile off its stand spent
+    `act=Attackx544` — five hundred and forty-four consecutive ticks — swinging at prey
+    pinned at `foes=d2`, with `steps=8` for the whole day and `!stalled` up. It had only
+    ever worked because the village spawns prey ADJACENT.
+    """
+    rat = MobileView(0xAA, "rat", Position(103, 100, 0), body=0x10, notoriety=6, hits=10,
+                     hits_max=10, distance=3)
+    ctx = _ctx(_obs([rat]), Persona(name="Ash", combat_disposition="aggressive"))
+    skill = Combat()
+    assert isinstance(skill.step(ctx).action, WarMode)
+
+    # It closes, and it closes TOWARD the target (east, +x).
+    from anima2.contract import Walk
+    from anima2.geometry import DIRECTION_DELTAS
+    step = skill.step(ctx)
+    assert isinstance(step.action, Walk), step.action
+    assert DIRECTION_DELTAS[step.action.dir] == (1, 0), DIRECTION_DELTAS[step.action.dir]
+
+    # A BLOCKED approach is bounded, or a walled-off target becomes an infinite loop.
+    # The observation never changes, so the position never changes.
+    walks = 1 + sum(isinstance(skill.step(ctx).action, Walk) for _ in range(20))
+    assert walks == skill.approach_stall_limit, walks
+    assert isinstance(skill.step(ctx).action, Attack), "and then it swings anyway"
+
+    # In reach, it never walks — and arriving RESETS the budget, so a target that runs
+    # off again is chased afresh instead of inheriting a spent counter. One tick of the
+    # new chase is charged immediately, because we are standing where we already stood
+    # and that is exactly what the counter measures.
+    close = MobileView(0xAA, "rat", Position(101, 100, 0), body=0x10, notoriety=6, hits=10,
+                       hits_max=10, distance=1)
+    ctx_close = SkillContext(obs=_obs([close]), persona=ctx.persona, memory=ctx.memory)
+    assert isinstance(skill.step(ctx_close).action, Attack)
+    assert sum(isinstance(skill.step(ctx).action, Walk)
+               for _ in range(20)) == skill.approach_stall_limit - 1
 
 
 def test_pacifist_never_fights():
