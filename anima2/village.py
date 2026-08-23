@@ -3220,6 +3220,10 @@ def ready_to_fight(life, o) -> bool:
 #: figure; 3 is one tile outside the ring the prey is pinned on.
 _VENDOR_GAP = 12
 _VENDOR_MIN_GAP = 3
+#: How far the pinned prey sits from the stand. Two, so every one of the stand's eight
+#: neighbours stays walkable: a pinned creature is a permanent wall, and every shop and
+#: every route this village has leaves through one of those tiles.
+_PREY_GAP = 2
 
 
 def stage_pinned_prey(gm, prey: str, x: int, y: int, z: int, *,
@@ -3502,16 +3506,26 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         #      never landed. Pinned prey stands and fights, so a won fight actually
         #      finishes.
         # Bounded: replace each confirmed kill, top up only when idle — no swarm.
-        # DIAGONALS, so the four cardinal exits stay open. The prey is PINNED, so a
-        # creature on a cardinal is a permanent wall on that side — and every shop this
-        # village stages sits due N/S/E/W of the stand (§58). Measured 2026-08-24 (§61.4):
-        # once top-up moved to the stand, a pinned Ettin at `(2587, 409)` sat in the only
-        # southern corridor and **11 of 11** `bank_gold` frames gave up, several at
-        # `d=3>2` — three tiles from a banker the warrior could see.
+        # OFF THE STAND'S OWN NEIGHBOURS ENTIRELY. Prey is PINNED, so any creature the
+        # spawner puts within a step of the warrior is a permanent wall — and `[Add`
+        # placement is approximate (§55 saw `foes=d0`, a creature on the warrior's own
+        # tile), so choosing "harmless" adjacent tiles does not work either. Measured
+        # 2026-08-24: pinned CARDINAL prey blocked the southern corridor and 11 of 11
+        # `bank_gold` frames gave up (§61.4); moving to diagonals left the warrior boxed
+        # in anyway, emitting `act=Walkx5` at `stall=4/6` from its own stand without
+        # moving a tile, and 8 more frames gave up.
         #
-        # Diagonals are still chebyshev 1, so `Combat` engages them exactly as before;
-        # this costs the fight nothing.
-        adj = [(1, 1), (-1, -1), (1, -1), (-1, 1)]
+        # `_PREY_GAP = 2` keeps all eight neighbours of the stand clear. §59's approach
+        # step is what makes that work — the warrior WALKS the one tile to engage — and it
+        # is the whole reason this is now an option: before it, prey had to be spawned
+        # under his feet or he never swung.
+        adj = [(dx * _PREY_GAP, dy * _PREY_GAP)
+               for dx, dy in ((1, 1), (-1, -1), (1, -1), (-1, 1))
+               if walkable_run(0, gx, gy, dx, dy, _PREY_GAP) >= _PREY_GAP]
+        if not adj:  # every diagonal is walled — say so rather than spawn nothing quietly
+            print(f"  ** no diagonal at {gx},{gy} reaches {_PREY_GAP} tiles: "
+                  f"prey cannot be staged clear of the stand **")
+            adj = [(1, 1)]
 
         unpinned = [0, 0]  # [lost (no serial), deleted (would not pin)]
         def _spawn_pinned(px: int, py: int, pz: int, dx: int, dy: int) -> None:
