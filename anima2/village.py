@@ -53,7 +53,13 @@ from .skills import MineSmeltDeliver
 from .skills.combat import is_hostile
 from .skills.market import walk_readout
 from .skills.base import Status
-from .uomap import find_mine_spots, find_tree_clusters, play_map, walkable_run
+from .uomap import (
+    find_mine_spots,
+    find_tree_clusters,
+    find_warrior_stand,
+    play_map,
+    walkable_run,
+)
 
 # Minoc-area woods, near the mining camp — keeps the village compact.
 # Each lumberjack gets a distinct grove (a stand spot + the trees in reach).
@@ -3349,9 +3355,36 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
         # freshly staged vendors (they sit at +/-12) and prey. Two passes keep each
         # warrior's furniture safe no matter how many warriors there are.
         placed: list[tuple[int, object, int, tuple[int, int, int]]] = []
+        #: Stands chosen so far, so a rescued pocket cannot land inside a neighbour's.
+        stands: list[tuple[int, int]] = []
         for i, body in bodies:
             serial = body.ready["player"]["serial"]
-            sx, sy = hx + i * spacing, hy
+            # RESCUE A POCKET THE GROUND FORBIDS, OR SKIP IT. The roster is staged along a
+            # straight line at `spacing` and nothing ever asked whether the 25th tile
+            # along was usable — with one warrior the question never came up. Measured
+            # 2026-08-25 on the first three-warrior roster (audit §64.4): warrior 1 was
+            # teleported onto land tile 100 (`Impassable`) and warrior 2 onto 169
+            # (`Impassable | Wet` — open water). Both stood at full health for 1200 ticks
+            # emitting walks the server refused, `landed=0/0`, `!stalled`.
+            #
+            # A pocket that already clears `_VENDOR_MIN_GAP` is left exactly where it is,
+            # so the most-tested configuration this project has does not move. A pocket
+            # with no walkable ground within reach is SKIPPED: a warrior that cannot take
+            # a step produces nothing but noise, and pretending otherwise is how a roster
+            # run reads as "two thirds broken" instead of "two thirds unstaged".
+            nominal = (hx + i * spacing, hy)
+            found = find_warrior_stand(0, *nominal, want=_VENDOR_GAP,
+                                       floor=_VENDOR_MIN_GAP,
+                                       avoid=tuple(stands), min_gap=spacing)
+            if found is None:
+                print(f"  Bram{i}: no walkable pocket near {nominal} that clears "
+                      f"{_VENDOR_MIN_GAP} tiles and stays {spacing} off its neighbours "
+                      f"— NOT STAGING this warrior")
+                continue
+            sx, sy = found
+            if found != nominal:
+                print(f"  Bram{i}: pocket {nominal} is unusable — staging at {found}")
+            stands.append(found)
             # CLEAR THE POCKET BEFORE PUTTING ANYONE IN IT. This used to stage first and
             # wipe second, which teleported an undressed character into whatever the last
             # run left behind and then spent three GM round-trips clearing it — while the

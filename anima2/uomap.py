@@ -421,6 +421,50 @@ def find_mine_spots(map_index: int, cx: int, cy: int, radius: int = 40,
             spots.append((s, nodes))
     return spots
 
+#: `tiledata.mul` land-flag bits, from ServUO's `Server/TileData.cs`.
+LAND_IMPASSABLE = 0x40
+LAND_WET = 0x80
+
+#: The High Seas land-entry layout: 8-byte flags, 2-byte texture id, 20-byte name, in
+#: 512 blocks of 32 with a 4-byte header each. Verified against known tiles rather than
+#: assumed — 6 (grass) reads 0, 100 reads `Impassable`, 169/170 (water) read
+#: `Impassable | Wet` — because the pre-HS layout (4-byte flags) parses without error and
+#: returns 0 for all of them, which would have looked like "everything is walkable".
+_LAND_ENTRY = 8 + 2 + 20
+_LAND_BLOCK = 4 + 32 * _LAND_ENTRY
+_land_flags_cache: dict[int, int] = {}
+_tiledata_raw: bytes | None = None
+
+
+def land_flags(tile_id: int) -> int:
+    """`tiledata.mul` flags for a LAND tile id (masked to 14 bits, like `land_cells`)."""
+    global _tiledata_raw
+    tile_id &= 0x3FFF
+    hit = _land_flags_cache.get(tile_id)
+    if hit is not None:
+        return hit
+    if _tiledata_raw is None:
+        _tiledata_raw = (UO_DATA / "tiledata.mul").read_bytes()
+    off = (tile_id // 32) * _LAND_BLOCK + 4 + (tile_id % 32) * _LAND_ENTRY
+    value = struct.unpack_from("<Q", _tiledata_raw, off)[0] if off + 8 <= len(_tiledata_raw) else 0
+    _land_flags_cache[tile_id] = value
+    return value
+
+
+def land_walkable(tile_id: int) -> bool:
+    """Can an ordinary walker stand on this land tile?
+
+    Water is the case that matters and the one that cost a live day: ServUO's
+    `Movement.CheckMovement` treats an `Impassable` land tile as blocking unless the
+    mover `CanSwim`, and every water tile carries `Impassable | Wet`. `walkable_run` used
+    to model the ground as z alone, so a **flat lake read as perfect walking ground** —
+    and the first three-warrior roster staged two of its three warriors onto tiles 100
+    and 169 (audit §64.4). They were teleported there by the GM, which ignores
+    passability, and then could not take a single step for 1200 ticks.
+    """
+    return not land_flags(tile_id) & LAND_IMPASSABLE
+
+
 #: ServUO allows a land step only when `startZ + StepHeight >= landZ`
 #: (`Scripts/Services/Pathing/Movement.cs`, `StepHeight = 2`). Ascent is capped at 2;
 #: descent is not. A VENDOR TRIP IS A ROUND TRIP, though, so a one-tile drop of 25 is
@@ -430,7 +474,7 @@ STEP_HEIGHT = 2
 
 
 def walkable_run(map_index: int, x0: int, y0: int, dx: int, dy: int,
-                 max_len: int, *, climb: int = STEP_HEIGHT) -> int:
+                 max_len: int, *, climb: int = STEP_HEIGHT, cells=None) -> int:
     """How many steps of `(dx, dy)` from `(x0, y0)` stay round-trip walkable.
 
     Returns 0 when the very first step is already too steep. Land z only: statics and
@@ -444,16 +488,113 @@ def walkable_run(map_index: int, x0: int, y0: int, dx: int, dy: int,
     and `BACK ALIVE` stuck at 0 because the resurrection healer was on the wrong side of
     the same wall. Nothing in the runner had ever asked whether the ground allowed it.
     """
-    cells = {(x, y): z for x, y, _t, z in land_cells(
-        map_index,
-        min(x0, x0 + dx * max_len), min(y0, y0 + dy * max_len),
-        max(x0, x0 + dx * max_len), max(y0, y0 + dy * max_len))}
-    prev = cells.get((x0, y0))
-    if prev is None:
+    # `cells` lets a caller that is scanning MANY origins read the map once instead of
+    # once per ray — `find_warrior_stand` evaluates hundreds of candidates and would
+    # otherwise re-read the same chunks thousands of times.
+    if cells is None:
+        cells = {(x, y): (t, z) for x, y, t, z in land_cells(
+            map_index,
+            min(x0, x0 + dx * max_len), min(y0, y0 + dy * max_len),
+            max(x0, x0 + dx * max_len), max(y0, y0 + dy * max_len))}
+    here = cells.get((x0, y0))
+    # GROUND NOBODY CAN STAND ON is not a starting point. The GM teleport that stages a
+    # warrior ignores passability, so this is reachable with a perfectly ordinary
+    # observation: a character standing in a lake.
+    if here is None or not land_walkable(here[0]):
         return 0
+    prev = here[1]
+    diagonal = bool(dx) and bool(dy)
     for step in range(1, max_len + 1):
-        z = cells.get((x0 + dx * step, y0 + dy * step))
-        if z is None or abs(z - prev) > climb:
+        x, y = x0 + dx * step, y0 + dy * step
+        cell = cells.get((x, y))
+        if cell is None or not land_walkable(cell[0]) or abs(cell[1] - prev) > climb:
             return step - 1
+        z = cell[1]
+        # A PLAYER'S DIAGONAL STEP NEEDS BOTH FLANKS. ServUO's
+        # `Movement.CheckMovement` (`Scripts/Services/Pathing/Movement.cs`) checks the two
+        # tiles either side of a diagonal and, for a player below GameMaster, refuses the
+        # move unless BOTH are passable — the `||` at line 552. (An NPC gets the `&&` on
+        # the next branch and only needs one, which is why prey can stand where a warrior
+        # cannot walk.)
+        #
+        # This is a FIDELITY fix, not a diagnosis. It was written while chasing §64.4
+        # (two of three warriors frozen at `foes=d2,d2,d2`) and it does NOT explain that
+        # tape — the pocket at `(2637, 408)` has all four diagonals clear under this rule
+        # too. It stays because the rule is real: without it this function tells a
+        # PLAYER that ground is walkable when only an NPC could walk it, and
+        # `_PREY_GAP` places every creature on a diagonal.
+        if diagonal:
+            back = x0 + dx * (step - 1), y0 + dy * (step - 1)
+            for flank in ((x, back[1]), (back[0], y)):
+                fc = cells.get(flank)
+                if fc is None or not land_walkable(fc[0]) or abs(fc[1] - prev) > climb:
+                    return step - 1
         prev = z
     return max_len
+
+
+#: The four directions a warrior village stages a shop along, and the four it needs open.
+_SHOP_RAYS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
+def find_warrior_stand(map_index: int, x: int, y: int, *, want: int,
+                       search: int = 20, floor: int = 3,
+                       avoid: "tuple[tuple[int, int], ...]" = (),
+                       min_gap: int = 0) -> tuple[int, int] | None:
+    """The tile near `(x, y)` whose four shop rays are LONGEST, preferring `(x, y)` itself.
+
+    `run_warrior_village` used to stage its roster along a straight line at
+    `spacing = 25` and never asked whether the 25th tile along was usable ground. With one
+    warrior the question never came up. Measured 2026-08-25 on the first three-warrior
+    roster (audit §64.3): the second pocket landed at `(2612, 408)`, where the banker ray
+    is **one tile long** — its economy leg could not work at all, and the only reason
+    anyone knew is that §58's "walled in" line printed.
+
+    Scores a candidate by `min(ray)` capped at `want`, because a pocket only needs to be
+    good enough: past `want` a longer ray buys nothing and would drag stands away from the
+    spacing the roster is built on. Ties go to the tile nearest the nominal spot, so a
+    pocket that is already fine does not move at all.
+
+    `avoid`/`min_gap` keep a rescued stand out of a neighbour's pocket: a roster is laid
+    out at a fixed spacing, and a stand that moves 20 tiles to escape a lake could
+    otherwise land inside the pocket next door — where the two would share prey, share a
+    wipe radius, and contaminate each other's evidence.
+
+    Returns **None** when nothing in range clears `floor`. That is not the same as "use
+    the spot you asked for": the case it exists for is a stand in the middle of a lake,
+    where staging a warrior at all produces 1200 ticks of a character that cannot take
+    one step (audit §64.4). The caller must decide, and skipping is usually right.
+    """
+    cells = {(cx, cy): (t, z) for cx, cy, t, z in land_cells(
+        map_index, x - search - want, y - search - want,
+        x + search + want, y + search + want)}
+
+    def score(cx: int, cy: int) -> int:
+        if any(max(abs(cx - ax), abs(cy - ay)) < min_gap for ax, ay in avoid):
+            return -1  # inside a neighbour's pocket: never, however good the ground is
+        return min(min(walkable_run(map_index, cx, cy, dx, dy, want, cells=cells), want)
+                   for dx, dy in _SHOP_RAYS)
+
+    # A POCKET THAT ALREADY WORKS DOES NOT MOVE. `floor` is the shortest ray a shop leg
+    # can be staged on at all, so anything at or above it is left exactly where the
+    # caller put it — the single-warrior pocket is the most-tested configuration this
+    # project has, and churning it to gain a tile or two would trade proven ground for
+    # a number. Only a pocket that CANNOT work gets rescued.
+    best, best_key = (x, y), (score(x, y), 0)
+    if best_key[0] >= floor:
+        return best
+    for radius in range(1, search + 1):
+        for cx in range(x - radius, x + radius + 1):
+            for cy in range(y - radius, y + radius + 1):
+                if max(abs(cx - x), abs(cy - y)) != radius:
+                    continue  # only the ring: the inside was scored on an earlier pass
+                # The tie-break is the tile's OWN distance, not the loop's radius, so
+                # correctness does not depend on the ring skip above — that stays a pure
+                # optimization (it keeps each tile from being re-scored on every later
+                # pass) rather than something the answer rests on.
+                key = (score(cx, cy), -max(abs(cx - x), abs(cy - y)))
+                if key > best_key:
+                    best, best_key = (cx, cy), key
+        if best_key[0] >= want:
+            break
+    return best if best_key[0] >= floor else None

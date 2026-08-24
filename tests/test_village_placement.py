@@ -721,3 +721,120 @@ def test_the_warrior_village_fills_in_a_return_reach_a_hunter_can_reach():
     assert warrior_village_knobs({"bank_return_reach": 5})["bank_return_reach"] == 5
     assert warrior_village_knobs({"bank_reserve": 400}) == {
         "bank_reserve": 400, "bank_return_reach": _WARRIOR_BANK_RETURN_REACH}
+
+
+def test_a_walled_in_pocket_is_rescued_and_a_workable_one_is_left_alone():
+    """`run_warrior_village` stages its roster along a straight line at `spacing = 25` and
+    never asked whether the 25th tile along was usable ground. With one warrior the
+    question never came up. Measured 2026-08-25 on the first three-warrior roster (audit
+    §64.3): the second pocket landed at `(2612, 408)` where the banker ray is ONE tile
+    long, so its economy leg was dead on arrival — and the only reason anyone knew is that
+    §58's "walled in" line printed.
+    """
+    from anima2 import uomap
+    from anima2.uomap import find_warrior_stand, walkable_run
+    from anima2.village import _VENDOR_GAP, _VENDOR_MIN_GAP
+
+    def _rays(x, y):
+        return {n: walkable_run(0, x, y, dx, dy, _VENDOR_GAP)
+                for n, (dx, dy) in (("E", (1, 0)), ("W", (-1, 0)),
+                                    ("S", (0, 1)), ("N", (0, -1)))}
+
+    # THE PROVEN POCKET DOES NOT MOVE. Its shortest ray is 3 — tight, and it is where two
+    # 2000-gold days were measured (§63.4/§63.5). Trading that for a tile or two would be
+    # churning the most-tested configuration this project has.
+    proven = find_warrior_stand(0, 2587, 408, want=_VENDOR_GAP, floor=_VENDOR_MIN_GAP)
+    assert proven == (2587, 408), proven
+    assert min(_rays(*proven).values()) >= _VENDOR_MIN_GAP
+
+    # THE UNUSABLE ONE MOVES. `(2637, 408)` is land tile 169 — `Impassable | Wet`, open
+    # water — and the GM teleport that stages a warrior ignores passability, so this is a
+    # warrior standing in a lake.
+    from anima2.uomap import land_walkable
+    tile = next(t for x, y, t, _z in uomap.land_cells(0, 2637, 408, 2637, 408))
+    assert not land_walkable(tile), f"tile 0x{tile:04X} stopped being water"
+    assert min(_rays(2637, 408).values()) < _VENDOR_MIN_GAP
+    rescued = find_warrior_stand(0, 2637, 408, want=_VENDOR_GAP, floor=_VENDOR_MIN_GAP)
+    assert rescued is not None and rescued != (2637, 408)
+    assert min(_rays(*rescued).values()) >= _VENDOR_MIN_GAP, _rays(*rescued)
+    # ...and it stays in the neighbourhood, or the roster's spacing stops meaning anything.
+    assert max(abs(rescued[0] - 2637), abs(rescued[1] - 408)) <= 20, rescued
+
+    # A NEIGHBOUR'S POCKET IS OFF LIMITS however good the ground is: two stands sharing a
+    # wipe radius share prey and contaminate each other's evidence.
+    assert find_warrior_stand(0, 2612, 408, want=_VENDOR_GAP, floor=_VENDOR_MIN_GAP,
+                              avoid=((2587, 408),), min_gap=25) is None
+
+
+def test_a_stand_search_with_nowhere_to_go_says_so_instead_of_guessing():
+    """`None`, not the spot it was handed. A stand in the middle of a lake is not a
+    fallback — a warrior teleported there cannot take one step for the whole run, which
+    is precisely what happened (audit §64.4) — so the caller has to be able to skip it."""
+    from anima2 import uomap
+    from anima2.uomap import find_warrior_stand
+
+    # A world of two-tile ledges: every tile has a ray of length 2 in some direction and
+    # a cliff at 3, so the best candidate anywhere scores 2 — better than nothing, and
+    # still under the floor. That is the case the guard is for: `best` HAS moved off the
+    # nominal spot by then, so returning it would relocate the stand for no benefit.
+    def fake_cells(map_index, x0, y0, x1, y1):
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                flat = abs(x - 505) <= 2 and abs(y - 505) <= 2
+                yield x, y, 0x0003, 15 if flat else 15 + 40 * ((x + y) % 2)
+
+    real, uomap.land_cells = uomap.land_cells, fake_cells
+    try:
+        from anima2.uomap import walkable_run
+        best_anywhere = max(
+            min(walkable_run(0, x, y, dx, dy, 12) for dx, dy in
+                ((1, 0), (-1, 0), (0, 1), (0, -1)))
+            for x in range(495, 512) for y in range(495, 512))
+        assert 0 < best_anywhere < 3, best_anywhere
+        # ...and that best is somewhere ELSE, or the guard would be untested: without it
+        # the search returns the 5x5 patch and relocates a stand for no benefit.
+        assert min(walkable_run(0, 500, 500, dx, dy, 12) for dx, dy in
+                   ((1, 0), (-1, 0), (0, 1), (0, -1))) < best_anywhere
+        assert find_warrior_stand(0, 500, 500, want=12, floor=3) is None
+    finally:
+        uomap.land_cells = real
+
+
+def test_walkable_run_refuses_ground_nothing_can_stand_on():
+    """z was the whole model, so a **flat lake read as perfect walking ground**.
+
+    ServUO's `Movement.CheckMovement` blocks an `Impassable` land tile unless the mover
+    `CanSwim`, and every water tile carries `Impassable | Wet`. Measured 2026-08-25
+    (audit §64.4): the first three-warrior roster teleported two of three warriors onto
+    tiles 100 and 169 — the GM ignores passability — and both stood at full health for
+    1200 ticks emitting walks the server refused.
+
+    The origin and the step are checked separately here on purpose: in the live pocket
+    both were water, so each gate masked the other and neither was really tested.
+    """
+    from anima2 import uomap
+    from anima2.uomap import land_walkable, walkable_run
+
+    GRASS, WATER = 0x0006, 0x00A9
+    assert land_walkable(GRASS) and not land_walkable(WATER), "the tile ids moved"
+
+    def _flat(water: "set[tuple[int, int]]"):
+        def cells(map_index, x0, y0, x1, y1):
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    yield x, y, (WATER if (x, y) in water else GRASS), 15
+        return cells
+
+    real = uomap.land_cells
+    try:
+        # ONE water tile under our feet, grass all around: only the ORIGIN gate can see it.
+        uomap.land_cells = _flat({(500, 500)})
+        assert walkable_run(0, 500, 500, 1, 0, 6) == 0, "standing in a lake goes nowhere"
+        # Grass under our feet, water three tiles along: only the STEP gate can see it.
+        uomap.land_cells = _flat({(503, 500)})
+        assert walkable_run(0, 500, 500, 1, 0, 6) == 2, "the run stops at the shore"
+        # ...and with neither, the flat ground runs the whole way.
+        uomap.land_cells = _flat(set())
+        assert walkable_run(0, 500, 500, 1, 0, 6) == 6
+    finally:
+        uomap.land_cells = real
