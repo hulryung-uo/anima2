@@ -318,6 +318,11 @@ class WarriorLife:
     #: Per-class default for the `bank_reserve` the constructor writes; subclasses
     #: override with their own derived reserve.
     DEFAULT_BANK_RESERVE = BANK_RESERVE
+    #: See the `bank_return_reach` write in `__init__`. ZERO on the base class, which is
+    #: byte-identical for every crafter that inherits it — the stand really is an anvil
+    #: you must be standing on. `run_warrior_village` passes 2 for the hunter, which has
+    #: no such tile; that is a staging choice about a profession, not a default.
+    DEFAULT_BANK_RETURN_REACH = 0
 
     #: The ALLOWLIST for the tuning channel: exactly the constructor parameters that are
     #: knobs, i.e. that route through `anima2/knobs.py`'s clamp. A subclass with its own
@@ -337,7 +342,7 @@ class WarriorLife:
     #: same reason: it is a cognition-tier switch that builds a real LLM client at
     #: construction time, and it is clamped by nothing.
     KNOBS: frozenset[str] = frozenset({"bank_reserve", "econ_grace", "disagreement_ticks",
-                                       "wander_leash"})
+                                       "wander_leash", "bank_return_reach"})
 
     def __init__(self, body, persona: Persona, profession: str = "swordsman",
                  routes: dict | None = None, *,
@@ -345,6 +350,7 @@ class WarriorLife:
                  econ_grace: int | None = None,
                  disagreement_ticks: int | None = None,
                  wander_leash: int | None = None,
+                 bank_return_reach: int | None = None,
                  steering: str = "scripted") -> None:
         prof = PROFESSIONS[profession]
         #: Steering evidence: every LLM consult as (candidates, chosen, used_llm).
@@ -400,6 +406,20 @@ class WarriorLife:
         # gate recreated the drift class through this very knob (review-caught).
         self.econ_agent.memory["bank_reserve"] = (
             self.DEFAULT_BANK_RESERVE if bank_reserve is None else bank_reserve)
+        # HOW CLOSE "HOME" HAS TO BE after a deposit. `_bank_achieved` requires
+        # `cap_bank_returned_goal_id`, and `BankGold` only writes it once the character is
+        # within this reach of `bs_stand`. 0 — the historical value, and still the default
+        # for every crafter — means the exact tile, which is right when the stand is an
+        # anvil. A HUNTER has no such tile: it moves while it fights, so it essentially
+        # never lands back on the square its trip opened from, and a deposit that really
+        # happened is then recorded as a give-up. Measured 2026-08-24 (audit §62.4): 904
+        # gold in the bank reported as `landed=0/6`.
+        #
+        # Set here rather than in the runner so every construction site gets it — and it
+        # is a KNOB, clamped like the rest, so a searcher can move it.
+        self.econ_agent.memory["bank_return_reach"] = (
+            self.DEFAULT_BANK_RETURN_REACH if bank_return_reach is None
+            else bank_return_reach)
         # The two RULE-ONLY knobs — nothing outside this module reads either, so they
         # ride instance attributes rather than memory keys (`decide` is a staticmethod
         # over `(obs, memory)` and can only see a knob that is a KEY; a knob only

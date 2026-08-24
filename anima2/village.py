@@ -3215,6 +3215,30 @@ def ready_to_fight(life, o) -> bool:
         return False
 
 
+#: A hunter has no anvil. `_bank_achieved` requires the trip to get back to `bs_stand`,
+#: and `WarriorLife` defaults that to the EXACT tile because every other Life that
+#: inherits it really does have a workbench. 2 matches `market.BANK_REACH`, so "home" and
+#: "at the bank" use one tolerance.
+_WARRIOR_BANK_RETURN_REACH = 2
+
+
+def warrior_village_knobs(knobs: dict) -> dict:
+    """The village's own knob defaults, under anything the caller asked for.
+
+    Separate from `WarriorLife`'s class defaults on purpose: those are inherited by the
+    carpenter, tinker, mage and woodsman, and `bank_return_reach = 2` is right for a
+    profession that fights over ground and wrong for one that stands at a forge. This is
+    a staging choice about THIS village.
+
+    Measured 2026-08-24 (audit §62.4): a warrior day put **904 gold** in the bank and
+    reported `landed=0/6` — every frame a give-up — because the deposit landed and the
+    walk home never hit the exact square the trip opened from.
+
+    A `--knob` always wins; these only fill in what nobody chose.
+    """
+    return {"bank_return_reach": _WARRIOR_BANK_RETURN_REACH, **knobs}
+
+
 #: How far a warrior-village shop is placed from the hunting pocket, and the floor under
 #: which that leg is reported as impossible rather than merely tight. 12 was the old fixed
 #: figure; 3 is one tile outside the ring the prey is pinned on.
@@ -3286,7 +3310,8 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
 
     # Before the first packet — and this runner spawns `count` of them, so the cost of
     # checking late scales with the roster.
-    knobs = validate_knobs(knobs, WarriorLife.KNOBS, label="warrior village")
+    knobs = warrior_village_knobs(
+        validate_knobs(knobs, WarriorLife.KNOBS, label="warrior village"))
 
     hx, hy = HUNTING_SPOT
     prof = PROFESSIONS["swordsman"]

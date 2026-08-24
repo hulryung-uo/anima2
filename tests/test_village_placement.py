@@ -697,3 +697,27 @@ def test_a_warrior_between_the_heal_thresholds_still_gets_something_to_fight():
     assert not ready_to_fight(_Life(), _obs(150, dead=True)), "a corpse is not ready"
     assert not ready_to_fight(_Life(), None), "unknown reads as NOT ready"
     assert not ready_to_fight(object(), _obs(150)), "and it never raises into the GM loop"
+
+
+def test_the_warrior_village_fills_in_a_return_reach_a_hunter_can_reach():
+    """`WarriorLife.DEFAULT_BANK_RETURN_REACH` is 0 and must stay 0: the carpenter,
+    tinker, mage and woodsman all inherit it and all have a workbench their bank trip
+    must return to exactly. The hunter does not, and a deposit it walked away from was
+    being recorded as a give-up — 904 gold banked, `landed=0/6` (audit §62.4).
+
+    So the value is the VILLAGE's, and a `--knob` still outranks it.
+    """
+    from anima2.skills.market import BANK_REACH
+    from anima2.village import _WARRIOR_BANK_RETURN_REACH, warrior_village_knobs
+    from anima2.warrior_life import WarriorLife
+
+    assert WarriorLife.DEFAULT_BANK_RETURN_REACH == 0, "crafters keep the exact tile"
+    assert warrior_village_knobs({})["bank_return_reach"] == _WARRIOR_BANK_RETURN_REACH
+    assert _WARRIOR_BANK_RETURN_REACH == BANK_REACH, (
+        "home and at-the-bank must use one tolerance, or a trip can be closer to "
+        "arriving than to leaving")
+    # Nothing else is invented, and the caller always wins.
+    assert warrior_village_knobs({}).keys() == {"bank_return_reach"}
+    assert warrior_village_knobs({"bank_return_reach": 5})["bank_return_reach"] == 5
+    assert warrior_village_knobs({"bank_reserve": 400}) == {
+        "bank_reserve": 400, "bank_return_reach": _WARRIOR_BANK_RETURN_REACH}

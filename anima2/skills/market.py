@@ -148,6 +148,28 @@ BANK_CLILOC = 3_006_105  # "Bank" (opens the bank box)
 # elsewhere in this package.
 SELL_REACH = 2
 BANK_REACH = 2
+
+
+def bank_return_reach(memory) -> int:
+    """How close the bank trip's RETURN leg must get to `bs_stand` to count as home.
+
+    0 — the historical value, byte-identical for every crafter — means the exact tile,
+    which is right when the stand is an anvil you must be standing on to resume work.
+
+    A profession with no workbench has no such tile, and requiring one is how a
+    SUCCESSFUL deposit gets recorded as a failure: `_bank_achieved` requires
+    `cap_bank_returned_goal_id`, that id is only written when `pos == bs_stand` exactly,
+    and a warrior moves while it fights. Measured 2026-08-24 (audit §62.4): a day that
+    banked **904 gold** — `banked=` reads the bank box and climbed 267 -> 580 -> 904 —
+    reported `landed=0/6`, every frame `giveup`. `landed=` exists (§37/§38) so that "busy
+    and completing nothing" is visible, and a false ZERO there is exactly as bad as a
+    false alarm.
+
+    Read through the clamped single source so the WALK and the ARRIVAL TEST cannot
+    disagree: a walk that stops at reach 2 while the predicate demands 0 gives up
+    forever on a trip it has already finished.
+    """
+    return knob_int(memory, "bank_return_reach", 0)
 # How far from the route's final waypoint to look for the vendor/banker
 # mobile itself — generous: `[Add`'s ground-target placement can settle a
 # tile or two off the exact requested spot (live-observed).
@@ -1380,6 +1402,12 @@ class BlacksmithMarket(Blacksmith):
         d = direction_toward(here, Position(tx, ty, here.z))
         return SkillResult(Status.RUNNING, Walk(dir=d, run=False), reward)
 
+    #: Reach for the walk home. 0 (the exact stand tile) for every crafter; `BankGold`
+    #: reads a knob so a workbench-less profession can widen it.
+    @staticmethod
+    def _return_reach(ctx: SkillContext) -> int:
+        return 0
+
     def _market_return_step(self, ctx: SkillContext, tag: str,
                             route: list[tuple[int, int]]) -> SkillResult | None:
         """Walk back to the forge/anvil stand tile (`bs_stand`) via the same
@@ -1397,7 +1425,7 @@ class BlacksmithMarket(Blacksmith):
         # reverses to an empty list, so this is exactly `[stand]`, matching
         # the original direct-walk-home behaviour on open ground.
         home_route = list(reversed(route[:-1])) + [tuple(stand)]
-        step = self._walk_route(ctx, home_route, tag, 0, 0.0)
+        step = self._walk_route(ctx, home_route, tag, self._return_reach(ctx), 0.0)
         # Both real arrival (`_ARRIVED`) and a wedge give-up (`None` from
         # `_market_walk_toward`, already reward-stashed) resolve to `None`
         # here — either way, the caller resumes the MAKE loop from wherever
@@ -2024,6 +2052,10 @@ class BankGold(BlacksmithMarket):
             remaining -= take
         return tuple(banked)
 
+    @staticmethod
+    def _return_reach(ctx: SkillContext) -> int:
+        return bank_return_reach(ctx.memory)
+
     def _begin_goal(self, ctx: SkillContext) -> bool:
         goal_id = ctx.goal_id
         if type(goal_id) is not int:
@@ -2318,10 +2350,16 @@ class BankGold(BlacksmithMarket):
             # progressed" zombie, 20+ minutes of a Life doing nothing.
             ctx.memory["cap_run_finished_goal_id"] = goal_id
             stand = ctx.memory.get("bs_stand")
+            # THE SAME NUMBER the walk home used. These were `0` and "exactly equal"
+            # written twice, which is the drift class `knobs.py` exists for — a walk that
+            # stops at reach 2 while this demands 0 hands back a `giveup` for a trip it
+            # has already finished, and the deposit is real either way.
+            reach = self._return_reach(ctx)
             if (
                 isinstance(stand, (tuple, list))
                 and len(stand) == 2
-                and (obs.player.pos.x, obs.player.pos.y) == tuple(stand)
+                and max(abs(obs.player.pos.x - stand[0]),
+                        abs(obs.player.pos.y - stand[1])) <= reach
             ):
                 ctx.memory["cap_bank_returned_goal_id"] = goal_id
             self._observe_evidence(ctx)

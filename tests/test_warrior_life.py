@@ -587,3 +587,76 @@ def test_a_bleeding_warrior_is_not_sent_on_an_errand():
     # NO READING IS NOT A WOUND. Every observation carries `hits_max = 0` before the
     # shard's first status packet, and every offline fixture leaves it there.
     assert decide_mode(_hurt(0, hits_max=0), dict(ROUTES)) == ("economy", "bank_gold")
+
+
+def test_a_hunter_counts_a_deposit_it_walked_away_from():
+    """`_bank_achieved` requires `cap_bank_returned_goal_id`, and `BankGold` writes it
+    only once the character is back within `bank_return_reach` of `bs_stand`. Zero — the
+    exact tile — is right for every Life that inherits `WarriorLife` and has an anvil.
+
+    A hunter has no such tile. It moves while it fights, so it essentially never lands
+    back on the square the trip opened from, and a deposit that really happened is
+    recorded as a give-up. Measured 2026-08-24 (audit §62.4): a day put **904 gold** in
+    the bank — `banked=` reads the bank box and climbed 267 -> 580 -> 904 — and reported
+    `landed=0/6`. `landed=` exists so "busy and completing nothing" is visible, and a
+    false ZERO is exactly as bad as a false alarm.
+    """
+    from anima2.mock_body import MockBody
+    from anima2.skills.market import bank_return_reach
+    from anima2.warrior_life import WarriorLife
+
+    def _life(**kw):
+        body = MockBody(player=PlayerView(serial=PLAYER, name="B", pos=Position(5, 5, 0),
+                                          hits=150, hits_max=150, body=0x190))
+        return WarriorLife(body=body, persona=Persona(name="Bram"),
+                           routes={"banker_spot": ((10, 10),)}, **kw)
+
+    # The BASE default is the historical exact tile — every crafter subclass inherits it.
+    assert WarriorLife.DEFAULT_BANK_RETURN_REACH == 0
+    assert bank_return_reach(_life().econ_agent.memory) == 0
+
+    # ...and it is a real constructor parameter, so the knob channel can carry it.
+    assert bank_return_reach(_life(bank_return_reach=2).econ_agent.memory) == 2
+    assert "bank_return_reach" in WarriorLife.KNOBS
+
+    # A malformed value clamps rather than reaching the walk: the reader and the arrival
+    # test share this one call, so a negative here would make "home" unreachable.
+    life = _life()
+    life.econ_agent.memory["bank_return_reach"] = -5
+    assert bank_return_reach(life.econ_agent.memory) == 0
+
+
+def test_the_walk_home_and_the_arrival_test_read_one_number():
+    """`_market_return_step` walked at reach 0 while the arrival test compared tiles for
+    exact equality — the same constant written twice, which is the drift class
+    `knobs.py` exists for. Widening one without the other gives up forever on a trip it
+    has already finished, or marks a trip home that never happened.
+    """
+    from anima2.contract import Walk
+    from anima2.skills.base import SkillContext
+    from anima2.skills.market import BankGold
+
+    def _ctx(x, y, reach):
+        obs = Observation(player=PlayerView(serial=PLAYER, pos=Position(x, y, 0),
+                                            hits=150, hits_max=150),
+                          items=[_backpack()])
+        return SkillContext(obs=obs, persona=Persona(name="Bram"),
+                            memory={"bs_stand": (10, 10), "bank_return_reach": reach})
+
+    skill = BankGold()
+    # Reach 0 is the historical behaviour: two tiles out is still walking.
+    step = skill._market_return_step(_ctx(12, 10, 0), "bank_return", [(20, 20)])
+    assert step is not None and isinstance(step.action, Walk), step
+
+    # The SAME position with the hunter's reach reads as home — no walk, no give-up.
+    assert skill._market_return_step(_ctx(12, 10, 2), "bank_return", [(20, 20)]) is None
+
+    # ...and the reach is not a licence to be anywhere: three tiles is still walking.
+    step = skill._market_return_step(_ctx(13, 10, 2), "bank_return", [(20, 20)])
+    assert step is not None and isinstance(step.action, Walk), step
+
+    # `_return_reach` is where both readers meet, and on the base class it is still 0 —
+    # every crafter that never sets the key behaves byte-identically.
+    from anima2.skills.market import BlacksmithMarket
+    assert BlacksmithMarket._return_reach(_ctx(0, 0, 2)) == 0
+    assert BankGold._return_reach(_ctx(0, 0, 2)) == 2
