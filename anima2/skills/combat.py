@@ -42,8 +42,19 @@ class Combat(Skill):
     #: infinite loop. `Attack` still goes out, so a target that wanders back into reach is
     #: still engaged.
     approach_stall_limit: int = 6
+    #: Ticks to spend attacking before a stalled approach is tried again. Without this the
+    #: budget above is a LIFETIME cap — the same shape `max_flee_steps` had in §55.3 —
+    #: because it resets only on arriving or on moving, and a warrior that can do neither
+    #: never retries. Measured 2026-08-25 on a three-warrior roster (audit §64): Bram1 and
+    #: Bram2 sat at `foes=d2,d2,d2` with `act=Attackx547` and `!stalled` for the whole run
+    #: while Bram0, whose first approach happened to land, banked normally.
+    #:
+    #: A transient block — a creature in the doorway, a tile a neighbour is crossing —
+    #: must not end the day, and a permanent one must not become a walk every tick.
+    approach_retry_ticks: int = 30
     _APPROACH_POS = "combat_approach_pos"
     _APPROACH_STALL = "combat_approach_stall"
+    _APPROACH_TARGET = "combat_approach_target"
 
     def can_run(self, ctx: SkillContext) -> bool:
         return ctx.persona.combat_disposition != "pacifist" and self._target(ctx) is not None
@@ -77,10 +88,18 @@ class Combat(Skill):
             # for one fact means a mutant can delete either and the tests stay green.
             ctx.memory[self._APPROACH_STALL] = 0
             return None
+        # A NEW TARGET IS A NEW APPROACH. The old one's blocked tile says nothing about
+        # this one's, and carrying the count over means one wall spends the budget for
+        # every creature that follows.
+        if ctx.memory.get(self._APPROACH_TARGET) != target.serial:
+            ctx.memory[self._APPROACH_TARGET] = target.serial
+            ctx.memory[self._APPROACH_STALL] = 0
         last = ctx.memory.get(self._APPROACH_POS)
         moved = last != (here.x, here.y)
         stall = 0 if moved else int(ctx.memory.get(self._APPROACH_STALL, 0)) + 1
         ctx.memory[self._APPROACH_POS] = (here.x, here.y)
+        if stall >= self.approach_stall_limit + self.approach_retry_ticks:
+            stall = 0  # the cooldown is up: try the walk again rather than swing forever
         ctx.memory[self._APPROACH_STALL] = stall
         if stall >= self.approach_stall_limit:
             return None

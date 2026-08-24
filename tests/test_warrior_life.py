@@ -660,3 +660,98 @@ def test_the_walk_home_and_the_arrival_test_read_one_number():
     from anima2.skills.market import BlacksmithMarket
     assert BlacksmithMarket._return_reach(_ctx(0, 0, 2)) == 0
     assert BankGold._return_reach(_ctx(0, 0, 2)) == 2
+
+
+def _banking_warrior(*, bank_return_reach, stand=(2587, 408), bank=(2587, 413),
+                     gold=2000, leash=1):
+    """A warrior, a banker five tiles away, and a pack full of loot.
+
+    Audit follow-up 22's remaining half. `MockVendor` closed the buy/sell side; the bank
+    trip stayed live-only through seventeen warrior days, and §63 is what that cost — a
+    SUCCESSFUL deposit recorded as a give-up for six frames a day, visible only on a
+    shard tape.
+    """
+    from anima2.contract import MobileView
+    from anima2.mock_body import MockBanker, MockBody
+    from anima2.skills.hunt import GOLD_GRAPHIC
+    from anima2.warrior_life import WarriorLife
+
+    banker_serial, box_serial = 0xB0, 0xB1
+    body = MockBody(player=PlayerView(serial=PLAYER, name="Bram",
+                                      pos=Position(*stand, 0), hits=150, hits_max=150,
+                                      body=0x190))
+    body.items[BP] = ItemView(serial=BP, graphic=0x0E75, amount=1, pos=Position(),
+                              container=PLAYER, layer=BACKPACK_LAYER, distance=0)
+    body.items[0x900] = ItemView(serial=0x900, graphic=GOLD_GRAPHIC, amount=gold,
+                                 pos=Position(), container=BP, layer=0, distance=0)
+    body.mobiles[banker_serial] = MobileView(serial=banker_serial, name="Banker",
+                                             pos=Position(*bank, 0), body=0x190,
+                                             notoriety=1, hits=50, hits_max=50,
+                                             distance=0)
+    body.bankers[banker_serial] = MockBanker(serial=banker_serial, box_serial=box_serial)
+    life = WarriorLife(body=body, persona=Persona(name="Bram"),
+                       routes={"banker_spot": (bank,)},
+                       bank_return_reach=bank_return_reach)
+    life.set_leash(stand, leash)
+    return body, life, box_serial
+
+
+def _box_gold(body, box_serial):
+    from anima2.skills.hunt import GOLD_GRAPHIC
+    return sum(i.amount for i in body.items.values()
+               if i.graphic == GOLD_GRAPHIC and i.container == box_serial)
+
+
+def test_a_warrior_banks_its_loot_offline_end_to_end():
+    """The first bank trip this project can replay without a shard.
+
+    Walk out, right-click the banker, pick the Bank entry, wait out the settle, drop the
+    surplus into the box, walk home — and the frame ACHIEVES, which is the half §63 was
+    about. `bank_reserve` stays behind in the pack, so this also pins the partial-pile
+    split the mock had backwards (`test_a_partial_pickup_splits_the_stack_the_way_the_server_does`).
+    """
+    from anima2.goals import GoalOutcome
+    from anima2.skills.hunt import GOLD_GRAPHIC
+    from anima2.obsview import pack_amount
+    from anima2.warrior_life import BANK_RESERVE
+
+    body, life, box = _banking_warrior(bank_return_reach=2)
+    for _ in range(120):
+        life.tick()
+
+    surplus = 2000 - BANK_RESERVE
+    assert _box_gold(body, box) == surplus, "the surplus is in the box"
+    assert pack_amount(body.observe(), GOLD_GRAPHIC) == BANK_RESERVE, "the reserve stayed"
+    assert body.bankers[0xB0].opened is True, "the box was opened through the popup"
+
+    history = life.econ_agent.goal_stack.history
+    assert history, "no bank frame ever retired"
+    assert [f.outcome for f in history] == [GoalOutcome.SUCCESS] * len(history), (
+        [(f.id, f.outcome) for f in history])
+
+
+def test_a_banker_with_no_bank_entry_is_a_give_up_not_a_hang():
+    """The failure the double exists to be able to reproduce: the popup opens and does
+    not offer Bank. Before `MockBanker` this could only be guessed at from a tape."""
+    from anima2.goals import GoalOutcome
+
+    body, life, box = _banking_warrior(bank_return_reach=2)
+    # A banker whose menu index is not the Bank entry never opens a box.
+    body.bankers[0xB0].box_serial = 0xB1
+    original = body._vendor_act
+
+    def _wrong_entry(action):
+        from anima2.contract import PopupSelect
+        if isinstance(action, PopupSelect) and action.serial == 0xB0:
+            action = PopupSelect(serial=0xB0, index=9)   # an entry it never offered
+        return original(action)
+
+    body._vendor_act = _wrong_entry
+    for _ in range(200):
+        life.tick()
+
+    assert _box_gold(body, box) == 0, "nothing was banked"
+    assert body.bankers[0xB0].opened is False
+    history = life.econ_agent.goal_stack.history
+    assert history and all(f.outcome is GoalOutcome.FAILURE for f in history), (
+        [(f.id, f.outcome) for f in history])

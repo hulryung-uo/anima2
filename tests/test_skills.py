@@ -58,6 +58,27 @@ def test_combat_walks_into_reach_instead_of_swinging_at_nothing():
     assert walks == skill.approach_stall_limit, walks
     assert isinstance(skill.step(ctx).action, Attack), "and then it swings anyway"
 
+    # A BLOCKED APPROACH IS RETRIED, or the budget is a LIFETIME cap: it resets only on
+    # arriving or on moving, and a warrior that can do neither never walks again.
+    # Measured 2026-08-25 on a three-warrior roster (audit §64): two of three sat at
+    # `foes=d2,d2,d2` with `act=Attackx547` and `!stalled` for a whole run, while the
+    # third — whose first approach happened to land — banked normally.
+    swings = 0
+    while not isinstance(skill.step(ctx).action, Walk):
+        swings += 1
+        assert swings <= skill.approach_retry_ticks + 2, "it never tried again"
+    assert swings > skill.approach_stall_limit, (
+        f"it retried after only {swings} swings — that is the budget cycling, not a "
+        f"cooldown, and a permanently walled-off target becomes a walk every other tick")
+
+    # A NEW TARGET gets a fresh budget — the old one's wall says nothing about this one.
+    other = MobileView(0xBB, "rat", Position(103, 100, 0), body=0x10, notoriety=6, hits=10,
+                       hits_max=10, distance=3)
+    for _ in range(skill.approach_stall_limit):
+        skill.step(ctx)                       # spend it on 0xAA
+    ctx_other = SkillContext(obs=_obs([other]), persona=ctx.persona, memory=ctx.memory)
+    assert isinstance(skill.step(ctx_other).action, Walk), "a new target, a new approach"
+
     # In reach, it never walks — and arriving RESETS the budget, so a target that runs
     # off again is chased afresh instead of inheriting a spent counter. One tick of the
     # new chase is charged immediately, because we are standing where we already stood

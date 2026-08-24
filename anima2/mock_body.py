@@ -81,6 +81,33 @@ class MockVendor:
 
 
 @dataclass
+class MockBanker:
+    """A banker — the popup entry and the box it opens, which is all `BankGold` asks for.
+
+    Audit follow-up 22's other half. `MockVendor` closed the buy/sell side; the bank trip
+    stayed live-only, and §63 is what that costs: the walk home and the arrival test had
+    drifted apart into two copies of one constant, a **successful deposit was being
+    recorded as a give-up for six frames a day**, and the only way to see any of it was to
+    read a shard tape. Seventeen live warrior days and not one of them could be replayed.
+
+    The box is not a stock list: `BankGold` proves a deposit by watching gold appear
+    INSIDE a container worn at `BANKBOX_LAYER` (`_bankbox_gold`), so the box has to be a
+    real item other items can be dropped into — which `MockBody._drop` already does by
+    setting `container`. What this adds is only the two packets that make it VISIBLE:
+    ServUO does not show a bank box until a banker has been asked to open one.
+    """
+
+    serial: int
+    #: The box item's serial. It appears in `items` (worn at `BANKBOX_LAYER`) only after
+    #: a `PopupSelect` on the Bank entry, exactly as `BankBox.Open()` behaves.
+    box_serial: int
+    #: Set by the mock when the box has been opened. A trip that never gets the popup
+    #: right therefore finds no box, which is the failure this double exists to be able
+    #: to reproduce.
+    opened: bool = False
+
+
+@dataclass
 class MockBody:
     """A trivial flat world. Player walks; items can be picked up; speech is logged."""
 
@@ -129,6 +156,9 @@ class MockBody:
     #: `{serial: MockVendor}` — the shops this world contains. Empty by default, so every
     #: existing fixture behaves byte for byte as before.
     vendors: dict = field(default_factory=dict)
+    #: `{serial: MockBanker}` — the bankers this world contains. Empty by default, so
+    #: every existing fixture behaves byte for byte as before.
+    bankers: dict = field(default_factory=dict)
     #: Every action the agent asked for, in order — the mock's only way to prove a
     #: repair was actually ATTEMPTED rather than merely decided.
     actions: list = field(default_factory=list)
@@ -167,7 +197,7 @@ class MockBody:
             # follow-up 16 added. Modelled, or a trip that cancels looks like one that hung.
             self.shop_sell = None
             return
-        if self.vendors and self._vendor_act(action):
+        if (self.vendors or self.bankers) and self._vendor_act(action):
             return
         if type(action).__name__ == "GumpResponse" and getattr(action, "button", None) == 0:
             # Button 0 is CLOSE, the same answer the craft FSM sends — model it, so a
@@ -204,6 +234,26 @@ class MockBody:
         # `skills/market.py`, and taking it as a parameter would make every caller repeat
         # a number the FSM already knows.
         from .skills.market import BUY_CLILOC, SELL_CLILOC
+
+        from .skills.market import BANK_CLILOC, BANKBOX_LAYER
+
+        if isinstance(action, PopupRequest) and action.serial in self.bankers:
+            self.popup = PopupMenu(serial=action.serial,
+                                   entries=[PopupEntry(index=0, cliloc=BANK_CLILOC)])
+            return True
+
+        if isinstance(action, PopupSelect) and action.serial in self.bankers:
+            self.popup = None
+            banker = self.bankers[action.serial]
+            # ONLY the Bank entry opens a box. A menu index the banker never offered
+            # leaves the box shut, which is what makes "the popup stage went wrong"
+            # reproducible instead of merely suspected.
+            if action.index == 0:
+                banker.opened = True
+                self.items[banker.box_serial] = ItemView(
+                    serial=banker.box_serial, graphic=0x0E7C, amount=1, pos=Position(),
+                    container=self.player.serial, layer=BANKBOX_LAYER, distance=0)
+            return True
 
         if isinstance(action, PopupRequest):
             vendor = self.vendors.get(action.serial)
@@ -378,13 +428,27 @@ class MockBody:
             return  # nothing there, or the cursor is already full — a server deny
         amount = getattr(action, "amount", None) or item.amount
         if amount < item.amount:
-            # Split the stack: the remainder stays where it was, the lifted part gets
-            # a fresh serial on the cursor (mirrors the server's split behaviour).
-            item.amount -= amount
+            # SPLIT THE STACK THE WAY THE SERVER DOES, which is the opposite of what this
+            # used to do while claiming to mirror it. ServUO's `Mobile.LiftItemDupe`
+            # (`Server/Mobile.cs`) gives the NEW item `oldAmount - amount` and leaves it
+            # in the parent container, then sets `oldItem.Amount = amount` and lifts the
+            # ORIGINAL onto the cursor. So the serial the caller asked for is the serial
+            # that MOVES; the remainder is the one that gets a fresh id.
+            #
+            # The direction is load-bearing, not cosmetic. `BankGold`'s achievement proof
+            # requires `cap_bank_start_piles_cleared` — every manifest serial GONE from
+            # the pack — and `cap_bank_start_piles_removed` to equal the surplus. With
+            # the split backwards, a deposit that fully succeeded (gold in the box,
+            # `pack_delta` and `bank_delta` both right) still failed both clauses, so the
+            # first offline bank trip this project has ever been able to run reported a
+            # FAILURE the shard does not produce.
             self._held_serial_seq += 1
-            self.held = ItemView(serial=self._held_serial_seq, graphic=item.graphic,
-                                 amount=amount, pos=Position(), container=None,
-                                 layer=0, distance=0)
+            self.items[self._held_serial_seq] = ItemView(
+                serial=self._held_serial_seq, graphic=item.graphic,
+                amount=item.amount - amount, pos=item.pos, container=item.container,
+                layer=item.layer, distance=item.distance)
+            item.amount = amount
+            self.held = self.items.pop(action.serial)
         else:
             self.held = self.items.pop(action.serial)
 

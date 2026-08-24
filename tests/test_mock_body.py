@@ -48,13 +48,30 @@ def test_drop_into_a_container_moves_the_item_into_it():
     assert item.container == 0x50
 
 
-def test_a_partial_pickup_splits_the_stack_and_conserves_the_total():
+def test_a_partial_pickup_splits_the_stack_the_way_the_server_does():
+    """ServUO's `Mobile.LiftItemDupe` (`Server/Mobile.cs`) gives the NEW item
+    `oldAmount - amount` and leaves it in the parent container, then sets
+    `oldItem.Amount = amount` and lifts the ORIGINAL onto the cursor. The serial the
+    caller asked for is the serial that MOVES.
+
+    This mock had it backwards while its comment claimed to mirror the server, and the
+    direction is load-bearing: `BankGold`'s achievement proof requires every manifest
+    serial to be GONE from the pack (`cap_bank_start_piles_cleared`). Reversed, the first
+    offline bank trip this project could run banked its gold correctly and still reported
+    a FAILURE the shard does not produce.
+    """
     body = MockBody()
     body.items[0x10] = ItemView(serial=0x10, graphic=0x1BD7, amount=20, pos=Position(3, 3, 0),
                                 container=None, layer=0, distance=0)
     body.act(_PickUp(serial=0x10, amount=7))
-    assert body.items[0x10].amount == 13
-    assert body.held is not None and body.held.amount == 7
+    # The ORIGINAL serial is on the cursor, carrying the lifted amount...
+    assert body.held is not None and body.held.serial == 0x10 and body.held.amount == 7
+    assert 0x10 not in body.items
+    # ...and the remainder is a fresh item, in the place the stack was.
+    remainder = [i for i in body.items.values() if i.graphic == 0x1BD7]
+    assert len(remainder) == 1 and remainder[0].amount == 13
+    assert remainder[0].serial != 0x10
+    assert remainder[0].container is None and (remainder[0].pos.x, remainder[0].pos.y) == (3, 3)
     assert _world_total(body, 0x1BD7) == 20
 
 
