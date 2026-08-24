@@ -3228,6 +3228,28 @@ def ready_to_fight(life, o) -> bool:
 _WARRIOR_BANK_RETURN_REACH = 2
 
 
+def warrior_leash(reach: "dict[str, int]") -> int:
+    """How far a warrior may drift from its stand, given its pocket's shop rays.
+
+    Bounds IDLE DRIFT, not travel: `WarriorHunt` consults the leash in `can_run`, and a
+    bank or vendor trip is an ECONOMY-mode walk that never asks. So a warrior can still
+    walk twelve tiles to a banker; it just cannot go looking for a fight out there.
+
+    Two caps, and the smaller wins:
+
+    - the shortest walkable shop ray, because past it the straight-line walk that is all
+      `market.py` has is not guaranteed to get anywhere; and
+    - the prey ring plus a step, because that is the whole pocket.
+
+    It used to be the first alone, which reads as correct at the proven pocket (3) and is
+    12 at one with open ground on every side. Measured 2026-08-25 (audit §64.5): the
+    rescued second warrior of a three-warrior roster drifted seven tiles off its stand,
+    left its pinned prey behind at `foes=d4,d4,d5`, and spent the run swinging across
+    ground it could cross one tile of.
+    """
+    return max(_VENDOR_MIN_GAP, min(min(reach.values()), _PREY_GAP + 2))
+
+
 def warrior_village_knobs(knobs: dict) -> dict:
     """The village's own knob defaults, under anything the caller asked for.
 
@@ -3527,10 +3549,20 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # `bank_gold` frames given up from `@(2591,414)`, four tiles from a banker the
             # greedy market walk could not route around a pinned creature to reach.
             #
-            # The radius is the shortest walkable shop ray. Anywhere inside it, every shop
-            # this village staged is still reachable by the straight-line walk that is all
-            # `market.py` has; outside it, nothing is guaranteed.
-            life.set_leash((gx, gy), max(_VENDOR_MIN_GAP, min(reach.values())))
+            # THE RADIUS IS THE POCKET, not the shop distance. It was `min(reach)` — the
+            # shortest walkable shop ray — which happens to be 3 at the proven pocket and
+            # so read as correct, and is 12 at a pocket with open ground on every side.
+            # Measured 2026-08-25 (audit §64.5): the rescued second warrior drifted seven
+            # tiles off its stand, left its pinned prey behind at `foes=d4,d4,d5`, and
+            # spent the run attacking across ground it could only cross one tile of.
+            #
+            # The leash bounds IDLE DRIFT, and a warrior has no business more than a step
+            # or two beyond the ring its prey is pinned on. It does not gate shop trips:
+            # `WarriorHunt` consults it in `can_run`, and a bank or vendor trip is an
+            # ECONOMY-mode walk that never asks. So the shortest shop ray is still a cap —
+            # a pocket whose shops are 3 tiles out should not roam 4 — but it is no longer
+            # the value.
+            life.set_leash((gx, gy), warrior_leash(reach))
             warriors.append({"i": i, "life": life, "spot": (gx, gy, gz), "respawned": 0})
         # Staging is serial and GM-heavy, so with a big roster the FIRST-staged bodies sit
         # idle for a long time before anyone starts playing. Warm every body (and report

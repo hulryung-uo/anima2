@@ -838,3 +838,30 @@ def test_walkable_run_refuses_ground_nothing_can_stand_on():
         assert walkable_run(0, 500, 500, 1, 0, 6) == 6
     finally:
         uomap.land_cells = real
+
+
+def test_the_leash_is_the_pocket_and_not_the_walk_to_the_shops():
+    """It was the shortest walkable shop ray, which is 3 at the proven pocket — so it read
+    as correct — and 12 at a pocket with open ground on every side.
+
+    Measured 2026-08-25 (audit §64.5): the rescued second warrior of a three-warrior
+    roster drifted seven tiles off its stand, left its pinned prey behind at
+    `foes=d4,d4,d5`, and spent the run swinging across ground it could cross one tile of.
+    """
+    from anima2.village import _PREY_GAP, _VENDOR_GAP, _VENDOR_MIN_GAP, warrior_leash
+
+    open_ground = dict.fromkeys(("weapon", "healer", "banker", "armorer"), _VENDOR_GAP)
+    assert warrior_leash(open_ground) == _PREY_GAP + 2, (
+        "open ground is not a licence to wander: the pocket is the prey ring plus a step")
+
+    # THE PROVEN POCKET DOES NOT MOVE. Its shortest ray is 3, and two 2000-gold days were
+    # measured at that leash (§63.4/§63.5).
+    proven = {"weapon": 3, "healer": 6, "banker": 4, "armorer": 5}
+    assert warrior_leash(proven) == 3
+
+    # A pocket whose shops are closer than the prey ring is still capped by the shops —
+    # walking past them is not guaranteed to get anywhere.
+    assert warrior_leash({"weapon": _VENDOR_MIN_GAP, "healer": 9, "banker": 9,
+                          "armorer": 9}) == _VENDOR_MIN_GAP
+    # ...and never below the floor, or the warrior cannot leave the tile it stands on.
+    assert warrior_leash(dict.fromkeys(("a", "b"), 0)) == _VENDOR_MIN_GAP
