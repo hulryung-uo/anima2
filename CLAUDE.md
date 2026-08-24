@@ -60,7 +60,8 @@ DIED 0 · !stalled 0 · NOTHING LANDS 0 · WEDGED WALK 0
 ```
 
 Economy progression, in order: 0 (x16 days) -> 325 -> 122 -> 157 -> 321 -> 630 -> 1297 ->
-1074 -> 904 -> **2446**. Ten defects, each with its evidence, in
+1074 -> 904 -> **2446**, and the next day 2073 with the same 0 deaths and 13/14 frames — the
+variance that made earlier good days meaningless is gone. Ten defects, each with its evidence, in
 `docs/AUDIT-2026-07-29.md` §54-§63 and `docs/SWORD-WARRIOR.md`. The six that change how
 you should think about this codebase:
 
