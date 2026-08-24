@@ -51,52 +51,65 @@ ruff clean. Highlights that matter for resuming:
 
 `python -m anima2.village --warriors 1 --ticks 1200` survives the day and earns. For
 SIXTEEN live days it ended in a corpse with `banked=0` every time. Best day
-(`~/anima-logs/warrior-20260824-0453-gap.log`):
+(`~/anima-logs/warrior-20260824-0947-count.log`):
 
 ```
-banked=630   landed=4/4 (every economy frame achieved)   kills=5   out+956.0
-deaths=0   hp=109/150 at BUDGET SPENT   prey: 0 lost, 0 deleted for not pinning
+banked=2446   landed=16/17 (bank frames achieved, most at age 8-10 of 120)   kills=18
+out+2772.2   deaths=0   hp=83/150 at BUDGET SPENT   prey: 0 lost, 0 deleted
 DIED 0 · !stalled 0 · NOTHING LANDS 0 · WEDGED WALK 0
 ```
 
-Eight defects, each with its evidence, in `docs/AUDIT-2026-07-29.md` §54–§61 and
-`docs/SWORD-WARRIOR.md`. The five that change how you should think about this codebase:
+Economy progression, in order: 0 (x16 days) -> 325 -> 122 -> 157 -> 321 -> 630 -> 1297 ->
+1074 -> 904 -> **2446**. Ten defects, each with its evidence, in
+`docs/AUDIT-2026-07-29.md` §54-§63 and `docs/SWORD-WARRIOR.md`. The six that change how
+you should think about this codebase:
 
 - **`decide_mode` answers `("hunt", None)` below `WarriorSurvive.heal_below_fraction`**
   (§56). `gold > bank_reserve` reads the same at 26% HP in melee as at full health, so the
-  rule kept sending a bleeding warrior to the bank; it died at hp 39→1 over ninety ticks
-  with 103 unused bandages. This one branch produced the first day ending alive. An
-  override making survival beat the exit-edge hold was written and **reverted** — it
-  reddened the live-proven bound-3 gate, whose mechanism is wounding below that same
-  trigger (§57.2).
+  rule kept sending a bleeding warrior to the bank; it died at hp 39->1 over ninety ticks
+  with 103 unused bandages. This one branch produced the first day ending alive.
+  `_being_killed` (§61.12) extends it to the exit-edge hold — but only when a hostile is
+  actually in reach, because the live-proven bound-3 gate is a wounded tinker with none.
 - **`uomap.walkable_run` places the village's shops** (§58). They were staged at a flat
   ±12 and `HUNTING_SPOT` is a z=15 plateau ringed by cliffs — ServUO allows a `+2` land
   step (`Movement.cs`) and the banker sat 54 z up behind a `+10`. That ONE fact explained
   three separately-tracked blockers: `banked=0`, no vendor purchase ever, and
   `BACK ALIVE=0`. Descent is uncapped in ServUO, so the bound is applied BOTH ways: a shop
   down a cliff is a one-way trip.
-- **`Combat` now walks into reach** (§59). It emitted `Attack` forever and never closed;
-  the server does not move the player. One day spent `act=Attackx831` at `foes=d2`. It had
-  never shown because the village spawned prey ADJACENT.
-- **A pinned creature is a permanent wall** (§61). Spawning top-up beside the warrior's
-  live tile turned the new approach step into a random walk (nine deaths, 8 of 10 bank
-  frames lost); spawning it on the stand's own neighbours barricaded him onto it (19
-  give-ups, nothing banked). `_PREY_GAP = 2` clears all eight neighbours.
+- **`Combat` walks into reach, and `WarriorHunt` is leashed** (§59, §62). `Combat` emitted
+  `Attack` forever and never closed — one day spent `act=Attackx831` at `foes=d2`; the
+  server does not move the player. Adding the approach then let the warrior chase, park
+  four tiles from home, and give up 34 bank frames, so `WarriorHunt` now refuses to engage
+  from outside `wander_leash` of the stand. `run_warrior_village` had been the only runner
+  in the file that never called `set_leash`.
+- **A pinned creature is a permanent wall, and the spawner got it wrong three ways**
+  (§55, §61). It never read `CantWalk` back; then it spawned beside the warrior's live
+  tile (nine deaths, a random walk); then on the stand's own neighbours (19 give-ups,
+  nothing banked); and `find_mobile_near` re-pinned an ALREADY pinned creature and
+  reported success while the fresh one roamed. `_PREY_GAP = 2` plus an exclude set of
+  every visible mobile.
 - **`ready_to_fight` reads `Survive`'s heal LATCH, not an HP fraction** (§60). The old
   0.75 bar starved a warrior anywhere between 40% and 75% — not healing, able to fight,
   fed nothing — and it wandered out of its own pocket.
+- **A false FAILURE is not free** (§63). `_bank_achieved` required the trip home to reach
+  `bs_stand` EXACTLY, which is an anvil for a crafter and nothing at all for a hunter, so
+  904 banked gold reported `landed=0/6`. Fixing the accounting more than doubled the
+  day's earnings, because every falsely-failed frame made the give-up ladder burn a
+  trip's worth of ticks. The walk home and the arrival test had been the same constant
+  written twice; both now read `market.bank_return_reach`.
 
-**`BACK ALIVE` fired for the first time** (§61.6): `DIED at (2587,408)` →
-`BACK ALIVE at (2583,408) after 10 ticks dead`. Nothing in `RecoverDeath` changed; §58 just
-moved the Healer to somewhere a ghost can walk. §53.5 had blamed the sibling repo on
-`steps=`, a counter structurally blind to `WalkTo`; §55.5's `res=` field is what made the
-third possibility visible. **The body walks ghosts fine.**
+**`BACK ALIVE` fired for the first time** (§61.6): `DIED` -> `BACK ALIVE ... after 10 ticks
+dead` -> corpse recovered -> re-equipped (`plate=6/6`). Nothing in `RecoverDeath` changed;
+§58 just moved the Healer to somewhere a ghost can walk. §53.5 had blamed the sibling repo
+on `steps=`, a counter structurally blind to `WalkTo`. **The body walks ghosts fine.**
 
 **Still open on the warrior:** no vendor PURCHASE has run inside a village day
 (`buy_bandage`/`buy_weapon`/`buy_armor` are proved only by single-situation scripts);
-`NO PROGRESS` false-fires ~15×/day here (kills are ~200 ticks apart from one tile — `act=`
-distinguishes it, the 40-tick threshold does not fit this profession); and multi-warrior
-rosters are untested against all of the above.
+`NO PROGRESS` false-fires ~9-15x/day here (kills are ~200 ticks apart from one tile —
+`act=` distinguishes it, the 40-tick threshold does not fit this profession); there is no
+offline reproduction of a full bank trip (`MockBody` has no banker — the same gap
+follow-up 22 records for the buy FSM); and multi-warrior rosters are untested against all
+of the above.
 
 New readout fields, all on the per-agent line: `foes=` (nearest three hostile distances —
 oscillation around a stationary warrior is how §55 caught unpinned prey), `ui=` (open
