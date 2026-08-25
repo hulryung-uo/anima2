@@ -3325,6 +3325,7 @@ def stage_pinned_prey(gm, prey: str, x: int, y: int, z: int, *,
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
                         ticks: int = 200, account_prefix: str = "animawar",
                         prey: str = "Ettin", prey_target: int = 2, spacing: int = 25,
+                        bandages: int = 100,
                         monitor: bool = False, narrate: bool = False,
                         knobs: dict[str, Any] | None = None) -> None:
     """Run `count` swordsmen LIVING the full autonomous loop via `WarriorLife`: each
@@ -3354,7 +3355,13 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
 
     hx, hy = HUNTING_SPOT
     prof = PROFESSIONS["swordsman"]
-    items = ["Bandage 100", "Katana", "PlateChest", "PlateLegs", "PlateArms",
+    # HOW MANY BANDAGES THE WARRIOR IS HANDED. 100 is a working day's supply and the
+    # figure every measured day was run at — and it is also why `buy_bandage` has NEVER
+    # executed inside a village day: `decide_mode` wants it below `LOW_BANDAGES` (10), and
+    # a warrior that starts with 100 and spends ~10 a day cannot get there before BUDGET
+    # SPENT. Staging fewer is the only way to reach the resupply leg live without waiting
+    # ten days for it.
+    items = [f"Bandage {bandages}", "Katana", "PlateChest", "PlateLegs", "PlateArms",
              "PlateGloves", "PlateGorget", "PlateHelm"]
 
     print(f"raising a warrior village: {count} swordsman(men) at {host}:{port}")
@@ -4377,6 +4384,11 @@ def main() -> None:
     ap.add_argument("--warriors", type=int, default=0,
                     help="run N swordsmen living the autonomous hunt<->re-arm loop (WarriorLife); "
                          "supersedes the trade-village roster when > 0")
+    ap.add_argument("--warrior-bandages", type=int, default=100,
+                    help="bandages staged into each swordsman's pack (default 100). "
+                         "Lower it to reach the buy_bandage resupply leg inside one day: "
+                         "the rule wants a restock below LOW_BANDAGES and a warrior that "
+                         "starts with 100 never gets there in 1200 ticks")
     ap.add_argument("--miners", type=int, default=2)
     ap.add_argument("--lumberjacks", type=int, default=1)
     ap.add_argument("--fishers", type=int, default=1)
@@ -4542,7 +4554,7 @@ def main() -> None:
                          default_role="swordsman")
         run_warrior_village(args.warriors, host=args.host, port=args.port,
                             monitor=args.monitor, narrate=args.narrate,
-                            knobs=k["swordsman"],
+                            knobs=k["swordsman"], bandages=args.warrior_bandages,
                             ticks=args.ticks, account_prefix=args.account_prefix)
         return
 
