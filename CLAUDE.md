@@ -118,8 +118,16 @@ observation, so a spawn sixty tiles away was never found and never pinned. A
 three-warrior request yields TWO warriors on this map: the third pocket has no walkable
 ground that stays clear of its neighbour, and the runner says so and skips it.
 
-**Still open on the warrior:** no vendor PURCHASE has run inside a village day
-(`buy_bandage`/`buy_weapon`/`buy_armor` are proved only by single-situation scripts);
+**`buy_bandage` runs in a village day now** (§65): `--warrior-bandages 3` starts the
+warrior below `LOW_BANDAGES`, and the tape shows the whole transaction — 20 bandages for
+exactly 100 gold, `FRAME RETIRED buy_bandage#1 age=19/180 -> achieved`, on a day that also
+banked three times with `deaths=0`. The default stays 100. Note the estimate that led
+there was wrong and the audit says so: a day spends ~1 bandage per 450 ticks, not ten per
+day, because §64.6 keeps the plate on.
+
+**Still open on the warrior:** `buy_weapon`/`buy_armor` have still never run in a village
+day — they need the blade or chest to be LOST, and death puts that gear on the corpse
+where `RecoverDeath` fetches it back;
 `NO PROGRESS` false-fires ~9-15x/day here (kills are ~200 ticks apart from one tile —
 `act=` distinguishes it, the 40-tick threshold does not fit this profession); there is no
 offline reproduction of a full bank trip (`MockBody` has no banker — the same gap
