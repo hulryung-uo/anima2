@@ -3228,6 +3228,37 @@ def ready_to_fight(life, o) -> bool:
 _WARRIOR_BANK_RETURN_REACH = 2
 
 
+#: What `gm.stage` puts in a fresh swordsman's pack, in the order it is handed over.
+WARRIOR_KIT: tuple[str, ...] = ("Katana", "PlateChest", "PlateLegs", "PlateArms",
+                                "PlateGloves", "PlateGorget", "PlateHelm")
+
+
+def warrior_kit(*, bandages: int = 100, skip: "tuple[str, ...]" = ()) -> list[str]:
+    """The staged kit, minus anything named in `skip` (case-insensitive).
+
+    Two of the swordsman's five capabilities have never executed inside a village day, and
+    like `buy_bandage` before §65 the reason is that the runner hands over everything they
+    exist to replace. `decide_mode` wants `buy_weapon` only when NOTHING is worn or packed
+    at `WEAPON_LAYER`, and `buy_armor` only when no chest plate is; death is the ordinary
+    way to lose either, and death puts the gear on a corpse that `RecoverDeath` walks back
+    to and empties. On a day the recovery works — which is now most of them (§64.6) —
+    those branches are simply never true.
+
+    Staging without the piece is the honest way in: the warrior wakes up genuinely
+    unarmed, with its starting gold, and the rule reaches for the shop on its own.
+
+    `bandages` is separate because it is a COUNT rather than a presence — see
+    `--warrior-bandages`.
+    """
+    wanted = {name.lower() for name in skip}
+    unknown = wanted - {name.lower() for name in WARRIOR_KIT}
+    if unknown:
+        raise ValueError(f"unknown kit item(s) {sorted(unknown)}; "
+                         f"the kit is {list(WARRIOR_KIT)}")
+    return [f"Bandage {bandages}",
+            *(name for name in WARRIOR_KIT if name.lower() not in wanted)]
+
+
 def warrior_leash(reach: "dict[str, int]") -> int:
     """How far a warrior may drift from its stand, given its pocket's shop rays.
 
@@ -3325,7 +3356,7 @@ def stage_pinned_prey(gm, prey: str, x: int, y: int, z: int, *,
 def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594,
                         ticks: int = 200, account_prefix: str = "animawar",
                         prey: str = "Ettin", prey_target: int = 2, spacing: int = 25,
-                        bandages: int = 100,
+                        bandages: int = 100, skip_kit: "tuple[str, ...]" = (),
                         monitor: bool = False, narrate: bool = False,
                         knobs: dict[str, Any] | None = None) -> None:
     """Run `count` swordsmen LIVING the full autonomous loop via `WarriorLife`: each
@@ -3355,14 +3386,7 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
 
     hx, hy = HUNTING_SPOT
     prof = PROFESSIONS["swordsman"]
-    # HOW MANY BANDAGES THE WARRIOR IS HANDED. 100 is a working day's supply and the
-    # figure every measured day was run at — and it is also why `buy_bandage` has NEVER
-    # executed inside a village day: `decide_mode` wants it below `LOW_BANDAGES` (10), and
-    # a warrior that starts with 100 and spends ~10 a day cannot get there before BUDGET
-    # SPENT. Staging fewer is the only way to reach the resupply leg live without waiting
-    # ten days for it.
-    items = [f"Bandage {bandages}", "Katana", "PlateChest", "PlateLegs", "PlateArms",
-             "PlateGloves", "PlateGorget", "PlateHelm"]
+    items = warrior_kit(bandages=bandages, skip=skip_kit)
 
     print(f"raising a warrior village: {count} swordsman(men) at {host}:{port}")
     bodies: list[tuple[int, ResilientIpcBody]] = []
@@ -4389,6 +4413,12 @@ def main() -> None:
                          "Lower it to reach the buy_bandage resupply leg inside one day: "
                          "the rule wants a restock below LOW_BANDAGES and a warrior that "
                          "starts with 100 never gets there in 1200 ticks")
+    ap.add_argument("--warrior-skip", default="",
+                    help="comma-separated kit pieces NOT to stage (e.g. Katana or "
+                         "PlateChest). The rule reaches for a shop only when the piece is "
+                         "missing, and death does not leave it missing — RecoverDeath "
+                         "fetches it back — so this is how buy_weapon/buy_armor are "
+                         "reached inside one day")
     ap.add_argument("--miners", type=int, default=2)
     ap.add_argument("--lumberjacks", type=int, default=1)
     ap.add_argument("--fishers", type=int, default=1)
@@ -4555,6 +4585,8 @@ def main() -> None:
         run_warrior_village(args.warriors, host=args.host, port=args.port,
                             monitor=args.monitor, narrate=args.narrate,
                             knobs=k["swordsman"], bandages=args.warrior_bandages,
+                            skip_kit=tuple(p.strip() for p in args.warrior_skip.split(",")
+                                           if p.strip()),
                             ticks=args.ticks, account_prefix=args.account_prefix)
         return
 

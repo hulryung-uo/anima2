@@ -880,3 +880,39 @@ def test_the_leash_is_the_pocket_and_not_the_walk_to_the_shops():
                           "armorer": 9}) == _VENDOR_MIN_GAP
     # ...and never below the floor, or the warrior cannot leave the tile it stands on.
     assert warrior_leash(dict.fromkeys(("a", "b"), 0)) == _VENDOR_MIN_GAP
+
+
+def test_the_warrior_kit_can_be_staged_short_of_a_piece():
+    """`buy_weapon` and `buy_armor` fire only when the piece is MISSING, and the runner
+    hands over everything they exist to replace.
+
+    Death is the ordinary way to lose a blade or a chest — and death puts the gear on a
+    corpse that `RecoverDeath` walks back to and empties, so on a day the recovery works
+    (which is now most of them, §64.6) those branches are never true. Staging without the
+    piece is the honest way in (audit §66).
+    """
+    from anima2.village import WARRIOR_KIT, warrior_kit
+
+    full = warrior_kit()
+    assert full[0] == "Bandage 100", full
+    assert full[1:] == list(WARRIOR_KIT), full
+
+    unarmed = warrior_kit(skip=("Katana",))
+    assert "Katana" not in unarmed
+    assert len(unarmed) == len(full) - 1
+    # ...and nothing else is disturbed: the suit is still whole.
+    assert [p for p in full if p.startswith("Plate")] == [
+        p for p in unarmed if p.startswith("Plate")]
+
+    # Case-insensitive, because a CLI string is whatever the operator typed.
+    assert warrior_kit(skip=("platechest",)) == warrior_kit(skip=("PlateChest",))
+    assert "PlateChest" not in warrior_kit(skip=("platechest",))
+
+    # A COUNT, not a presence — `bandages` rides alongside and is never skippable.
+    assert warrior_kit(bandages=3)[0] == "Bandage 3"
+
+    # A TYPO IS REFUSED. Silently staging the full kit for `--warrior-skip Sword` would
+    # produce a run that looks like "buy_weapon still never fires" and means nothing.
+    import pytest
+    with pytest.raises(ValueError, match="sword"):
+        warrior_kit(skip=("Sword",))
