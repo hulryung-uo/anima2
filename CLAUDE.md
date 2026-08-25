@@ -130,9 +130,21 @@ bought one for exactly 33 gold in nine ticks and then had the best day on record
 `banked=1893`, 16 kills, `landed=10/10`, `deaths=0`. Both new flags default to the old
 behaviour, so every measured day stays comparable.
 
-**Still open on the warrior:** `buy_armor` has never run in a village day — it needs 243
-gold earned first, so unlike the other two the rule must hold the want across several
-kills;
+`buy_armor` runs as well (§67), and finding out why it did not is the session's most
+useful discovery: ServUO's `Armorer.InitSBInfo` picks one of four stock combinations with
+`Utility.Random(4)` and **only two include `SBPlateArmor`**, fixed at spawn — so a staged
+Armorer has a 50% chance of never selling plate. Thirty consecutive
+`buy_armor ... -> giveup (bound 1)` frames were the give-up ladder working correctly
+against a window that genuinely lacked the offer. That retires
+`docs/SWORD-WARRIOR.md`'s long-standing *"vendor buys stall intermittently (~50% of runs,
+across every buy capability)"*: it is not flakiness, it was never across every capability
+(`IronWorker`/`Weaponsmith` have no random switch), and the 50% is
+`Utility.Random(4)` landing on 1 or 3. The runner stages a **Blacksmith** now.
+
+**Still open on the warrior:** a 496-tick stall on the armour day at `@(2586,410)` with
+walks the server refused, on ground whose land tile, slope and statics all measure clear
+(§68) — `act=` now carries the compass letter for the next occurrence, which did not come
+on the following day;
 `NO PROGRESS` false-fires ~9-15x/day here (kills are ~200 ticks apart from one tile —
 `act=` distinguishes it, the 40-tick threshold does not fit this profession); there is no
 offline reproduction of a full bank trip (`MockBody` has no banker — the same gap
