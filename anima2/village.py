@@ -1353,7 +1353,14 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
         # `WalkTo` is not; a reward-less action moves neither `out+` nor `eps`. So
         # "emitting nothing" and "emitting the same non-Walk action forever" were
         # indistinguishable on the only tape that mattered.
+        # WHICH WAY. A refused step and an accepted one both print `act=Walk`, and the
+        # position is on the same line — so "walking and not moving" is visible but
+        # "walking WHERE" is not. Measured 2026-08-25 (audit §68): a warrior stalled 496
+        # ticks at `@(2586,410)` with `foes=d3,d3,d3`, emitting walks the server refused,
+        # on ground whose land tile, z profile and statics all say it is clear.
         act_name = type(action).__name__ if action is not None else "none"
+        if isinstance(action, Walk):
+            act_name += ":" + _DIRECTION_LETTERS[action.dir & 7]
         act_run = act_run + 1 if act_name == last_act else 1
         last_act = act_name
         # A Life that has detected a rule-vs-gate disagreement says so LOUDLY, every
@@ -3296,6 +3303,10 @@ def warrior_village_knobs(knobs: dict) -> dict:
     A `--knob` always wins; these only fill in what nobody chose.
     """
     return {"bank_return_reach": _WARRIOR_BANK_RETURN_REACH, **knobs}
+
+
+#: UO direction index (0=N..7=NW) as a compass letter, for the `act=` readout.
+_DIRECTION_LETTERS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
 
 #: How far a warrior-village shop is placed from the hunting pocket, and the floor under

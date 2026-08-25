@@ -916,3 +916,17 @@ def test_the_warrior_kit_can_be_staged_short_of_a_piece():
     import pytest
     with pytest.raises(ValueError, match="sword"):
         warrior_kit(skip=("Sword",))
+
+
+def test_the_act_direction_letters_match_the_deltas_they_name():
+    """`act=Walk:E` is a diagnostic claim about which way the character tried to go, and a
+    readout that names the wrong compass point is worse than one that names none — the
+    whole point is deciding which neighbouring tile the server refused (audit §68)."""
+    from anima2.geometry import DIRECTION_DELTAS
+    from anima2.village import _DIRECTION_LETTERS
+
+    assert len(_DIRECTION_LETTERS) == len(DIRECTION_DELTAS) == 8
+    expected = {"N": (0, -1), "NE": (1, -1), "E": (1, 0), "SE": (1, 1),
+                "S": (0, 1), "SW": (-1, 1), "W": (-1, 0), "NW": (-1, -1)}
+    assert {letter: DIRECTION_DELTAS[i]
+            for i, letter in enumerate(_DIRECTION_LETTERS)} == expected
