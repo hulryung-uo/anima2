@@ -125,9 +125,14 @@ banked three times with `deaths=0`. The default stays 100. Note the estimate tha
 there was wrong and the audit says so: a day spends ~1 bandage per 450 ticks, not ten per
 day, because §64.6 keeps the plate on.
 
-**Still open on the warrior:** `buy_weapon`/`buy_armor` have still never run in a village
-day — they need the blade or chest to be LOST, and death puts that gear on the corpse
-where `RecoverDeath` fetches it back;
+`buy_weapon` runs too (§66): `--warrior-skip Katana` stages no blade, and the warrior
+bought one for exactly 33 gold in nine ticks and then had the best day on record —
+`banked=1893`, 16 kills, `landed=10/10`, `deaths=0`. Both new flags default to the old
+behaviour, so every measured day stays comparable.
+
+**Still open on the warrior:** `buy_armor` has never run in a village day — it needs 243
+gold earned first, so unlike the other two the rule must hold the want across several
+kills;
 `NO PROGRESS` false-fires ~9-15x/day here (kills are ~200 ticks apart from one tile —
 `act=` distinguishes it, the 40-tick threshold does not fit this profession); there is no
 offline reproduction of a full bank trip (`MockBody` has no banker — the same gap
