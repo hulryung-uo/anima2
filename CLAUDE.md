@@ -104,6 +104,20 @@ dead` -> corpse recovered -> re-equipped (`plate=6/6`). Nothing in `RecoverDeath
 §58 just moved the Healer to somewhere a ghost can walk. §53.5 had blamed the sibling repo
 on `steps=`, a counter structurally blind to `WalkTo`. **The body walks ghosts fine.**
 
+**A three-warrior roster works too, as of 2026-08-25** (§64): `banked=606 + 942`,
+15 kills, `deaths=0` on both, `prey: 0 lost`. Five defects stood in the way and NONE of
+them could appear on a single-warrior day — the roster stages along a line at
+`spacing = 25` and two of its three pockets were **open water** (`walkable_run` modelled
+ground as z alone, so a flat lake read as perfect walking ground; `land_flags` now reads
+`tiledata.mul`); the leash was derived from the shop distance, which is 3 at the proven
+pocket and 12 at an open one; `Combat`'s approach budget was a lifetime cap, spent once
+by six blocked steps; a resurrected warrior bandaged naked with its recovered suit in the
+pack (`dress_before_survive` puts the equip reflexes above `Survive` — a slipping bandage
+heals nothing, plate reduces the damage); and `find_mobile_near` reads the GM's OWN
+observation, so a spawn sixty tiles away was never found and never pinned. A
+three-warrior request yields TWO warriors on this map: the third pocket has no walkable
+ground that stays clear of its neighbour, and the runner says so and skips it.
+
 **Still open on the warrior:** no vendor PURCHASE has run inside a village day
 (`buy_bandage`/`buy_weapon`/`buy_armor` are proved only by single-situation scripts);
 `NO PROGRESS` false-fires ~9-15x/day here (kills are ~200 ticks apart from one tile —
