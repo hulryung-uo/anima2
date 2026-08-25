@@ -723,7 +723,13 @@ class WarriorLife:
         the reflex cannot drift. `hits_max == 0` is no reading, not a wound.
         """
         hits_max = obs.player.hits_max
-        survive = self.hunt_agent.planner.skills[0]
+        # FOUND BY WHAT IT IS, not by where it sits. This read `skills[0]` and broke
+        # silently the moment the swordsman put its equip reflexes above the survival one
+        # (§64.6): the thresholds fell back to 0 and the override could never fire again.
+        # A planner's order is a design decision that changes; "the skill that owns the
+        # heal thresholds" is not.
+        survive = next((s for s in self.hunt_agent.planner.skills
+                        if hasattr(s, "heal_below_fraction")), None)
         below = getattr(survive, "heal_below_fraction", 0.0)
         reach = getattr(survive, "hostile_scan_range", 0)
         if not (hits_max > 0 and obs.player.hits / hits_max < below):

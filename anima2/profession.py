@@ -403,6 +403,9 @@ class Profession:
     #: server fights it with Swordsmanship) — a reflex that must beat the work skill
     #: but yield to Survive/RecoverDeath above it.
     pre_work_skills: tuple[Callable[[], Skill], ...] = ()
+    #: Put `pre_work_skills` ABOVE the survival reflex instead of just above the work
+    #: skill. Default False = every existing profession is unchanged. See `planner`.
+    dress_before_survive: bool = False
     #: Factory for the top-priority survival reflex. Defaults to the stock `Survive`
     #: (byte-identical for every profession); a warrior swaps in a `WarriorSurvive`
     #: that heals to a safe margin before re-engaging (living-test hardening).
@@ -424,14 +427,34 @@ class Profession:
         """
         if curriculum_goals and capability_goals:
             raise ValueError("curriculum_goals and capability_goals are separate modes")
-        skills: list[Skill] = [self.survive_factory(), RecoverDeath(), SpeakPending(), GoTo()]
+        # DRESS FIRST, IF THERE IS ANYTHING TO PUT ON. `pre_work_skills` normally sit just
+        # above the work skill; a profession that sets `dress_before_survive` puts them at
+        # the very top instead, ABOVE the survival reflex.
+        #
+        # Only the swordsman does, and the reason is arithmetic: ServUO SLIPS a bandage
+        # for every point of damage taken while it applies (§54), so healing under fire
+        # converges to nothing, while plate actually reduces the damage —
+        # `docs/SWORD-WARRIOR.md` records an unarmoured warrior being provably alpha-struck
+        # dead by three Ettins. Measured 2026-08-25 (audit §64.6): a resurrected warrior
+        # stood at the healer with `blade=NONE plate=0/6(pack 6)` — its whole suit
+        # RECOVERED and in the pack — bandaging at `hp=10/150` while `Survive` held the
+        # hands, and died again. Eight deaths and seven resurrections in one roster run.
+        #
+        # It cannot starve `Survive` for long: both reflexes are inert once everything
+        # owned is worn, and `EquipArmor` abandons a layer the server keeps refusing after
+        # `_MAX_EQUIP_TRIES`.
+        dress: list[Skill] = ([factory() for factory in self.pre_work_skills]
+                              if self.dress_before_survive and not capability_goals
+                              else [])
+        skills: list[Skill] = [*dress, self.survive_factory(), RecoverDeath(),
+                               SpeakPending(), GoTo()]
         # Pre-work reflexes (e.g. the swordsman's EquipWeapon) sit just above the
         # work skill: they beat Hunt but yield to Survive/RecoverDeath. Inert
         # (default empty) for every other profession — no behaviour change. They
         # belong to WORK-skill mode only: capability (economy) mode has no work
         # skill to prep for, and its planner manifest is a fixed
         # [reflexes]+[capabilities] shape that a pre-work reflex would break.
-        if not capability_goals:
+        if not capability_goals and not self.dress_before_survive:
             for factory in self.pre_work_skills:
                 skills.append(factory())
         if self.work_skill is not None and not capability_goals:
@@ -625,6 +648,7 @@ PROFESSIONS: dict[str, Profession] = {
         work_skill=WarriorHunt,
         combat_disposition="aggressive",
         pre_work_skills=(EquipWeapon, EquipArmor),
+        dress_before_survive=True,
         # Heal to a safe margin before wading back in (living-test hardening).
         survive_factory=WarriorSurvive,
     ),

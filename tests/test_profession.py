@@ -34,9 +34,25 @@ def test_miner_planner_runs_the_mine_skill():
 
 
 def test_every_profession_puts_survival_before_work_and_social_actions():
+    """Survival and death recovery come before anything a profession is FOR.
+
+    The one exception is stated on the profession itself (`dress_before_survive`) and
+    earns its place with arithmetic: ServUO slips a bandage for every point of damage
+    taken while it applies, so healing under fire converges to nothing, while plate
+    reduces the damage. A warrior holding its own recovered suit should put it on before
+    it starts wrapping bandages that will slip (audit §64.6). Nothing else in the list
+    may move.
+    """
     for profession in PROFESSIONS.values():
-        assert isinstance(profession.planner().skills[0], Survive)
-        assert isinstance(profession.planner().skills[1], RecoverDeath)
+        skills = profession.planner().skills
+        if profession.dress_before_survive:
+            worn = len(profession.pre_work_skills)
+            assert worn and all(
+                isinstance(s, tuple(f() .__class__ for f in profession.pre_work_skills))
+                for s in skills[:worn]), [type(s).__name__ for s in skills]
+            skills = skills[worn:]
+        assert isinstance(skills[0], Survive)
+        assert isinstance(skills[1], RecoverDeath)
 
 
 def test_townsfolk_has_no_work_skill():

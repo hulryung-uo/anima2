@@ -3279,7 +3279,8 @@ _PREY_GAP = 2
 
 
 def stage_pinned_prey(gm, prey: str, x: int, y: int, z: int, *,
-                      exclude: set[int] | None = None, retries: int = 2) -> str:
+                      exclude: set[int] | None = None, retries: int = 2,
+                      approach: bool = False) -> str:
     """Spawn one `prey` at `(x, y, z)`, pin it, and READ THE PIN BACK FROM THE SERVER.
 
     Returns `"pinned"`, `"deleted"` (found, would not pin, removed) or `"lost"` (never
@@ -3299,6 +3300,16 @@ def stage_pinned_prey(gm, prey: str, x: int, y: int, z: int, *,
     run, so a roaming leftover accumulates and outlives the warrior that provoked it.
     A deleted spawn is simply replaced next cycle.
     """
+    # STAND WHERE YOU SPAWN. `find_mobile_near` reads the GM's OWN observation, so a
+    # creature added sixty tiles away is outside the window it is being looked for in —
+    # the lookup misses, nothing gets pinned, and the counter honestly reports `lost`
+    # while a roamer is loose. Invisible with one pocket, because the GM never leaves it.
+    # Measured 2026-08-25 on a three-warrior roster (audit §64.7): `prey: 12 lost, 19
+    # deleted for not pinning` and sixteen deaths, against `0 lost, 0 deleted` on every
+    # single-warrior day. Costs one `[Go` per spawn, which the per-cycle budget already
+    # bounds.
+    if approach:
+        gm.go(x, y)
     gm.command_at(f"[Add {prey}", x, y, z)
     mob = gm.find_mobile_near(x, y, retries=retries, exclude=exclude or set())
     if mob is None:
@@ -3647,7 +3658,10 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             # they are only ever added at the stand's own diagonals.
             known = {w["life"].hunt_agent.body.ready["player"]["serial"] for w in warriors}
             known |= {m.serial for m in lo.mobiles}
-            outcome = stage_pinned_prey(gm, prey, px + dx, py + dy, pz, exclude=known)
+            # `approach` only when there is more than one pocket: with a single warrior
+            # the GM is already standing in it, and a `[Go` per spawn would be pure cost.
+            outcome = stage_pinned_prey(gm, prey, px + dx, py + dy, pz, exclude=known,
+                                        approach=len(warriors) > 1)
             if outcome != "pinned":
                 unpinned[0 if outcome == "lost" else 1] += 1
 

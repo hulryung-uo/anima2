@@ -236,8 +236,11 @@ def test_swordsman_wires_both_hunt_and_the_economy_capabilities():
     # The work-skill (hunting) planner carries both pre-work reflexes just above
     # the work skill, in order: EquipWeapon (wield) then EquipArmor (suit up).
     work = [type(s).__name__ for s in sword.planner().skills]
-    at = work.index("WarriorHunt")
-    assert work[at - 2 : at] == ["EquipWeapon", "EquipArmor"], work
+    # The two equip reflexes are at the TOP, above `Survive` — see
+    # `test_a_resurrected_warrior_dresses_before_it_bandages` and audit §64.6.
+    assert work[:2] == ["EquipWeapon", "EquipArmor"], work
+    assert work[2] == "WarriorSurvive", work
+    assert "WarriorHunt" in work
     # `WarriorHunt`, not `Hunt`: it is a strict `Hunt` that refuses to engage bare-handed
     # (audit §61.9 — three deaths at one tile after three resurrections, `blade=NONE`).
     assert sword.work_skill is WarriorHunt
@@ -523,3 +526,64 @@ def test_a_swordsman_does_not_engage_bare_handed():
                         items=[_backpack(), worn], mobiles=[])
     assert not WarriorHunt().can_run(
         SkillContext(obs=quiet, persona=persona, memory={}))
+
+
+def test_a_resurrected_warrior_dresses_before_it_bandages():
+    """The suit beats the bandage, and the arithmetic is ServUO's.
+
+    A bandage SLIPS for every point of damage taken while it applies
+    (`toHeal -= toHeal * slips * 0.35`, `disruptThreshold = 0` off AOS), so healing under
+    fire converges to nothing; plate actually reduces the damage, and
+    `docs/SWORD-WARRIOR.md` records an unarmoured warrior being provably alpha-struck
+    dead by three Ettins.
+
+    Measured 2026-08-25 on a three-warrior roster (audit §64.6): both warriors stood at
+    the healer with `blade=NONE plate=0/6(pack 6)` — their whole suits RECOVERED and
+    sitting in the pack — wrapping bandages at `hp=10/150` while `Survive` held the
+    hands. Sixteen deaths and fifteen resurrections in one run.
+    """
+    from anima2.contract import MobileView
+    from anima2.profession import PROFESSIONS
+    from anima2.skills.warrior import (
+        BANDAGE_GRAPHIC,
+        EquipArmor,
+        EquipWeapon,
+        PLATE_ARMOR_LAYERS,
+        WarriorSurvive,
+    )
+
+    planner = PROFESSIONS["swordsman"].planner()
+    order = [type(s).__name__ for s in planner.skills]
+    assert order[:2] == ["EquipWeapon", "EquipArmor"], order
+    assert order[2] == "WarriorSurvive", order
+    # MOVED, not copied. The pre-work slot must not still hold a second pair — two
+    # EquipArmors would each keep their own give-up counter, so a layer the server
+    # refuses would get `_MAX_EQUIP_TRIES` twice before anyone abandoned it.
+    assert order.count("EquipWeapon") == order.count("EquipArmor") == 1, order
+
+    # A ghost's leftovers: badly wounded, hostile adjacent, the suit in the pack.
+    ettin = MobileView(serial=0xAA, name="Ettin", pos=Position(101, 100, 0), body=1,
+                       notoriety=6, hits=100, hits_max=100, distance=1)
+    suit = [_item(0xA00 + n, g) for n, g in enumerate(PLATE_ARMOR_LAYERS)]
+    obs = Observation(
+        player=PlayerView(serial=PLAYER, pos=Position(100, 100, 0), hits=10, hits_max=150),
+        items=[_backpack(), *suit,
+               _item(0x901, BANDAGE_GRAPHIC)],
+        mobiles=[ettin])
+    ctx = SkillContext(obs=obs, persona=Persona(name="Bram",
+                                                combat_disposition="aggressive"),
+                       memory={})
+
+    assert WarriorSurvive().can_run(ctx), "the fixture must be one Survive would claim"
+    assert isinstance(planner.select(ctx), (EquipWeapon, EquipArmor)), (
+        type(planner.select(ctx)).__name__)
+
+    # ...and once everything owned is worn, the equip reflexes are inert and Survive has
+    # the hands back — dressing cannot starve healing.
+    worn = Observation(
+        player=PlayerView(serial=PLAYER, pos=Position(100, 100, 0), hits=10, hits_max=150),
+        items=[_backpack(), _item(0x901, BANDAGE_GRAPHIC)],
+        mobiles=[ettin])
+    assert isinstance(
+        planner.select(SkillContext(obs=worn, persona=ctx.persona, memory={})),
+        WarriorSurvive)

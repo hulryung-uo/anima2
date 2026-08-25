@@ -541,6 +541,10 @@ class _FakeGm:
         assert prop == "CantWalk"
         return "True" if self.sets > self.pins_after else "False"
 
+    def go(self, x, y):
+        self.went = (x, y)
+        return (x, y, 0)
+
     def find_mobile_near(self, x, y, retries=2, exclude=frozenset()):
         self.retries = retries
         self.excluded = set(exclude)
@@ -581,6 +585,17 @@ def test_prey_that_will_not_pin_is_deleted_not_left_to_roam():
 
     # Never found: the creature EXISTS and we have no serial, so it cannot be cleaned
     # up. That is the worse outcome and must be reported as its own thing.
+    # THE GM HAS TO BE THERE TO SEE IT. `find_mobile_near` reads the GM's own
+    # observation, so a spawn sixty tiles away is looked for in a window that does not
+    # contain it — the pin never lands and a roamer is loose (audit §64.7). Off by
+    # default: with one pocket the GM never leaves it and a `[Go` per spawn is pure cost.
+    near = _FakeGm()
+    stage_pinned_prey(near, "Ettin", 10, 20, 0)
+    assert not hasattr(near, "went"), "a single-pocket run must not pay for a [Go"
+    far = _FakeGm()
+    stage_pinned_prey(far, "Ettin", 10, 20, 0, approach=True)
+    assert far.went == (10, 20), getattr(far, "went", None)
+
     lost = _FakeGm(found=False)
     assert stage_pinned_prey(lost, "Ettin", 10, 20, 0) == "lost"
     assert not any(c.startswith("[Delete") for c in lost.commands), lost.commands
