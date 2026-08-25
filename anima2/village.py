@@ -3540,7 +3540,21 @@ def run_warrior_village(count: int, *, host: str = "127.0.0.1", port: int = 2594
             gm.stage_npc("IronWorker", wx, gy, gz, exclude=all_serials)
             gm.stage_npc("Healer", hx, gy, gz, exclude=all_serials)
             gm.stage_npc("Banker", gx, by, gz, exclude=all_serials)
-            gm.stage_npc("Armorer", gx, ay, gz, exclude=all_serials)
+            # A BLACKSMITH, NOT AN ARMORER, and ServUO decides that rather than taste.
+            # `Armorer.InitSBInfo` picks one of four stock combinations with
+            # `Utility.Random(4)` and only cases 0 and 2 include `SBPlateArmor`
+            # (`Scripts/Mobiles/NPCs/Armorer.cs`), fixed for that NPC's life — so a staged
+            # Armorer has a **50% chance of not selling plate at all**. `SBBlacksmith`
+            # stocks `PlateChest` at the same 243 and the same art `0x1415`
+            # unconditionally, and `Blacksmith.InitSBInfo` adds it with no switch.
+            #
+            # This is what `docs/SWORD-WARRIOR.md` recorded as "vendor buys stall
+            # intermittently (~50% of runs)". It is not flakiness: it is a documented
+            # random stock table, and the brain was behaving correctly all along —
+            # measured 2026-08-25 (audit §67), `buy_armor` frames retiring
+            # `age=25/180 -> giveup (bound 1)` against a window that genuinely lacked the
+            # offer, which is exactly what the give-up ladder is for.
+            gm.stage_npc("Blacksmith", gx, ay, gz, exclude=all_serials)
             # Prey spawned ADJACENT to the stand so Hunt engages immediately (before the
             # warrior can drift), each on its own tile around the warrior.
             # Prey spawned adjacent AND PINNED (`CantWalk`) so a wounded creature stands
