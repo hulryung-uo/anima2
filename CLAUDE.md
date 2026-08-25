@@ -50,7 +50,10 @@ ruff clean. Highlights that matter for resuming:
 ## The sword-warrior works (2026-08-24)
 
 `python -m anima2.village --warriors 1 --ticks 1200` survives the day and earns. For
-SIXTEEN live days it ended in a corpse with `banked=0` every time. Best day
+SIXTEEN live days it banked NOTHING — twelve of those ending in a corpse, and the four
+that did not still earned nothing. (An earlier version of this line said all sixteen ended
+in a corpse; the tapes say twelve, and overstating the old failure flatters the fix.)
+Best day
 (`~/anima-logs/warrior-20260824-0947-count.log`):
 
 ```

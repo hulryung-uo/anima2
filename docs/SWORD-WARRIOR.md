@@ -297,8 +297,10 @@ question this section answers is different: does `python -m anima2.village --war
 --ticks 1200` — an unattended `WarriorLife` on its own orchestrator — survive a day and
 earn?
 
-For sixteen live days the answer was no. Every single one ended in a corpse, with
-`banked=0`. **The best day now banks 2446 gold across sixteen achieved bank frames, kills
+For sixteen live days the answer was no: every one of them banked **nothing**, and
+twelve of the sixteen ended in a corpse. (The first draft of this line claimed all
+sixteen died. The tapes say twelve — four days survived and still earned nothing, which
+is its own kind of failure and should not be rounded into the louder one.) **The best day now banks 2446 gold across sixteen achieved bank frames, kills
 eighteen Ettins, and ends alive at 83/150 HP** (`~/anima-logs/warrior-20260824-0947-count.log`):
 
 ```
