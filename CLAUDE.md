@@ -160,6 +160,35 @@ cursor/gumps), `res=` (resurrection target + distance), `act=<Action>x<run>` (wh
 ticked agent actually emitted, and for how long — `steps` counts only `Walk`, `eps`/`out+`
 only rewarded terminals, so a hundred-tick freeze was invisible to all of them).
 
+## The other Lives, regression-checked (2026-08-26)
+
+Twenty-five commits of shared code landed while the warrior was being fixed —
+`Survive._away_direction` (every Life flees with it), `WarriorLife.tick`'s
+`_being_killed` (every Life inherits it; no subclass overrides `tick` or `decide`),
+`market`'s return reach, `MockBody`'s stack split. Two runs checked what that cost:
+
+- **Forge pair (§70).** First run: **both agents died**, sell rate 13%, `banked=0`,
+  against a baseline that never took a scratch. A wide GM sweep and a re-run put it back
+  to `deaths=0`, `net=+900g at +4065g/h` — a HIGHER hourly rate than the baseline. So the
+  deaths were **shard contamination** (this project's own `prey: 12 lost` roamers from a
+  pre-§64.7 roster run), not the code, and **precondition (b) holds**.
+- **Woodsman (§72).** Clean: `deaths=0`, `banked=230`, the loop running end to end.
+
+Both checks then found defects the shared code did not cause, and both are the SAME shape
+seen from opposite sides — a worker and its shop drifting apart:
+
+- **§70.4 / §71 — the forge's pinned banker.** `VENDOR_SPOT` and `BANKER_SPOT` sit on one
+  column with the tinker's stand between them. Stand one tile south of the banker and it
+  is the only corridor to the vendor; the greedy market walk re-sends one refused
+  direction and abandons the trip. 59 `sell_tongs` give-ups, all in the opening stretch,
+  ~40% of a day. **The fix is costed and NOT taken** (§71): a veer works, and it blinds
+  BOTH `trip=…stall=` and the `WEDGED WALK` alarm, because both count "position unchanged"
+  where the real invariant is "no closer". Do the detectors first, then the veer, then a
+  live day — in that order, or the fix removes the instrument that would catch it failing.
+- **§72.1 — the grove hop strands the woodsman.** 7 sales achieved / 0 given up BEFORE the
+  first `reloc=`; **0 achieved / 38 given up after**. The pool moves the worker and nothing
+  moves the shop.
+
 ## Two roadmaps, one decision
 
 `docs/PHASE7.md` item 2 names a `--genomes 20` evolution-vs-random rerun as next. The
