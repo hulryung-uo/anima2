@@ -185,6 +185,8 @@ def _steered_life(reply):
 def test_the_llm_choice_steers_within_the_candidate_set():
     life, client, llm = _steered_life("fetch_gold")
     assert life.candidates == ["buy_reagent", "fetch_gold"]
+    assert '"decision":"idle"' in client.complete("", "")
+    assert client.wait_idle(1)
     out = client.complete("", "")
     assert '"capability":"fetch_gold"' in out          # the SECOND candidate — steering
     assert llm.calls == 1
@@ -194,6 +196,8 @@ def test_the_llm_choice_steers_within_the_candidate_set():
 def test_an_answer_outside_the_set_falls_back_to_the_rules_choice():
     # Closed vocabulary: the model cannot mint an option the rule did not admit.
     life, client, llm = _steered_life("go murder the vendor and take everything")
+    client.complete("", "")
+    assert client.wait_idle(1)
     out = client.complete("", "")
     assert '"capability":"buy_reagent"' in out         # rule's own first choice
     assert life.steering_log[-1][2] is False           # recorded as NOT an LLM pick
@@ -213,3 +217,114 @@ def test_a_single_candidate_never_consults_the_llm():
     out = client.complete("", "")
     assert '"capability":"buy_reagent"' in out
     assert llm.calls == 0
+
+
+def test_a_slow_steering_model_does_not_block_life_ticks():
+    import threading
+
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    class SlowModel:
+        def complete(self, system, user):
+            entered.set()
+            assert release.wait(3)
+            return "fetch_gold"
+
+    obs = _overlap_obs()
+    life = MageLife(body=_MockBody([obs] * 60), persona=Persona(name="Elara"),
+                    routes=dict(ROUTES))
+    life._life_client._llm = SlowModel()
+
+    def play():
+        for _ in range(30):
+            life.tick()
+        finished.set()
+
+    worker = threading.Thread(target=play)
+    worker.start()
+    try:
+        assert entered.wait(1), "fixture never reached the real steering branch"
+        assert finished.wait(1), "a model call stopped the playing loop"
+        assert life.ticks == 30
+        assert life.econ_agent.goal is None, "pending selection must not invent a goal"
+        obs.player.dead = True
+        for _ in range(3):
+            life.tick()
+        assert life.mode == "hunt", "death recovery must take over during a model call"
+    finally:
+        release.set()
+        worker.join(2)
+        assert life._life_client.wait_idle(2)
+
+
+def test_steering_timeout_falls_back_without_spawning_more_workers():
+    import threading
+
+    life, client, _ = _steered_life("unused")
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    class HungModel:
+        def complete(self, system, user):
+            calls.append(user)
+            entered.set()
+            assert release.wait(3)
+            return "fetch_gold"
+
+    client._llm = HungModel()
+    client.timeout_s = 0
+    try:
+        assert '"decision":"idle"' in client.complete("", "")
+        assert entered.wait(1)
+        for _ in range(20):
+            assert '"capability":"buy_reagent"' in client.complete("", "")
+        assert len(calls) == 1
+    finally:
+        release.set()
+        assert client.wait_idle(2)
+    assert not any(used for _, _, used in life.steering_log)
+    assert client._result is None, "late timed-out work must be discarded"
+
+
+def test_steering_discards_a_result_after_candidates_disappear_and_return():
+    life, client, llm = _steered_life("fetch_gold")
+    client.complete("", "")
+    assert client.wait_idle(1)
+    client.update_candidates([])
+    client.update_candidates(life.candidates)
+    # The same strings are a new opportunity. Do not apply the old decision (ABA).
+    assert '"decision":"idle"' in client.complete("", "")
+    assert client.wait_idle(1)
+    assert not life.steering_log
+    assert llm.calls == 2
+
+
+def test_steering_discards_a_result_after_goal_ownership_changes():
+    life, client, _ = _steered_life("fetch_gold")
+    client.complete("", "")
+    assert client.wait_idle(1)
+    life.econ_agent.goal_stack.invalidate_proposals()
+    assert '"decision":"idle"' in client.complete("", "")
+    assert client.wait_idle(1)
+    assert not life.steering_log
+
+
+def test_steering_requires_the_entire_reply_to_be_an_allowed_id():
+    life, client, _ = _steered_life("do not buy_reagent; choose fetch_gold")
+    client.complete("", "")
+    assert client.wait_idle(1)
+    assert '"capability":"buy_reagent"' in client.complete("", "")
+    assert life.steering_log[-1][2] is False
+
+
+def test_a_completed_answer_cannot_outlive_its_deadline(monkeypatch):
+    from anima2 import warrior_life
+
+    life, client, _ = _steered_life("fetch_gold")
+    now = [100.0]
+    monkeypatch.setattr(warrior_life.time, "monotonic", lambda: now[0])
+    client.complete("", "")
+    assert client.wait_idle(1)
+    now[0] += client.timeout_s + 1
+    assert '"capability":"buy_reagent"' in client.complete("", "")
+    assert life.steering_log[-1][2] is False

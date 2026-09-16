@@ -467,19 +467,24 @@ def test_a_wedged_market_walk_is_distinguishable_from_a_walking_one():
         life = TinkerLife(body=body, persona=Persona(name="Pim"),
                           routes={"vendor_spot": (TINKER,)})
         life.set_leash(pim, 30)
-        peak = 0
+        peak = drift_peak = 0
         for _ in range(120):
             life.tick()
             peak = max(peak, int(life.econ_agent.memory.get("sell_stall", 0) or 0))
-        return peak, life.econ_agent.memory.get("sell_stage")
+            progress = life.econ_agent.memory.get("market_walk", {})
+            drift_peak = max(drift_peak, progress.get("drift", 0))
+        return peak, drift_peak, life.econ_agent.memory.get("sell_stage")
 
-    clear_peak, _ = peak_stall((2600, 474))
-    wedged_peak, wedged_stage = peak_stall(
+    clear_peak, clear_drift, _ = peak_stall((2600, 474))
+    wedged_peak, wedged_drift, wedged_stage = peak_stall(
         (2600, 474), blocked={(2605, y) for y in range(460, 490)})
     assert wedged_peak > clear_peak, (
         f"a wedged approach must look different from a walking one: "
         f"clear={clear_peak} wedged={wedged_peak}")
-    assert wedged_peak >= BlacksmithMarket.stall_limit - 1, wedged_peak
+    # The sidestep can MOVE along the wall, so consecutive denied steps are no
+    # longer the wedge invariant. Distance drift must approach its bound instead.
+    assert wedged_drift > clear_drift
+    assert wedged_drift >= BlacksmithMarket.drift_limit - 1, wedged_drift
     assert wedged_stage is None, "a trip that never arrives must not have set a stage"
 
 

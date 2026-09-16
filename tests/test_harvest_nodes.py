@@ -530,10 +530,12 @@ def test_the_woodsman_line_actually_prints_the_cause_split():
     status_extra = _capture_specs(ticks=1)[1].status_extra   # [0] is the carpenter
     life = SimpleNamespace(
         memory={"harvest_stuck_by_cause": {"far": 7, "nores": 2}},
-        econ_agent=SimpleNamespace(goal_stack=SimpleNamespace(current=None)))
+        econ_agent=SimpleNamespace(goal_stack=SimpleNamespace(current=None),
+                                   memory={"workplace": (512, 1045), "bs_stand": (512, 1045)}))
     obs = Observation(player=PlayerView(serial=1, pos=Position(517, 1093, 0)),
                       items=[_pack(0x0F43)])
     assert " far=7 nores=2" in status_extra(life, obs)
+    assert " home=(512, 1045) return=(512, 1045)" in status_extra(life, obs)
 
 
 # --- 4. the surveyed stand's first node has to survive a one-tile-short arrival ------

@@ -176,7 +176,8 @@ covers the forge pair, the supply pair, the warrior village, the artisan+mage pi
 
 ## Work-liveness: `eps=`, `NO OUTPUT`, `!stalled` (2026-08-03)
 
-`NO PROGRESS` is **body**-liveness — it watches reward, steps, speech AND position, so an
+`NO PROGRESS` is **body**-liveness — it watches reward, achieved economy frames, steps,
+speech AND position, so an
 agent that keeps WALKING resets it forever (and `steps` counts *emitted* walks, so an agent
 merely *attempting* to walk resets it too — see the wedge section below). That is exactly how
 the forge miner died in the open, twice. In the 1800-tick run of 2026-08-03 his ten `NO PROGRESS` pulses all read the
@@ -347,6 +348,19 @@ one observation in §38.3. **`NOTHING LANDS` has never printed on a shard.**
 
 ## Wedge-liveness: `WEDGED WALK` (2026-08-13, follow-up 35)
 
+**2026-09-13 update:** market trips now use their destination and best remaining
+distance. `no closer to (x,y) d=N best=M reach=R` detects wall sliding and oscillation
+as well as immobility. A new goal id or a brief failed-trip return does not erase the
+destination history. A better distance, arrival, or achieved output does. The 240-tick
+window and majority-of-ticks walking requirement remain; destination-free movement
+retains the older stationary-walk detector described below.
+
+The stationary pulses also include successful capability retirements. A Life exposes
+the hunt agent's reward here; a tinker can keep selling and banking without changing
+that reward, position, speech or step count. The September forge run exposed repeated
+false `NO PROGRESS` warnings during production. Achievements reset the 40-tick pulse;
+give-ups do not. Emitted steps still reset it, and the thresholds are unchanged.
+
 The third liveness alarm, and the one that closes a hole the other two shared. On 2026-08-11 a
 tinker spent a whole day unable to reach its vendor — 203 `sell_tongs` frames given up at age
 8, 0 gold banked (§30.2) — and **every instrument the runner had stayed silent**. Reproduced
@@ -408,6 +422,12 @@ driven by any other loop has neither.
 **`WEDGED WALK` has never printed on a shard.**
 
 ## The walk's own target: `trip=` (2026-08-13, follow-up 32)
+
+**2026-09-13 update:** `drift=N/24` appears when a walk has not improved its best
+distance. `stall=N/6` counts refused movement attempts; a confirmed turn receives its
+follow-up movement request before it is charged as a refusal. Both bounds are real:
+six denied attempts or 24 ticks without a better distance abandon the leg. An arrived
+trip suppresses stale drift. Bank returns display their configured return reach.
 
 Every field above describes the *frame*. None describes the **walk inside it** — and that is
 where the flagship chain's worst recorded day was lost. On 2026-08-11 a tinker retired **203

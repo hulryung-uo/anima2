@@ -282,20 +282,26 @@ class GmControl:
         `[Add`-ed at `BANKER_SPOT`'s final waypoint settled one step short, on
         the hub tile itself, denying every future step the smith tried to take
         through it — the same "genuinely blocked, not desynced" `DenyWalk` a
-        real collision would produce). So before pinning, this corrects the
-        position back to the exact requested spot whenever it drifted, the
-        same `[Set X Y Z` lift `stage()` already uses to place a character.
-        Returns the mobile (now sitting exactly on `(x, y)` and pinned), or
-        `None` if nothing was found to pin.
+        real collision would produce). Pin it first, then place it at the requested
+        coordinates using the same `[Set X Y Z` lift as `stage()`.
+        Return a FRESH observation of that serial at the requested coordinates,
+        or `None` if placement cannot be confirmed. Returning the pre-teleport
+        snapshot gave callers stale shop routes (live-caught 2026-09-13).
         """
-        self.command_at(f"[Add {command}", x, y, z)
+        if not self.command_at(f"[Add {command}", x, y, z):
+            return None
         npc = self.find_mobile_near(x, y, exclude=exclude)
         if npc is None:
             return None
-        if (npc.pos.x, npc.pos.y) != (x, y):
-            self.command_on(f"[Set X {x} Y {y} Z {z}", npc.serial)
-        self.command_on("[Set CantWalk true", npc.serial)
-        return npc
+        if not self.command_on("[Set CantWalk true", npc.serial):
+            return None
+        if not self.command_on(f"[Set X {x} Y {y} Z {z}", npc.serial):
+            return None
+        for _ in range(6):
+            settled = next((m for m in self.body.observe().mobiles if m.serial == npc.serial), None)
+            if settled is not None and (settled.pos.x, settled.pos.y, settled.pos.z) == (x, y, z):
+                return settled
+        return None
 
     def stage(
         self,

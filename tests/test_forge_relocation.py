@@ -1007,7 +1007,7 @@ def test_a_permanently_wedged_walk_is_reported(capsys):
     assert "WEDGED WALK" in out, out
     # It names the tile and the tick, because the fix for a wedge is geometry and an
     # operator's next question is always "where".
-    assert "@(5,5)" in out and "the position never changed" in out
+    assert "@(5,5)" in out and "no closer" in out
     # THROTTLED, one line per `_WEDGE_TICKS`, not one per tick. The state persists for as
     # long as the wedge does, and this file already paid for that once: unthrottled,
     # `FRAME OVERDUE` measured 3,881 identical lines in a 4,000-tick run — enough to bury
@@ -1039,8 +1039,8 @@ def test_a_transient_obstruction_is_never_called_a_wedge(capsys):
 
 
 def test_the_wedge_alarm_does_not_disturb_no_progress(capsys):
-    """`NO PROGRESS` is left byte-identical, so no measured threshold moves. An agent that
-    emits no actions at all still trips it, and only it.
+    """The 40-tick threshold and emitted-step pulse are preserved. An agent that
+    emits no actions or achievements still trips it, and only it.
     """
     import threading
 

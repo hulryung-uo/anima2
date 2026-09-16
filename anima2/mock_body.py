@@ -120,6 +120,9 @@ class MockBody:
     items: dict[int, ItemView] = field(default_factory=dict)
     # Tiles the player cannot enter.
     blocked: set[tuple[int, int]] = field(default_factory=set)
+    #: ServUO consumes a direction change as a turn; movement needs another request.
+    #: Opt in for movement-cadence fixtures; older FSM fixtures use immediate steps.
+    turn_before_move: bool = False
     #: Walkable rectangle, x0/y0/x1/y1. The default spans UO's own map rather than a
     #: convenient 1000x1000 box, because the small box was a SILENT trap: every production
     #: coordinate in this project is real UO ground (the trade mine is ~(2611,474), the Yew
@@ -488,6 +491,9 @@ class MockBody:
     # --- world helpers ---------------------------------------------------------
 
     def _walk(self, direction: int) -> None:
+        if self.turn_before_move and self.player.direction != direction & 0x07:
+            self.player.direction = direction & 0x07
+            return
         self.player.direction = direction & 0x07
         dx, dy = DIRECTION_DELTAS[direction & 0x07]
         nx, ny = self.player.pos.x + dx, self.player.pos.y + dy

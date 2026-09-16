@@ -2722,6 +2722,28 @@ def test_walk_readout_leaves_the_stall_counter_behind_on_an_ordinary_arrival():
     assert walk_readout(mem, _pos(9, 0)) == "trip=sell to=(10,0) d=1<=2 stall=0/6"
 
 
+def test_walk_readout_measures_drift_while_position_keeps_changing():
+    skill = BlacksmithMarket()
+    memory = {"mkt_phase": "sell", "vendor_spot": (10, 10)}
+    for x in [0, 1, 0, 1]:
+        ctx = _ctx([], memory=memory, pos=Position(x, 0, 0))
+        skill._walk_route(ctx, [(10, 10)], "sell", 2)
+    out = walk_readout(memory, Position(1, 0, 0))
+    assert "stall=0/6 drift=3/24" in out
+    # Reaching a NEW best is progress. Returning to an old best is not.
+    skill._walk_route(_ctx([], memory=memory, pos=Position(2, 2, 0)), [(10, 10)], "sell", 2)
+    assert "drift=" not in walk_readout(memory, Position(2, 2, 0))
+    skill._walk_route(_ctx([], memory=memory, pos=Position(1, 1, 0)), [(10, 10)], "sell", 2)
+    skill._walk_route(_ctx([], memory=memory, pos=Position(2, 2, 0)), [(10, 10)], "sell", 2)
+    assert "drift=2/24" in walk_readout(memory, Position(2, 2, 0))
+
+
+def test_walk_readout_uses_the_actual_bank_return_reach():
+    memory = {"mkt_phase": "bank_return", "banker_spot": (10, 0),
+              "bs_stand": (0, 0), "bank_return_reach": 2}
+    assert "d=2<=2" in walk_readout(memory, Position(2, 0, 0))
+
+
 def test_walk_readout_arrival_boundary_is_inclusive_on_a_multi_leg_route():
     """`_walk_route` arrives on `<=`, and the single-waypoint case cannot tell `<=` from
     `<`: the leg branch renders an identical string there, so the boundary mutant is

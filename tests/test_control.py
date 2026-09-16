@@ -17,6 +17,8 @@ from __future__ import annotations
 from anima2.contract import JournalEntry, Observation, TargetCursor
 from anima2.control import GmControl, parse_property_reply
 
+import pytest
+
 
 class _ScriptedBody:
     """Replays a fixed sequence of `Observation`s, one per `observe()` call;
@@ -165,3 +167,29 @@ def test_stage_skips_detour_when_position_lookup_fails():
         ("command_on", "[Set X 2611 Y 474 Z 20"),
     ]
     assert ("go", 3734, 2222) not in calls
+
+
+@pytest.mark.parametrize("placement", ["arrives", "refused", "wrong_serial"])
+def test_npc_staging_returns_verified_position_of_the_same_serial(monkeypatch, placement):
+    from anima2.contract import MobileView, Position
+
+    def mobile(serial, y):
+        return MobileView(serial, "Banker", Position(2610, y, 20), 0x190, 1, 100, 100, 1)
+
+    stale = mobile(42, 474)
+    landed = mobile(99 if placement == "wrong_serial" else 42,
+                    474 if placement == "refused" else 475)
+    body = _ScriptedBody([Observation(mobiles=[stale]), Observation(mobiles=[landed])])
+    gm = GmControl(body)
+    commands = []
+    monkeypatch.setattr(gm, "command_at", lambda *a: True)
+    monkeypatch.setattr(gm, "find_mobile_near", lambda *a, **k: stale)
+    monkeypatch.setattr(gm, "command_on", lambda command, serial:
+                        commands.append((command, serial)) or True)
+    result = gm.stage_npc("Banker", 2610, 475, 20)
+    assert commands[0] == ("[Set CantWalk true", 42)
+    if placement == "arrives":
+        assert result is landed
+        assert result.pos == Position(2610, 475, 20)
+    else:
+        assert result is None

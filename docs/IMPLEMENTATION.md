@@ -8,7 +8,9 @@ Read [`DESIGN.md`](DESIGN.md) for *what this is* and *why*. Read
 [`OBSERVATIONS.md`](OBSERVATIONS.md) for the input side of a new finding.
 This file is only *how a change is chosen, built, and closed*.
 
-Last updated: 2026-08-22.
+Last updated: 2026-09-13. The current implementation and validation ledger is
+[`IMPROVEMENTS-2026-09-13.md`](IMPROVEMENTS-2026-09-13.md); the queue below is retained
+as the dated input to this pass.
 
 ---
 
@@ -26,13 +28,14 @@ Triage in this order, because it is the order of increasing cost
 Do **not** pick work from a stale "Next:" pointer, a larger evolution
 budget, or a feeling that the agent "looks better." AUTONOMY-ROADMAP §E
 still holds: re-run evolution versus random only when every searched axis
-changes a meaningful live trajectory. That rerun is waiting on a searcher
-that can steer a Life, which is a design question, not a wiring one.
+changes a meaningful live trajectory. There is now an offline Life search and profile
+application path, but its bank-transfer scenario does not exercise combat-mediated
+knobs or demonstrate improved live income. The larger comparative rerun still waits.
 
 Do **not** burn a multi-hour live GM budget to discover a defect that a
 hand-built observation can name.
 
-### Current queue (2026-08-22)
+### Historical queue (2026-08-22)
 
 Live-scored:
 

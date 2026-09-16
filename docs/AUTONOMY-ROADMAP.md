@@ -2,6 +2,12 @@
 
 Last updated: 2026-07-19
 
+Current implementation update (2026-09-13): the dated status below is historical.
+[`IMPROVEMENTS-2026-09-13.md`](IMPROVEMENTS-2026-09-13.md) tracks nonblocking Life
+steering, market detours and diagnostics, relocated workplace continuity, and the new
+LifeProfile search/export/apply path. The fresh-character capstone and the requirement
+for meaningful live evidence on searched axes remain unchanged.
+
 ## Objective
 
 Build an agent that logs in through `anima-client`, survives, chooses and

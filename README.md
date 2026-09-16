@@ -208,6 +208,28 @@ More village shapes (`--carpenter`, `--woodsman`, `--supply-pair`,
 *watch* a day: [`docs/MONITORING.md`](docs/MONITORING.md). How to *write down*
 what looked wrong: [`docs/OBSERVATIONS.md`](docs/OBSERVATIONS.md).
 
+Life settings can be saved as a schema-versioned JSON profile and supplied with
+`--profile path.json` on any Life runner. Profiles keep the role separate from the
+thresholds and reject unknown knobs, wrong roles, and duplicate settings before login.
+On a supply pair, pass one profile per role.
+
+The offline Life search can screen settings and export a candidate:
+
+```bash
+uv run python -m anima2.foundry.life_search \
+  --axis bank_reserve=129,200,400 --axis econ_grace=2,6 --budget 7 --seed 13 \
+  --report .logs/life-search.json --profile-out .logs/life-candidate.json
+# After recording a live prediction, apply the candidate through the normal runner:
+uv run python -m anima2.village --warriors 1 --ticks 1200 \
+  --profile .logs/life-candidate.json
+```
+
+This evaluator measures a swordsman's transfer of staged gold. It reports axes that
+are flat in the compared configurations; it does not model incoming damage, earned
+income, or prove that a smaller cash reserve improves a live economy. The active
+[improvement record](docs/IMPROVEMENTS-2026-09-13.md) separates offline results from
+live verification.
+
 ## Documentation
 
 The project is meant to be resumable from docs, not from chat history.

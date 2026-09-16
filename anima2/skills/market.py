@@ -87,13 +87,13 @@ mirroring `MineSmeltDeliver`'s own `deliver_giveup_ingots` backoff.
 **Routes, not just points** — `vendor_spot`/`banker_spot` accept either a
 plain `(x, y)` tuple (walk straight there — fine on open ground, e.g. the
 solo `BLACKSMITH_SPOTS`) or a `[(x, y), ...]` list: a manually curated
-waypoint route, walked leg by leg. This exists because `direction_toward`
-(used by `_market_walk_toward`, same technique as `GoTo`/
-`MineSmeltDeliver._walk_toward`) picks *one* straight-line direction toward
-the **final** target and keeps retrying it every tick — it has no fallback
-when that direction is blocked, even if a completely different route would
-work (no A*, by design — DESIGN.md §10 Phase 3 item 4 is the eventual real
-fix). `TRADE_SMITH_SPOT` (`profession.py`) sits at the closed end of a
+waypoint route, walked leg by leg. Routes were introduced because the original
+`direction_toward` walker retried the same blocked direction indefinitely.
+The current market walker tries adjacent headings after refused steps and
+repeats turn-only requests before veering again. It bounds both refused steps
+and distance drift; it does not discover arbitrary routes around long walls.
+Curated intermediate waypoints still matter. `TRADE_SMITH_SPOT`
+(`profession.py`) sits at the closed end of a
 single-tile-wide corridor with exactly one open exit (due east); live real-
 walk probing (not `[Go` teleports — see PHASE3.md item 1's own geometry
 notes for why that distinction matters) found the corridor's middle tile is
@@ -111,6 +111,7 @@ the same route in reverse back to `bs_stand`, for the identical reason.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..contract import BuyItems, Drop, PickUp, PopupRequest, PopupSelect, Position, SellItems, Walk
@@ -399,6 +400,7 @@ class BlacksmithMarket(Blacksmith):
     #: Consecutive no-progress walking ticks before a market leg gives up
     #: (mirrors `MineSmeltDeliver.stall_limit` / `Blacksmith.stall_limit`).
     stall_limit: int = 6
+    drift_limit: int = stall_limit * 4
     #: How many `step()` calls a give-up backoff (see below) lasts before a
     #: retry is allowed even without new progress. Bounds the *other* failure
     #: mode a pure "needs new progress" backoff has: a transient hiccup (a
@@ -1364,6 +1366,7 @@ class BlacksmithMarket(Blacksmith):
         here = ctx.obs.player.pos
         fx, fy = route[-1]
         if chebyshev(here, Position(fx, fy, here.z)) <= final_reach:
+            ctx.memory.pop("market_walk", None)
             return self._ARRIVED
 
         leg = ctx.memory.get(f"{tag}_leg", 0)
@@ -1374,15 +1377,18 @@ class BlacksmithMarket(Blacksmith):
             ctx.memory[f"{tag}_leg"] = leg + 1
             ctx.memory.pop(f"{tag}_stall", None)
             ctx.memory.pop(f"{tag}_last_pos", None)
+            ctx.memory.pop("market_walk", None)
             return self._walk_route(ctx, route, tag, final_reach, reward)  # same tick, next leg
         return self._market_walk_toward(ctx, tx, ty, tag, reward)
 
     def _market_walk_toward(self, ctx: SkillContext, tx: int, ty: int, tag: str,
                             reward: float = 0.0) -> SkillResult | None:
-        """One greedy step toward `(tx, ty)`, `stall_limit`-bounded like `GoTo` /
-        `MineSmeltDeliver._walk_toward`. `None` means wedged — the caller treats
-        that exactly like "arrived" and moves the phase on, rather than
-        retrying into the same obstruction forever.
+        """Approach the target, fanning out after refused steps.
+
+        Six consecutive refused steps or 24 steps without a new best distance
+        abandon this leg. The second bound catches oscillation and wall sliding:
+        moving is insufficient evidence that the destination is reachable.
+        `None` means failed; only `_walk_route`'s distance check proves arrival.
 
         Leaves `f"{tag}_leg"` untouched on a give-up, same as on a real
         arrival (see `_walk_route`'s docstring) — `step()`'s own end-of-phase
@@ -1390,16 +1396,39 @@ class BlacksmithMarket(Blacksmith):
         """
         here = ctx.obs.player.pos
         cur = (here.x, here.y)
+        identity = (tag, (tx, ty), ctx.goal_id)
+        distance = chebyshev(here, Position(tx, ty, here.z))
+        previous = ctx.memory.get("market_walk", {})
+        if previous.get("identity") != identity:
+            previous = {}
+        best = min(distance, previous.get("best", distance))
+        drift = previous.get("drift", 0) + 1 if previous and distance >= best else 0
+        if distance < previous.get("best", distance):
+            drift = 0
+        ctx.memory["market_walk"] = {"identity": identity, "best": best, "drift": drift}
         stall_key, pos_key = f"{tag}_stall", f"{tag}_last_pos"
-        stall = ctx.memory.get(stall_key, 0) + 1 if ctx.memory.get(pos_key) == cur else 0
+        same_position = ctx.memory.get(pos_key) == cur
+        turned = (same_position and previous.get("turning", False)
+                  and (ctx.obs.player.direction & 7) == previous.get("direction"))
+        stall = (ctx.memory.get(stall_key, 0) + (not turned)) if same_position else 0
         ctx.memory[stall_key] = stall
         ctx.memory[pos_key] = cur
-        if stall >= self.stall_limit:
+        if stall >= self.stall_limit or drift >= self.drift_limit:
             ctx.memory.pop(stall_key, None)
             ctx.memory.pop(pos_key, None)
+            ctx.memory.pop("market_walk", None)
             self._stash_reward(ctx, reward)
             return None
         d = direction_toward(here, Position(tx, ty, here.z))
+        # Clear paths retain their exact direction. Spend a denied-step budget on
+        # different neighbours, instead of asking the same pinned banker to move.
+        offsets = (0, 1, -1, 2, -2, 3, -3, 4)
+        d = previous["direction"] if turned else (d + offsets[stall % len(offsets)]) % 8
+        # ServUO Mobile.Move changes facing WITHOUT moving on the first request.
+        # Turning once is not a denied step: repeat that heading before veering,
+        # otherwise each sidestep merely turns again and the agent never moves.
+        ctx.memory["market_walk"].update(
+            direction=d, turning=(ctx.obs.player.direction & 7) != d)
         return SkillResult(Status.RUNNING, Walk(dir=d, run=False), reward)
 
     #: Reach for the walk home. 0 (the exact stand tile) for every crafter; `BankGold`
@@ -1610,7 +1639,7 @@ class BlacksmithMarket(Blacksmith):
 #: `mkt_phase` -> (route memory key, configured-spot fallback, final reach) for the four
 #: OUTBOUND market walks. The `<ns>_return` phases share their namespace's row and are
 #: handled off it — a return leg walks the same route reversed, home to `bs_stand`, at
-#: reach 0 (`_market_return_step`).
+#: reach 0 (or the bank's configured return reach).
 #:
 #: `mkt_phase`'s VALUE is also the walk tag every one of these legs passes to
 #: `_walk_route`/`_market_walk_toward` (market.py's `_sell_step`, `_bank_step`,
@@ -1632,16 +1661,22 @@ _BS_STAND_CRAFT_RADIUS = 3
 
 
 def _refresh_bs_stand_on_trip_open(ctx: SkillContext) -> None:
-    """Pin home to where THIS trip left from — when still at the craft stand.
+    """Snapshot the verified workplace, or refresh home while at the craft stand.
 
     A bare `setdefault` froze the first craft tile of the day; a later sell from
     a drifted stand returned to a stale reach-0 tile and age-11-gave-up after
     the gold was already taken (forge-20260818-0039). Unconditional overwrite
     on every capability open is wrong too: vendor-sequence tests (and any open
     that already stands at the shop) would replace a seeded `bs_stand` with the
-    vendor tile and make `*_return` a no-op. Refresh only with no pin yet, or
-    while inside `craft_spot`'s radius.
+    vendor tile and make `*_return` a no-op. Without a verified relocation, refresh
+    only with no pin yet or while inside `craft_spot`'s radius. With one, a new trip
+    uses the reached workplace even when it opens immediately after another errand.
     """
+    workplace = ctx.memory.get("workplace")
+    if (isinstance(workplace, tuple) and len(workplace) == 2
+            and all(type(value) is int for value in workplace)):
+        ctx.memory["bs_stand"] = workplace
+        return
     here = (ctx.obs.player.pos.x, ctx.obs.player.pos.y)
     spot = ctx.memory.get("craft_spot")
     at_craft = (
@@ -1655,6 +1690,46 @@ def _refresh_bs_stand_on_trip_open(ctx: SkillContext) -> None:
         ctx.memory["bs_stand"] = here
     else:
         ctx.memory.setdefault("bs_stand", here)
+
+
+@dataclass(frozen=True)
+class WalkDestination:
+    phase: str
+    x: int
+    y: int
+    reach: int
+    remaining_legs: int = 0
+
+    def distance(self, pos) -> int:
+        return max(abs(pos.x - self.x), abs(pos.y - self.y))
+
+
+def walk_destination(memory: Mapping[str, Any], pos) -> WalkDestination | None:
+    """The actual leg/reach shared by telemetry and the progress watchdog."""
+    phase = memory.get("mkt_phase")
+    if not isinstance(phase, str):
+        return None
+    ns = phase.removesuffix("_return")
+    row = WALK_PHASES.get(ns)
+    if row is None:
+        return None
+    route_key, spot_key, final_reach = row
+    raw = memory.get(route_key) or memory.get(spot_key)
+    route = BlacksmithMarket._route(raw) if raw else []
+    if phase.endswith("_return"):
+        stand = memory.get("bs_stand")
+        route = list(reversed(route[:-1])) + [tuple(stand)] if stand else []
+        final_reach = bank_return_reach(memory) if ns == "bank" else 0
+    if not route:
+        return None
+    fx, fy = route[-1]
+    if chebyshev(pos, Position(fx, fy, pos.z)) <= final_reach:
+        return WalkDestination(phase, fx, fy, final_reach)
+    leg = memory.get(f"{phase}_leg", 0)
+    leg = min(max(0, leg if type(leg) is int else 0), len(route) - 1)
+    tx, ty = route[leg]
+    remaining = len(route) - 1 - leg
+    return WalkDestination(phase, tx, ty, 0 if remaining else final_reach, remaining)
 
 
 def walk_readout(memory: Mapping[str, Any], pos) -> str:
@@ -1711,7 +1786,8 @@ def walk_readout(memory: Mapping[str, Any], pos) -> str:
     build that could not compute one", and the whole value of this group on a wedged run
     is that it is present and says so.
 
-    `stall=` is `_market_walk_toward`'s own no-progress counter over its give-up limit.
+    `stall=` counts refused movement attempts, excluding confirmed turns, over the
+    give-up limit. `drift=` counts ticks without a better distance, including turns.
     `stall=-` is NOT zero and NOT "arrived": the counter is written on every greedy step
     and popped only on a leg advance or on the give-up itself, so an ordinary arrival
     LEAVES it behind and renders `stall=0/6`. `-` means no greedy step has run since the
@@ -1732,43 +1808,28 @@ def walk_readout(memory: Mapping[str, Any], pos) -> str:
         phase = memory.get("mkt_phase")
         if phase is None:
             return "trip=none"
-        ns = phase[:-7] if phase.endswith("_return") else phase
-        row = WALK_PHASES.get(ns)
-        if row is None:  # "craft" — the idle phase, and any future non-walking one
+        ns = phase.removesuffix("_return")
+        if ns not in WALK_PHASES:
             return f"trip={phase}"
-        route_key, spot_key, final_reach = row
-        raw = memory.get(route_key) or memory.get(spot_key)
-        route = BlacksmithMarket._route(raw) if raw else []
-        if phase.endswith("_return"):
-            # `_market_return_step` walks the outbound route reversed, home to the tile
-            # the trip started from, and needs it EXACTLY (reach 0).
-            stand = memory.get("bs_stand")
-            route = (list(reversed(route[:-1])) + [tuple(stand)]) if stand else []
-            final_reach = 0
-        if not route:
+        destination = walk_destination(memory, pos)
+        if destination is None:
             return f"trip={phase} to=?"
-        # Final reach first — `_walk_route`'s own ordering. See the docstring.
-        fx, fy = route[-1]
-        d_final = chebyshev(pos, Position(fx, fy, pos.z))
-        if d_final <= final_reach:
-            return (f"trip={phase} to=({fx},{fy}) d={d_final}<={final_reach} "
-                    f"stall={memory.get(f'{phase}_stall', '-')}"
-                    f"/{BlacksmithMarket.stall_limit}")
-        leg = memory.get(f"{phase}_leg", 0)
-        leg = min(max(0, leg if isinstance(leg, int) else 0), len(route) - 1)
-        tx, ty = route[leg]
-        last_leg = leg == len(route) - 1
-        reach = final_reach if last_leg else 0
-        d = chebyshev(pos, Position(tx, ty, pos.z))
-        more = "" if last_leg else f"+{len(route) - 1 - leg}"
+        tx, ty, reach = destination.x, destination.y, destination.reach
+        d = destination.distance(pos)
+        more = f"+{destination.remaining_legs}" if destination.remaining_legs else ""
         stall = memory.get(f"{phase}_stall", "-")
         # COMPUTED, never assumed: standing exactly on an intermediate waypoint is
         # `d=0<=0`, and `_walk_route` advances the leg on that same tick. Hardcoding `>`
         # here because "we did not take the arrival branch" would print a lie for one
         # tick per leg on every multi-waypoint route.
         cmp_ = ">" if d > reach else "<="
+        progress = memory.get("market_walk", {})
+        identity = progress.get("identity", ())
+        drift = progress.get("drift", 0)
+        drifting = (f" drift={drift}/{BlacksmithMarket.drift_limit}"
+                    if identity[:2] == (phase, (tx, ty)) and drift and d > reach else "")
         return (f"trip={phase} to=({tx},{ty}){more} d={d}{cmp_}{reach} "
-                f"stall={stall}/{BlacksmithMarket.stall_limit}")
+                f"stall={stall}/{BlacksmithMarket.stall_limit}{drifting}")
     except Exception:  # noqa: BLE001 — telemetry must never break the run
         return "trip=?"
 

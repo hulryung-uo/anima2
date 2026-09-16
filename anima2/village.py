@@ -27,6 +27,7 @@ from .contract import Observation, Say, Walk
 from .control import GmControl
 from .ipc_body import IpcBody, ResilientIpcBody
 from .memory import Episode
+from .liveness import ApproachWatch
 # The ONE definition of "what does this Observation say we have" (see `obsview.py`'s
 # docstring for what the hand-written copies drifted into). Module level, not
 # function-local like most of this file's imports: `obsview` sits BELOW everything
@@ -51,7 +52,7 @@ from .skill_library import SkillLibrary
 from .skill_tuning import DELIVER_THRESHOLD_CANDIDATES, ParamSpec, ParamTuner
 from .skills import MineSmeltDeliver
 from .skills.combat import is_hostile
-from .skills.market import walk_readout
+from .skills.market import walk_destination, walk_readout
 from .skills.base import Status
 from .uomap import (
     find_mine_spots,
@@ -994,7 +995,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     stopped = ""
     # No-progress liveness (health-check follow-up #1's guard): forge2's miner issued
     # ZERO actions for an entire run and nothing flagged it — a dead agent and a
-    # patient one look identical from outside. If reward, steps, speech AND position
+    # patient one look identical from outside. If reward, achievements, steps, speech AND position
     # all freeze for _QUIET_TICKS straight, say so loudly and keep saying it. The
     # threshold sits far above any legitimate quiet stretch (a bank trip is ~12 ticks,
     # a craft item ~10) and far below the half-hour forge2 sat dead.
@@ -1025,11 +1026,10 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # margin. Review-caught, by three independent lenses, after the author's own transient
     # grid stopped at 41 — one tick below the first firing point.
     #
-    # So the wedge gets its OWN alarm and its own threshold, and `NO PROGRESS` is left
-    # byte-identical. That makes this change strictly ADDITIVE: no existing alarm's
-    # behaviour moves, so no measured threshold is silently re-tuned. It is also the rule
-    # `NO OUTPUT` already established in this file — two different failures must never
-    # share one line of text, because identical text in both halves is zero information.
+    # So the wedge gets its OWN alarm and its own threshold; emitted steps still reset
+    # `NO PROGRESS`. Successful economy frames also reset both pulses: a Life exposes
+    # hunt episodes here, so a stationary crafter can produce without changing reward.
+    # This was live-caught on 2026-09-13. Failed frames are not evidence of progress.
     #
     # 240 IS DERIVED, not picked. It is `_STALL_TICKS`, the work-liveness threshold
     # already measured in this file against the longest healthy silence any live log
@@ -1064,6 +1064,7 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
     # statement about what a wedge IS — an agent walking, every tick, into the same tile —
     # rather than a constant someone must later re-derive.
     _WEDGE_TICKS = 240
+    _approach_watch = ApproachWatch(_WEDGE_TICKS)
     _still = 0
     _last_stillness = None
     #: `steps` when the current stillness stretch began. `steps - _still_steps` is the
@@ -1460,24 +1461,41 @@ def _run_worker(agent: Agent, ticks: int, idx: int, status: dict, lock: threadin
             print(f"  ** {agent.persona.name}: BACK ALIVE at ({p.x},{p.y}) after "
                   f"{ticks_done - _dead_since} ticks dead (death #{_deaths}) **")
         _was_dead = _dead_now
-        _pulse = (round(agent.episodes.total_reward(), 3), steps, says, p.x, p.y)
+        _pulse = (round(agent.episodes.total_reward(), 3), _achieved, steps, says, p.x, p.y)
         _quiet = _quiet + 1 if _pulse == _last_pulse else 0
         _last_pulse = _pulse
         if _quiet and _quiet % _QUIET_TICKS == 0:
             print(f"  ** {agent.persona.name}: NO PROGRESS for {_quiet} ticks "
-                  f"(reward/steps/speech/position all frozen) **")
+                  f"(reward/achievements/steps/speech/position all frozen) **")
         # WEDGED WALK — the third liveness alarm, and follow-up 35. See `_WEDGE_TICKS`.
         # The same pulse WITHOUT `steps`, so a walk that emits and never moves
         # accumulates here instead of resetting everything.
-        _stillness = (round(agent.episodes.total_reward(), 3), says, p.x, p.y)
+        _stillness = (round(agent.episodes.total_reward(), 3), _achieved, says, p.x, p.y)
         _still = _still + 1 if _stillness == _last_stillness else 0
         if _still == 0:
             _still_steps = steps  # baseline: walks emitted BEFORE this stretch began
         _last_stillness = _stillness
         _tried = steps - _still_steps
+        # Use the memory of the agent that actually moved this tick. A suspended
+        # economy frame must not claim the hunt agent's movement as its own.
+        _walker = getattr(agent, "_ticked_agent", agent)
+        try:
+            _destination = walk_destination(dict(_walker.memory), p)
+        except (TypeError, ValueError, IndexError, AttributeError):
+            _destination = None
+        _approach = _approach_watch.observe(
+            _destination, p, ticks_done, attempted=isinstance(action, Walk),
+            output=(round(agent.episodes.total_reward(), 3), _achieved))
+        if _approach is not None:
+            _elapsed, _attempts, _distance, _best = _approach
+            print(f"  ** {agent.persona.name}: WEDGED WALK — {_attempts} walk actions "
+                  f"over {_elapsed} ticks; no closer to "
+                  f"({_destination.x},{_destination.y}) d={_distance} best={_best} "
+                  f"reach={_destination.reach} (t={ticks_done}, @({p.x},{p.y})) **")
         # A MAJORITY of the stretch must be walk attempts. `_tried > 0` was the first
         # version and it false-fired on its very first live run — see `_WEDGE_TICKS`.
-        if _still and _tried * 2 >= _still and _still % _WEDGE_TICKS == 0:
+        if (_destination is None and _still and _tried * 2 >= _still
+                and _still % _WEDGE_TICKS == 0):
             print(f"  ** {agent.persona.name}: WEDGED WALK — {_tried} walk actions "
                   f"over {_still} ticks ({_tried * 100 // _still}% of them) and the "
                   f"position never changed (t={ticks_done}, @({p.x},{p.y})) **")
@@ -3015,6 +3033,9 @@ def run_woodsman_life(*, host: str = "127.0.0.1", port: int = 2594,
         if mem.get("harvest_relocating"):
             tgt = mem.get("harvest_relocate_target")
             line += f" reloc={tgt}" if tgt else " reloc"
+        workplace = life.econ_agent.memory.get("workplace")
+        if workplace is not None:
+            line += f" home={workplace} return={life.econ_agent.memory.get('bs_stand')}"
         # `win=` says the window is filling; this says WHY. §51.2 hopped correctly and
         # then swung 270 ticks at the new stand with nothing to read: `far=` climbing is
         # a WALK problem (trees out of range), no cause at all beside a live `tree=`/`d=`
@@ -4359,6 +4380,8 @@ def _parse_knobs(pairs: list[str]) -> dict[str, int]:
         key, sep, raw = pair.partition("=")
         if not sep or not key:
             raise SystemExit(f"--knob wants KEY=VALUE, got {pair!r}")
+        if key in out:
+            raise SystemExit(f"--knob {key} was given twice")
         try:
             out[key] = int(raw)
         except ValueError:
@@ -4420,6 +4443,26 @@ def _route_knobs(parsed: dict[str, int], roles: tuple[str, ...], *, runner: str,
                 f"{role}:KEY=VALUE are the same knob; pass one.")
         by_role[role][name] = value
     return by_role
+
+
+def _merge_profiles(paths, parsed_knobs, roles):
+    """Load portable profiles before any runner connects; never ignore a role."""
+    from .life_config import LifeProfile
+
+    merged = dict(parsed_knobs)
+    for path in paths:
+        try:
+            profile = LifeProfile.load(path)
+        except (ValueError, OSError) as exc:
+            raise SystemExit(f"--profile {path}: {exc}") from None
+        if profile.role not in roles:
+            raise SystemExit(f"--profile {path}: this runner has no {profile.role!r} Life")
+        for name, value in profile.knobs.items():
+            key = f"{profile.role}:{name}"
+            if key in merged:
+                raise SystemExit(f"--profile {path}: {key} was given twice")
+            merged[key] = value
+    return merged
 
 
 def main() -> None:
@@ -4486,6 +4529,9 @@ def main() -> None:
                          "--warriors and --pipeline; --supply-pair REQUIRES the role prefix. "
                          "Every key must be a knob the Life routes through anima2/knobs.py; "
                          "an unknown key or role fails before the shard connection")
+    ap.add_argument("--profile", action="append", type=Path, default=[],
+                    help="load a Life profile JSON, repeatable for different roles; "
+                         "conflicting --knob values are rejected before connecting")
     ap.add_argument("--monitor", action="store_true",
                     help="serve a read-only web view of each agent (loopback only); "
                          "the URL per agent is printed at startup")
@@ -4557,6 +4603,15 @@ def main() -> None:
                           "needs --chatter or --llm-tiers to have any effect)")
     args = ap.parse_args()
     parsed_knobs = _parse_knobs(args.knob)
+    roles = next((roles for enabled, roles in (
+        (args.forge_pair, ("tinker",)),
+        (args.supply_pair, ("woodsman", "carpenter")),
+        (args.carpenter, ("carpenter",)),
+        (args.woodsman, ("woodsman",)),
+        (args.pipeline, ("mage",)),
+        (args.warriors > 0, ("swordsman",)),
+    ) if enabled), ())
+    parsed_knobs = _merge_profiles(args.profile, parsed_knobs, roles)
     # Every branch routes its own knobs now. The blanket guard this replaces —
     # "--knob needs --carpenter or --woodsman" — was an allowlist of the two runners that
     # carried the channel, and it was correct only while the other five construction

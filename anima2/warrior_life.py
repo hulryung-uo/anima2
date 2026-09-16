@@ -22,12 +22,15 @@ ticked — EXCEPT that a live goal frame holds the economy mode until it retires
 outlives its own deadline (see `tick`: the rule cannot see the goal stack, so it answers
 "hunt" on the very tick a transaction completes, and only the economy agent's own ticks
 can finish one; a frame past its budget has stopped being a transaction and releases the
-hold, so the Life is never pinned by one). The economy agent's cognition is SYNCHRONOUS
-on purpose (the async ThreadedCognition races and intermittently never proposes the goal
-— a live-caught flake).
+hold, so the Life is never pinned by one). Deterministic economy admission stays
+synchronous. Optional model selection runs in a bounded background request; a slow or
+failed model cannot stop the body, and stale selections cannot cross intention changes.
 """
 
 from __future__ import annotations
+
+import threading
+import time
 
 from .agent import Agent
 from .capabilities import CapabilityPolicy, _valid_spot
@@ -224,16 +227,75 @@ class _LifeClient:
     `(candidates, chosen, used_llm)` so a live gate can audit the choices afterwards.
     """
 
+    timeout_s = 5.0
+
     def __init__(self, life: "WarriorLife", llm=None) -> None:
         self._life = life
         self._llm = llm
+        self._lock = threading.Lock()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._busy = False
+        self._pending = None
+        self._result = None
+        self._candidates: tuple[str, ...] = ()
+        self._generation = 0
+
+    def update_candidates(self, candidates) -> None:
+        """Observe every transition, including A -> no work -> A while a call runs."""
+        candidates = tuple(candidates)
+        if candidates != self._candidates:
+            self._candidates = candidates
+            self._generation += 1
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """Test/shutdown join point; never called by the playing loop."""
+        return self._idle.wait(timeout)
+
+    def _record(self, candidates, chosen, used):
+        self._life.steering_log.append((candidates, chosen, used))
+        return chosen
 
     def _pick(self) -> str | None:
-        cands = list(self._life.candidates)
+        self.update_candidates(self._life.candidates)
+        cands = self._candidates
         if not cands:
             return None
         if self._llm is None or len(cands) < 2:
             return cands[0]
+        key = (self._generation, self._life.econ_agent._intention_token)
+        now = time.monotonic()
+        with self._lock:
+            if self._result is not None:
+                result_key, deadline, chosen = self._result
+                self._result = None
+                if result_key == key:
+                    if now >= deadline:
+                        chosen = None
+                    return self._record(cands, chosen or cands[0], chosen is not None)
+            if self._busy:
+                if (self._pending is not None and self._pending[0] == key
+                        and now < self._pending[1]):
+                    return None  # idle admission; reflexes and the body keep ticking
+                # A timed-out or obsolete worker may still exist. Do not spawn another
+                # thread behind it, and never let its late answer become a fresh goal.
+                self._pending = None
+                return self._record(cands, cands[0], False)
+            self._pending = (key, now + self.timeout_s)
+            self._busy = True
+            self._idle.clear()
+        try:
+            threading.Thread(target=self._work, args=(key, cands), daemon=True).start()
+        except RuntimeError:
+            with self._lock:
+                self._pending = None
+                self._busy = False
+                self._idle.set()
+            return self._record(cands, cands[0], False)
+        return None
+
+    def _work(self, key, cands: tuple[str, ...]) -> None:
+        chosen = None
         try:
             reply = self._llm.complete(
                 "You steer a UO character's economy. Answer with EXACTLY one word: "
@@ -242,15 +304,21 @@ class _LifeClient:
                 f"possible and safe: {', '.join(cands)}. Which single one should it "
                 "do first?",
             )
-            token = str(reply).strip().strip('."\'` ').lower()
-            chosen = next((c for c in cands if c == token or c in token), None)
-        except Exception:  # noqa: BLE001 — a steering consult must never break the life
-            chosen = None
-        used = chosen is not None
-        if chosen is None:
-            chosen = cands[0]  # closed vocabulary: an invalid answer changes nothing
-        self._life.steering_log.append((tuple(cands), chosen, used))
-        return chosen
+            token = reply.strip() if isinstance(reply, str) else None
+            chosen = token if token in cands else None
+        except Exception:  # noqa: BLE001 — transport failure retains scripted autonomy
+            pass
+        finally:
+            with self._lock:
+                pending = self._pending
+                if pending is not None and pending[0] == key:
+                    # Deadline applies to completed-but-unconsumed answers too.
+                    if time.monotonic() >= pending[1]:
+                        chosen = None
+                    self._result = (key, pending[1], chosen)
+                self._pending = None
+                self._busy = False
+                self._idle.set()
 
     def complete(self, system: str, user: str) -> str:
         cap = self._pick()
@@ -376,10 +444,11 @@ class WarriorLife:
         #: them so its buy/bank FSMs can navigate.
         self.routes: dict = dict(routes) if routes else {}
         self.hunt_agent = Agent(body=self.body, persona=persona, planner=prof.planner())
+        self._life_client = _LifeClient(self, llm)
         self.econ_agent = Agent(
             body=self.body, persona=persona,
             planner=prof.planner(capability_goals=True),
-            cognition=CapabilityCognition(_LifeClient(self, llm), profession),
+            cognition=CapabilityCognition(self._life_client, profession),
             cognition_interval=1, profession=profession,
             goal_policy=CapabilityPolicy(profession),
         )
@@ -588,6 +657,7 @@ class WarriorLife:
         obs = self.body.last_obs
         if obs is None:
             return action
+        self._adopt_relocated_workplace(obs)
         # The rule reads the ECON AGENT'S memory - the very dict the gates read - so a
         # knob written at construction (bank_reserve) or a route added later is seen
         # by both sides by construction, never by synchronization.
@@ -698,8 +768,29 @@ class WarriorLife:
                 self.candidates = [cap] if cap else []
         else:
             self.candidates = []
+        self._life_client.update_candidates(self.candidates)
         self._detect_disagreement(obs)
         return action
+
+    def _adopt_relocated_workplace(self, obs: Observation) -> None:
+        """Consume a work skill's verified arrival, without moving any shop.
+
+        Only the hunt-side relocation owner can publish this event. A failed hop
+        has no surveyed stand and must not silently move home. Existing economy
+        transactions retain their own `bs_stand`; the next trip uses the new home.
+        """
+        if self._ticked_agent is not self.hunt_agent:
+            return
+        memory = self.hunt_agent.memory
+        moved = memory.pop("harvest_relocated_to", None)
+        stand = memory.pop("harvest_relocated_stand", None)
+        here = (obs.player.pos.x, obs.player.pos.y)
+        if (obs.player.dead or moved != here or not isinstance(stand, tuple)
+                or len(stand) != 2 or not all(type(value) is int for value in stand)
+                or max(abs(here[0] - stand[0]), abs(here[1] - stand[1])) > 1):
+            return
+        self.set_leash(here)
+        self.econ_agent.memory["workplace"] = here
 
     def _being_killed(self, obs) -> bool:
         """Wounded past the survival trigger AND something is in reach to finish the job.

@@ -5,6 +5,11 @@
 > the original chat. It captures *what* anima2 is, *why* each decision was made,
 > the architecture, the roadmap, and what to reuse from the existing `anima` (v1).
 
+The architecture and decision history below remain the design reference. Its phase
+status predates the current implementation: consult `CLAUDE.md` and
+[`IMPROVEMENTS-2026-09-13.md`](IMPROVEMENTS-2026-09-13.md) for the active changes and
+their verification, and the audit for completed live experiments.
+
 Last updated: 2026-07-16 · Status: **Phase 7 begun (redeem the evolution
 loop, close the skill-ledger honesty gap, sharpen memory retrieval) — work
 breakdown written, see [`PHASE7.md`](PHASE7.md); all four items ⏳, none

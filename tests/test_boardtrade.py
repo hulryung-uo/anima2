@@ -207,3 +207,18 @@ def test_deliver_return_arriving_home_still_finishes():
     assert mem["cap_deliver_finished_goal_id"] == 71
     assert mem["cap_run_finished_goal_id"] == 71
     assert res.action is None
+
+
+def test_each_delivery_snapshots_the_current_workplace_without_changing_a_live_trip():
+    skill = DeliverBoards()
+    memory = {"carpenter_drop": DROP, "lumber_home": (518, 1042),
+              "workplace": (512, 1045)}
+    ctx = _ctx([_backpack(), _item(0x900, BOARD_GRAPHIC, amount=30)], memory=memory)
+    assert skill._begin_goal(ctx)
+    assert skill._home_point(ctx) == (512, 1045)
+    memory["workplace"] = (524, 1039)
+    assert skill._begin_goal(ctx)
+    assert skill._home_point(ctx) == (512, 1045), "an in-flight trip owns its home"
+    ctx.goal_id += 1
+    assert skill._begin_goal(ctx)
+    assert skill._home_point(ctx) == (524, 1039), "the next delivery must use the new grove"

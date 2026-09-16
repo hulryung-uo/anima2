@@ -1040,7 +1040,7 @@ def test_a_given_up_buy_frame_retires_through_bound_1_instead_of_its_deadline():
         f"deadline for a decision the FSM already made: {rows}")
 
 
-def test_the_walk_readout_renders_the_age_8_giveup_signature():
+def test_the_walk_readout_bounds_a_fully_blocked_detour():
     """Follow-up 32, against the day it was written for — and the first OFFLINE
     reproduction of follow-up 29's signature.
 
@@ -1063,9 +1063,10 @@ def test_the_walk_readout_renders_the_age_8_giveup_signature():
     live attribution still needs a forge day (follow-up 30).
     """
     body, life = _sale_life()
-    # A wall between the carpenter at (5,5) and the vendor at (10,10): every step that
-    # would close the gap bumps. `_walk` treats a blocked tile as a turn, not a move.
-    body.blocked.update({(x, 6) for x in range(20)} | {(6, y) for y in range(20)})
+    # This signature requires SIX refused steps, including the new sidesteps. Enclose
+    # all neighbours: the old southeast wall leaves a real escape to the northwest.
+    body.blocked.update((5 + dx, 5 + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                        if dx or dy)
 
     # Read through the SAME helper `village._run_worker` uses, econ-agent resolution and
     # all — not by reaching into memory directly, which would prove the readout works on
@@ -1083,11 +1084,13 @@ def test_the_walk_readout_renders_the_age_8_giveup_signature():
     assert [ln for ln in walking if "stall=5/6" in ln], walking
     assert (5, 5) == (body.player.pos.x, body.player.pos.y), "the wall did not hold"
 
-    # ...and the frame retirements are the live day's arithmetic, verbatim.
+    # The old greedy frame used 6 denied steps + 2 lifecycle ticks = 8. A full
+    # detour now tries six headings, each with a turn and a movement request:
+    # 6 * 2 + 2 = 14. The same give-up bound closes it well before the deadline.
     rets = frame_retirements(life)
     assert len(rets) >= 3, rets
     assert {(cap, age, budget, why) for _id, cap, age, budget, why in rets} == {
-        ("sell_furniture", 8, 180, "giveup")}, rets
+        ("sell_furniture", 14, 180, "giveup")}, rets
 
 
 def test_a_warrior_being_killed_does_not_keep_holding_a_transaction():

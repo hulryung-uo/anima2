@@ -382,13 +382,14 @@ class DeliverBoards(Skill):
         start_boards = self._pack_boards(ctx)
         if start_boards <= 0:
             return False
-        # Remember where the shift started so `return` walks back to it, unless a
-        # fixed `lumber_home` was plumbed in (mirrors MineSmeltDeliver's
-        # `miner_home` setdefault): set `cap_deliver_home` from the player's pos
-        # only when `lumber_home` is absent, and only the first time.
-        if not _valid_point(ctx.memory.get("lumber_home")):
-            here = ctx.obs.player.pos
-            ctx.memory.setdefault("cap_deliver_home", (here.x, here.y))
+        # A shift can outlive a grove. Freeze THIS delivery's return home at
+        # admission, preferring a verified relocation over the original staging.
+        home = ctx.memory.get("workplace")
+        if not _valid_point(home):
+            home = ctx.memory.get("lumber_home")
+        here = ctx.obs.player.pos
+        ctx.memory["cap_deliver_home"] = ((home[0], home[1]) if _valid_point(home)
+                                           else (here.x, here.y))
         ctx.memory["cap_deliver_goal_id"] = goal_id
         ctx.memory["cap_deliver_start_boards"] = start_boards
         ctx.memory["cap_deliver_needed"] = start_boards
@@ -558,12 +559,11 @@ class DeliverBoards(Skill):
 
     @staticmethod
     def _home_point(ctx: SkillContext):
-        """The return tile: a plumbed-in `lumber_home`, else the `cap_deliver_home`
-        frozen from the shift's start."""
-        home = ctx.memory.get("lumber_home")
+        """This transaction's frozen home; legacy in-flight state can use staging."""
+        home = ctx.memory.get("cap_deliver_home")
         if _valid_point(home):
             return (home[0], home[1])
-        home = ctx.memory.get("cap_deliver_home")
+        home = ctx.memory.get("lumber_home")
         return home if _valid_point(home) else None
 
     @staticmethod
