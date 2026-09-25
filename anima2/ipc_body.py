@@ -149,7 +149,7 @@ from .contract import Action, Observation
 # because `Observation.from_dict` reads every field through `d.get(...)` and ignores what
 # it does not name — verified rather than assumed, since "additive" is a claim about the
 # READER as much as the writer. A bump with no diff is only safe while that stays true.
-SUPPORTED_SCHEMA_VERSION = 32
+SUPPORTED_SCHEMA_VERSION = 33
 
 
 def default_bridge_path() -> Path:

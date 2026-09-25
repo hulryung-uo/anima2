@@ -15,7 +15,7 @@ fixtures. Do not describe staged runs as proof of fresh-character autonomy.
 
 ## Architecture and entry points
 
-- `contract.py`, `body.py`, `ipc_body.py`: the body boundary. Bridge schema 32 is
+- `contract.py`, `body.py`, `ipc_body.py`: the body boundary. Bridge schema 33 is
   checked at handshake. Body JSON lives in the sibling repository's
   `crates/anima-contract-json`; the bridge executable is `anima-agent`.
 - `agent.py`, `planner.py`, `skills/`: observe, safety interrupts, ordered skill
